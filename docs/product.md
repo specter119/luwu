@@ -75,4 +75,4 @@ This document owns what Luwu is trying to become and why it is valuable. Current
 
 ## Current starting point
 
-The seed implementation starts with Python and uv, explicit `.j2` templates, semantic drift, controlled reverse sync, and an rbw provider experiment. This reflects the current preference for fast iteration and a manageable, reviewable dependency supply chain; language choice is not treated as an intrinsic security guarantee, and cross-platform support remains a validation target rather than a completed matrix. These are starting assumptions for exploration, not the product's final form.
+The seed implementation starts with Python and uv, explicit `.j2` templates, and semantic drift. Controlled reverse sync and an rbw provider are product exploration directions and future hypotheses, not current capabilities. This reflects the current preference for fast iteration and a manageable, reviewable dependency supply chain; language choice is not treated as an intrinsic security guarantee, and cross-platform support remains a validation target rather than a completed matrix. These are starting assumptions for exploration, not the product's final form.
