@@ -1,6 +1,6 @@
 # Luwu Implementation Status
 
-Status: M1 verified
+Status: M1 source-level implementation verified; packaging and hook gates pending
 
 This document records what the repository actually implements. It does not expand the product scope in [product.md](product.md), and it does not replace the contracts in [reference.md](reference.md).
 
@@ -36,15 +36,17 @@ The milestone is complete only when the implementation, tests, example, and docu
 
 ## Verification
 
-The implementation and isolated example have been verified on the current POSIX development environment:
+The source-level implementation and isolated example were re-verified on the current POSIX development environment:
 
 ```text
-uv lock --check
-uv run --locked python -m unittest discover -s tests -v  # 32 tests passed
-uv run --locked python -m compileall -q src tests
-uv build
-prek run --all-files
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -v  # 33 tests passed
+PYTHONPYCACHEPREFIX=/tmp/luwu-compile python3 -m compileall -q src tests
+ruff check src tests
+ruff format --check src tests
+git diff --check
 isolated CLI E2E: plan -> apply --yes -> inspect; clean post-apply state
 ```
 
 The E2E check used a temporary copy of `examples/m1`, confirmed the generated file content and mode `0644`, confirmed it was not a symlink, and confirmed no temporary `.luwu-*` entry remained. No repository example target was mutated.
+
+The locked `uv` packaging workflow and `prek run --all-files` remain required gates. They were not re-run successfully in the restricted review environment because fetching the Hatchling build dependency and pinned hook repositories required unavailable network access.

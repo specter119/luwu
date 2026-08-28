@@ -34,9 +34,11 @@ This deliberately avoids pretending that a generic formatter or parser can safel
 
 ## Safety boundaries
 
-- The manifest accepts exactly one resource and rejects absolute paths, traversal, source/target overlap, unknown fields, and unsupported resource kinds. It infers `template` from `.j2` and `symbolic` otherwise, unless an explicit `kind` overrides that inference.
-- Source symlinks are resolved, must remain within the manifest root, and must resolve to regular files. Target symlinks are detected with `lstat` and blocked (except an already-correct symbolic target).
-- `inspect`, `plan`, and an unconfirmed `apply` do not write. There is no cache or implicit baseline.
-- Confirmed apply rechecks target content and mode, so a target changed after planning is stale rather than overwritten.
-- Atomic replacement avoids truncating a target if the write fails. Existing regular-file permissions are retained for template replacements; symbolic replacements operate on the link itself. Undeclared paths are never touched.
-- M1 has no provider integration and accepts only explicitly declared static template inputs. Provider-managed secrets, secret persistence, reverse sync, shell execution, and runtime network access are outside the contract and fail closed as unknown/unsupported manifest features.
+The normative manifest, CLI, error, and write contract is owned by
+[reference.md](reference.md); this section does not repeat its field and state
+tables. The design consequences are deliberately narrow: M1 remains
+single-resource and forward-only, keeps the plan in memory, and defers
+providers, secret persistence, reverse sync, and multi-file transaction
+semantics until they have their own contracts. The descriptor-relative,
+no-follow implementation is the mechanism that preserves the target boundary
+described by the reference contract.

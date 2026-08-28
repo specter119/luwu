@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import Self
 
-from luwu.errors import ApplyError, RenderError
+from luwu.errors import ApplyError, ManifestError, RenderError
 from luwu.manifest import load_manifest
 from luwu.reconcile import Action, Status, apply_plan, build_plan
 
@@ -22,6 +23,45 @@ class ReconcileTests(unittest.TestCase):
             self.assertEqual(observation.action, Action.CREATE)
             self.assertFalse(project.target.exists())
             self.assertEqual(project.source.read_bytes(), before)
+
+    def test_reconciliation_rejects_a_manually_constructed_multi_resource_plan(
+        self,
+    ) -> None:
+        with _Project() as project:
+            multi_resource_manifest = replace(
+                project.manifest,
+                resources=project.manifest.resources * 2,
+            )
+
+            with self.assertRaises(ManifestError) as manifest_error:
+                build_plan(multi_resource_manifest)
+            self.assertEqual(manifest_error.exception.code, "resource_count")
+
+            plan = build_plan(project.manifest)
+            multi_observation_plan = replace(
+                plan,
+                observations=plan.observations * 2,
+            )
+            with self.assertRaises(ApplyError) as apply_error:
+                apply_plan(multi_observation_plan)
+            self.assertEqual(apply_error.exception.code, "resource_count")
+            self.assertFalse(project.target.exists())
+
+            foreign_resource = replace(
+                plan.observations[0].resource,
+                target=project.root / "live/undeclared.conf",
+                target_name="live/undeclared.conf",
+            )
+            foreign_observation_plan = replace(
+                plan,
+                observations=(
+                    replace(plan.observations[0], resource=foreign_resource),
+                ),
+            )
+            with self.assertRaises(ApplyError) as foreign_error:
+                apply_plan(foreign_observation_plan)
+            self.assertEqual(foreign_error.exception.code, "invalid_plan")
+            self.assertFalse((project.root / "live/undeclared.conf").exists())
 
     def test_plan_compares_rendered_template_and_recognizes_exact_sync(self) -> None:
         with _Project() as project:
@@ -78,7 +118,7 @@ class ReconcileTests(unittest.TestCase):
             plan = build_plan(project.manifest)
 
             self.assertEqual(plan.observations[0].status, Status.BLOCKED)
-            self.assertIn("cannot be inspected", plan.observations[0].reason)
+            self.assertEqual(plan.observations[0].action, Action.BLOCK)
 
     def test_missing_target_parent_is_blocked(self) -> None:
         with _Project(target="missing/settings.conf") as project:

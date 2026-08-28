@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from .errors import ApplyError, LuwuError, RenderError
+from .errors import ApplyError, LuwuError, ManifestError, RenderError
 from .filesystem import (
     FileChangedError,
     NotRegularFileError,
@@ -122,16 +123,24 @@ class _TargetState:
 
 
 def build_plan(manifest: Manifest) -> Plan:
-    """Render and inspect every resource without writing any path."""
+    """Render and inspect the declared resource without writing any path."""
 
-    observations: list[ResourceObservation] = []
-    for resource in manifest.resources:
-        if resource.kind == "template":
-            observations.append(_plan_template(manifest, resource))
-        else:
-            observations.append(_plan_symbolic(manifest, resource))
+    resource = _require_single_resource(manifest)
+    observation = (
+        _plan_template(manifest, resource)
+        if resource.kind == "template"
+        else _plan_symbolic(manifest, resource)
+    )
+    return Plan(manifest=manifest, observations=(observation,))
 
-    return Plan(manifest=manifest, observations=tuple(observations))
+
+def _require_single_resource(manifest: Manifest) -> Resource:
+    if len(manifest.resources) != 1:
+        raise ManifestError(
+            "M1 supports exactly one resource",
+            code="resource_count",
+        )
+    return manifest.resources[0]
 
 
 def _plan_template(manifest: Manifest, resource: Resource) -> ResourceObservation:
@@ -289,6 +298,7 @@ def _plan_symbolic(manifest: Manifest, resource: Resource) -> ResourceObservatio
 def apply_plan(plan: Plan) -> ApplyResult:
     """Apply a previously calculated plan after a complete stale-state check."""
 
+    _require_single_plan(plan)
     if not plan.can_apply:
         raise ApplyError(
             "plan contains blocked resources; no files were changed",
@@ -324,6 +334,19 @@ def apply_plan(plan: Plan) -> ApplyResult:
         changed_targets=tuple(changed_targets),
         verification_plan=verification_plan,
     )
+
+
+def _require_single_plan(plan: Plan) -> None:
+    if len(plan.manifest.resources) != 1 or len(plan.observations) != 1:
+        raise ApplyError(
+            "M1 supports exactly one resource; no files were changed",
+            code="resource_count",
+        )
+    if plan.observations[0].resource != plan.manifest.resources[0]:
+        raise ApplyError(
+            "plan does not match its manifest; no files were changed",
+            code="invalid_plan",
+        )
 
 
 def plan_to_dict(plan: Plan, *, command: str) -> dict[str, object]:
@@ -720,51 +743,30 @@ def _write_template_observation(
         )
 
     mode = observation.live_mode if observation.live_mode is not None else 0o644
-    temporary_name: str | None = None
-    try:
+
+    def create_entry() -> str:
         descriptor, created_name = create_temporary_file(
             parent_descriptor,
             prefix=f".{observation.resource.target.name}.luwu-",
         )
-        temporary_name = created_name
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(observation.desired_bytes)
-            handle.flush()
-            os.fsync(handle.fileno())
-            os.fchmod(handle.fileno(), mode)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(observation.desired_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+                os.fchmod(handle.fileno(), mode)
+        except BaseException:
+            _cleanup_temporary_entry(parent_descriptor, created_name)
+            raise
+        return created_name
 
-        _preflight_manifest(plan)
-        _preflight_source(plan, observation)
-        _check_target_state(
-            plan,
-            observation,
-            phase="during apply",
-            parent_descriptor=parent_descriptor,
-        )
-        os.replace(
-            created_name,
-            target_name,
-            src_dir_fd=parent_descriptor,
-            dst_dir_fd=parent_descriptor,
-        )
-        temporary_name = None
-        sync_directory(parent_descriptor)
-    except ApplyError:
-        raise
-    except (OSError, NotImplementedError, RuntimeError, TypeError) as exc:
-        raise ApplyError(
-            f"cannot atomically write target for resource {observation.resource.name!r}: "
-            f"{getattr(exc, 'strerror', None) or type(exc).__name__}",
-            code="write_failed",
-        ) from exc
-    finally:
-        if temporary_name is not None:
-            try:
-                os.unlink(temporary_name, dir_fd=parent_descriptor)
-            except FileNotFoundError:
-                pass
-            except (OSError, NotImplementedError):
-                pass
+    _write_temporary_entry(
+        plan,
+        observation,
+        parent_descriptor,
+        target_name,
+        create_entry=create_entry,
+    )
 
 
 def _write_symbolic_observation(
@@ -779,14 +781,14 @@ def _write_symbolic_observation(
             code="apply_failed",
         )
 
-    temporary_name: str | None = None
-    try:
-        created_name = create_temporary_symlink(
+    def create_entry() -> str:
+        return create_temporary_symlink(
             parent_descriptor,
             prefix=f".{observation.resource.target.name}.luwu-",
             target=observation.desired_link,
         )
-        temporary_name = created_name
+
+    def validate_entry(created_name: str) -> None:
         temporary_link = os.readlink(created_name, dir_fd=parent_descriptor)
         if (
             resolve_link_target(observation.resource.target, temporary_link)
@@ -797,6 +799,32 @@ def _write_symbolic_observation(
                 "run plan again",
                 code="stale_plan",
             )
+
+    _write_temporary_entry(
+        plan,
+        observation,
+        parent_descriptor,
+        target_name,
+        create_entry=create_entry,
+        validate_entry=validate_entry,
+    )
+
+
+def _write_temporary_entry(
+    plan: Plan,
+    observation: ResourceObservation,
+    parent_descriptor: int,
+    target_name: str,
+    *,
+    create_entry: Callable[[], str],
+    validate_entry: Callable[[str], None] | None = None,
+) -> None:
+    temporary_name: str | None = None
+    try:
+        created_name = create_entry()
+        temporary_name = created_name
+        if validate_entry is not None:
+            validate_entry(created_name)
         _preflight_manifest(plan)
         _preflight_source(plan, observation)
         _check_target_state(
@@ -823,12 +851,14 @@ def _write_symbolic_observation(
         ) from exc
     finally:
         if temporary_name is not None:
-            try:
-                os.unlink(temporary_name, dir_fd=parent_descriptor)
-            except FileNotFoundError:
-                pass
-            except (OSError, NotImplementedError):
-                pass
+            _cleanup_temporary_entry(parent_descriptor, temporary_name)
+
+
+def _cleanup_temporary_entry(parent_descriptor: int, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=parent_descriptor)
+    except (OSError, NotImplementedError):
+        pass
 
 
 def _normalize_text(data: bytes) -> bytes:
