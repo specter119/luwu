@@ -15,6 +15,18 @@ safe result is not only protected storage: secrets and rendered values should
 avoid the repository, persistent state, diffs, logs, caches, backups, and
 machine-readable output unless a contract explicitly requires otherwise.
 
+## Stable core and changing contract
+
+The stable value is: **Luwu must minimize sensitive information and capability
+exposure, and fail closed when that boundary is uncertain.** Metadata-only
+output, provider interfaces, secret persistence rules, and sandbox limits are
+current formalizations; they may evolve without weakening the core.
+
+When the contract changes, trace the value and capability flow before and after,
+make new exposure explicit, and update secrecy tests, compatibility notes, and
+status. Do not treat one redaction format or provider API as permanent; do
+reject convenience that expands unreviewed information or execution power.
+
 Trace manifest inputs, provider reads, rendering, exceptions, plans, JSON,
 temporary files, persistence, and external calls. Ask:
 

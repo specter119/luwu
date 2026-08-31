@@ -14,6 +14,18 @@ Treat configuration as a responsibility map, not merely as content to copy.
 Declared ownership and scope must be visible; live, undeclared, or conflicting
 content must not become accepted through an implicit precedence rule.
 
+## Stable core and changing contract
+
+The stable value is: **Luwu must keep who may change a value answerable.**
+Fields such as `owner`, `scope`, provider roles, and reverse-sync rules are
+contract expressions of that value, not the value itself. They may change when
+evidence warrants it.
+
+When a contract changes, compare the old and new allowed transitions, show how
+authority remains explicit, version or migrate the rule when necessary, and
+update tests and status honestly. Do not defend a current field shape merely
+because it is current; do reject any change that makes authority implicit.
+
 Review the owning contract plus the affected loader, planner, mutation path,
 provider boundary, and tests. Ask:
 

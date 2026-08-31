@@ -13,6 +13,18 @@ The goal is not merely to finish a write. The existing target, undeclared
 content, path root, permissions, and recovery boundary must survive uncertainty
 and hostile changes.
 
+## Stable core and changing contract
+
+The stable value is: **Luwu must not cross a boundary it cannot establish, and
+must preserve a recoverable state when it acts.** Root rules, no-follow flags,
+descriptor-relative operations, atomic replacement, and permission behavior
+are current contract mechanisms; a safer mechanism may replace them.
+
+When the contract changes, identify the boundary invariant, compare the threat
+model and failure behavior before and after, and update compatibility notes and
+regression tests. Do not treat one syscall, path syntax, or platform mechanism
+as sacred; do reject any change that makes an unsafe boundary look successful.
+
 Trace every path from manifest parsing through observation, preflight, temp
 entry creation, replacement, cleanup, and verification. Check:
 

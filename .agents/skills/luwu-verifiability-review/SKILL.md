@@ -14,6 +14,18 @@ Prefer a narrow contract whose observations, reasons, errors, and recovery path
 can be checked by people and agents. Feature breadth is not progress when
 partial success, migration, rollback, or platform behavior is undefined.
 
+## Stable core and changing contract
+
+The stable value is: **a future actor must be able to know what happened, why,
+and what safe action can continue the work.** Manifest versions, JSON shapes,
+status labels, documentation ownership, and M1 scope are contract expressions
+for a stage; they may change when evidence supports a better rule.
+
+When the contract changes, compare what the old and new rules let a person or
+agent observe and recover, define migration or compatibility behavior, and
+update tests and status. Do not freeze a narrow contract as architecture; do
+reject expansion that makes behavior untestable, ambiguous, or discontinuous.
+
 Read `AGENTS.md` and the owning document before judging status. Trace the
 feature through implementation, public output, fixtures, tests, and status
 documentation. Ask:

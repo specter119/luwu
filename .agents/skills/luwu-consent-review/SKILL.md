@@ -13,6 +13,19 @@ Treat a configuration change as an authorization flow rather than a file-copy
 call. Observation must be read-only; a plan must explain the proposed action;
 mutation must be explicit, revalidated, and followed by fresh verification.
 
+## Stable core and changing contract
+
+The stable value is: **Luwu must not turn an unreviewed observation into an
+authorized mutation.** The current inspect/plan/apply sequence, confirmation
+flag, stale checks, exit codes, and verification document that value for one
+stage; they may evolve.
+
+When the contract changes, compare the old and new authorization transitions,
+preserve a visible decision point and honest recovery semantics, and make any
+version, migration, or compatibility change explicit. Do not preserve a
+workflow shape as a ritual; do reject hidden authorization or unverifiable
+mutation.
+
 Trace the complete sequence from CLI or API input through planning, confirmation,
 preflight, writes, errors, and post-write recalculation. Ask:
 
