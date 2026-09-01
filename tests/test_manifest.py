@@ -27,6 +27,8 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual(manifest.resources[0].kind, "template")
             self.assertEqual(manifest.resources[0].target_name, "live/settings.conf")
             self.assertEqual(manifest.resources[0].variables["profile"], "developer")
+            with self.assertRaises(TypeError):
+                manifest.resources[0].variables["profile"] = "changed"
 
     def test_explicit_symbolic_kind_overrides_j2_inference(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -85,6 +87,38 @@ scope = "whole-file"
                 load_manifest(manifest_path)
 
             self.assertEqual(context.exception.code, "resource_unknown_field")
+
+    def test_rejects_sensitive_variable_names_in_the_public_m1_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manifest_path = Path(temporary_directory) / "luwu.toml"
+            manifest_path.write_text(
+                _manifest_text().replace(
+                    'profile = "developer"',
+                    'token = "not accepted"',
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ManifestError) as context:
+                load_manifest(manifest_path)
+
+            self.assertEqual(context.exception.code, "resource_secret_field")
+
+    def test_requires_explicit_public_sensitivity_for_variables(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manifest_path = Path(temporary_directory) / "luwu.toml"
+            manifest_path.write_text(
+                _manifest_text().replace(
+                    'variables_sensitivity = "public"\n',
+                    "",
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ManifestError) as context:
+                load_manifest(manifest_path)
+
+            self.assertEqual(context.exception.code, "resource_sensitivity")
 
     def test_rejects_paths_that_leave_manifest_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -195,6 +229,7 @@ source = "templates/settings.conf.j2"
 target = "live/settings.conf"
 owner = "source"
 scope = "whole-file"
+variables_sensitivity = "public"
 
 [resources.settings.variables]
 profile = "developer"

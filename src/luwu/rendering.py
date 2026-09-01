@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from jinja2 import StrictUndefined, TemplateError
@@ -17,30 +17,41 @@ from .filesystem import (
     open_parent_directory,
     read_regular_file_at,
 )
-from .manifest import Resource
+from .manifest import Resource, _PublicVariables
 
 
 @dataclass(frozen=True, slots=True)
 class RenderedTemplate:
     """Rendered bytes plus the source fingerprint used by stale-plan checks."""
 
-    data: bytes
+    data: bytes = field(repr=False)
     source_digest: str
     source_path: Path
+    source_identity: tuple[int, int]
 
 
 def render_template(resource: Resource, *, root: Path) -> RenderedTemplate:
     """Render one template from data already validated by the manifest loader."""
 
-    source_path, source = _read_source(resource, root=root)
+    if resource.variables and resource.variables_sensitivity != "public":
+        raise RenderError(
+            f"variables for resource {resource.name!r} lack public sensitivity",
+            code="variables_sensitivity",
+        )
+    if not isinstance(resource.variables, _PublicVariables):
+        raise RenderError(
+            f"variables for resource {resource.name!r} are not classified as public",
+            code="variables_sensitivity",
+        )
+    source_path, source, source_identity = _read_source(resource, root=root)
 
     try:
         template_source = source.decode("utf-8")
-    except UnicodeDecodeError as exc:
+    except UnicodeDecodeError:
         raise RenderError(
             f"source for resource {resource.name!r} is not valid UTF-8",
             code="source_encoding",
-        ) from exc
+        ) from None
 
     environment = ImmutableSandboxedEnvironment(
         autoescape=False,
@@ -58,50 +69,60 @@ def render_template(resource: Resource, *, root: Path) -> RenderedTemplate:
             f"template for resource {resource.name!r} failed{location}: "
             f"{type(exc).__name__}",
             code="template_invalid",
-        ) from exc
+        ) from None
+    except Exception as exc:  # noqa: BLE001 - template execution has no stable exception type
+        raise RenderError(
+            f"template for resource {resource.name!r} failed: {type(exc).__name__}",
+            code="template_invalid",
+        ) from None
 
     return RenderedTemplate(
         data=rendered.encode("utf-8"),
         source_digest=hashlib.sha256(source).hexdigest(),
         source_path=source_path,
+        source_identity=source_identity,
     )
 
 
-def _read_source(resource: Resource, *, root: Path) -> tuple[Path, bytes]:
+def _read_source(
+    resource: Resource,
+    *,
+    root: Path,
+) -> tuple[Path, bytes, tuple[int, int]]:
     try:
         resolved_source = resource.source.resolve(strict=False)
         resolved_source.relative_to(root)
-    except (OSError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError):
         raise RenderError(
             f"source for resource {resource.name!r} escaped the manifest directory",
             code="source_boundary",
-        ) from exc
+        ) from None
 
     try:
         parent_descriptor, source_name = open_parent_directory(root, resolved_source)
         try:
-            source, _ = read_regular_file_at(parent_descriptor, source_name)
+            source, info = read_regular_file_at(parent_descriptor, source_name)
         finally:
             os.close(parent_descriptor)
-    except FileNotFoundError as exc:
+    except FileNotFoundError:
         raise RenderError(
             f"source for resource {resource.name!r} does not exist",
             code="source_missing",
-        ) from exc
-    except NotRegularFileError as exc:
+        ) from None
+    except NotRegularFileError:
         raise RenderError(
             f"source for resource {resource.name!r} is not a regular file",
             code="source_not_regular",
-        ) from exc
-    except FileChangedError as exc:
+        ) from None
+    except FileChangedError:
         raise RenderError(
             f"source for resource {resource.name!r} changed during inspection",
             code="source_changed",
-        ) from exc
+        ) from None
     except (OSError, NotImplementedError, RuntimeError) as exc:
         raise RenderError(
             f"cannot read source for resource {resource.name!r}: "
             f"{getattr(exc, 'strerror', None) or type(exc).__name__}",
             code="source_unreadable",
-        ) from exc
-    return resolved_source, source
+        ) from None
+    return resolved_source, source, (info.st_dev, info.st_ino)

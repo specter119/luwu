@@ -70,6 +70,23 @@ def read_descriptor(descriptor: int) -> bytes:
         chunks.append(chunk)
 
 
+def verify_directory_identity(descriptor: int, path: Path) -> None:
+    """Ensure an open directory is still reachable at its intended path."""
+
+    try:
+        expected = os.stat(path, follow_symlinks=False)
+        current = os.fstat(descriptor)
+    except OSError:
+        raise FileChangedError(str(path)) from None
+    if (
+        not stat.S_ISDIR(expected.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or expected.st_dev != current.st_dev
+        or expected.st_ino != current.st_ino
+    ):
+        raise FileChangedError(str(path))
+
+
 def create_temporary_file(parent_descriptor: int, prefix: str) -> tuple[int, str]:
     """Create a private temporary file in an already-open parent directory."""
 
@@ -113,12 +130,32 @@ def resolve_link_target(path: Path, link_text: str) -> Path:
 
 
 def sync_directory(descriptor: int) -> None:
-    """Best-effort durability for an already-open directory descriptor."""
+    """Flush an already-open directory descriptor or report uncertainty."""
+
+    os.fsync(descriptor)
+
+
+def lock_directory(descriptor: int) -> None:
+    """Take a non-blocking advisory lock for cooperating Luwu writers."""
 
     try:
-        os.fsync(descriptor)
-    except OSError:
-        pass
+        import fcntl
+    except ImportError as exc:
+        raise NotImplementedError("directory locking is unavailable") from exc
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        raise BlockingIOError("target directory is being changed") from exc
+
+
+def unlock_directory(descriptor: int) -> None:
+    """Release a lock previously acquired with :func:`lock_directory`."""
+
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise NotImplementedError("directory locking is unavailable") from exc
+    fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
 def _open_directory(path: Path) -> int:
