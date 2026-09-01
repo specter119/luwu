@@ -67,6 +67,30 @@ A direction is worth pursuing when it makes these questions easier to answer:
 
 A feature that only makes overwriting more convenient, while making these questions harder to answer, is not automatically progress for Luwu.
 
+## Contract consequences of the existing values
+
+These are implementation-facing consequences of the values above, not a new
+product philosophy. They narrow what counts as evidence and keep a result
+auditable:
+
+- equivalence is evidence-bounded: without format or parser evidence, Luwu
+  must not call two representations equivalent;
+- uncertainty is first-class: `unknown`, `blocked`, `conflict`, and
+  `undeclared` must not be collapsed into ordinary drift;
+- mutation outcomes are honest: a result distinguishes no change/not written,
+  committed, committed but verification failed, and state unknown;
+- identity and provenance remain continuous from source, live, and baseline
+  through the chosen action and resulting commit;
+- every action accounts for blast radius: what changes, what may be replaced,
+  and what remains unexamined must be visible before mutation.
+- safety claims are threat-model-bounded: unavailable platform primitives or
+  non-cooperating writers must produce an explicit blocked or unknown result,
+  not an implied guarantee.
+
+The stable command and manifest forms of these consequences belong in
+[reference.md](reference.md); current implementation status belongs in
+[status.md](status.md).
+
 ## How the product should evolve
 
 This is a product seed, not a completed master design. Early implementation may keep several hypotheses alive and use fixtures, real usage, and maintenance experience to remove them. A choice should become a stable design or decision record only after it has been validated, has a broad impact, or is difficult to reverse.

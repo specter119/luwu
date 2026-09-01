@@ -11,7 +11,15 @@ from pathlib import Path
 from . import __version__
 from .errors import LuwuError
 from .manifest import load_manifest
-from .reconcile import ApplyResult, Plan, apply_plan, build_plan, plan_to_dict
+from .reconcile import (
+    ApplyOutcome,
+    ApplyResult,
+    Plan,
+    ResourceObservation,
+    apply_plan,
+    build_plan,
+    plan_to_dict,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,9 +77,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_human_plan(plan, heading="Apply plan")
         result = apply_plan(plan)
         _emit_apply_result(result, as_json=args.json)
-        return 0
+        return (
+            0
+            if result.outcome in {ApplyOutcome.COMMITTED, ApplyOutcome.NO_CHANGES}
+            else 2
+        )
     except LuwuError as exc:
         _emit_error(exc, as_json=getattr(args, "json", False))
+        return 2
+    except Exception:  # noqa: BLE001 - preserve the CLI error boundary
+        _emit_error(
+            LuwuError(
+                "operation failed; inspect the current state before retrying",
+                code="internal_error",
+            ),
+            as_json=getattr(args, "json", False),
+        )
         return 2
 
 
@@ -99,7 +120,12 @@ def _emit_plan(plan: Plan, *, command: str, as_json: bool) -> None:
 def _emit_apply_preview(plan: Plan, *, as_json: bool) -> None:
     if as_json:
         payload = plan_to_dict(plan, command="apply")
-        payload.update({"applied": False, "reason": "confirmation_required"})
+        payload.update(
+            {
+                "applied": False,
+                "reason": ("plan_blocked" if plan.blocked else "confirmation_required"),
+            }
+        )
         _print_json(payload)
         return
     _print_human_plan(plan, heading="Apply preview")
@@ -119,34 +145,61 @@ def _emit_apply_result(result: ApplyResult, *, as_json: bool) -> None:
         payload = plan_to_dict(result.initial_plan, command="apply")
         payload.update(
             {
-                "applied": True,
+                "applied": result.outcome is not ApplyOutcome.VERIFICATION_FAILED,
+                "mutated": bool(result.changed_targets),
+                "outcome": result.outcome.value,
                 "changed_targets": list(result.changed_targets),
-                "verification": plan_to_dict(
-                    result.verification_plan,
-                    command="verification",
+                "verification": (
+                    plan_to_dict(result.verification_plan, command="verification")
+                    if result.verification_plan is not None
+                    else None
                 ),
+                "verification_error": result.verification_error,
             }
         )
         _print_json(payload)
         return
 
-    print("Applied")
+    if result.outcome is ApplyOutcome.NO_CHANGES:
+        print("No files changed")
+    elif result.outcome is ApplyOutcome.COMMITTED:
+        print("Applied")
+    elif result.outcome is ApplyOutcome.COMMITTED_BUT_VERIFICATION_FAILED:
+        print("Applied, but verification failed")
+    elif result.outcome is ApplyOutcome.VERIFICATION_FAILED:
+        print("No files changed, but verification failed")
+    else:
+        print("Applied, but the final state is not fully confirmed")
     print(f"Changed targets: {len(result.changed_targets)}")
-    print("Verification: clean")
+    if result.outcome in {ApplyOutcome.COMMITTED, ApplyOutcome.NO_CHANGES}:
+        print("Verification: clean")
+    elif result.outcome in {
+        ApplyOutcome.COMMITTED_BUT_VERIFICATION_FAILED,
+        ApplyOutcome.VERIFICATION_FAILED,
+    }:
+        print("Verification: unavailable or not clean; inspect before retrying")
+    else:
+        print(
+            "Verification: durability or cleanup is unconfirmed; inspect before retrying"
+        )
 
 
 def _print_human_plan(plan: Plan, *, heading: str) -> None:
     print(heading)
-    print(f"Manifest: {plan.manifest.path}")
+    print(f"Manifest: {_display(plan.manifest.path)}")
     for observation in plan.observations:
         resource = observation.resource
-        print(f"- {resource.name}")
-        print(f"  source: {resource.source_name}")
-        print(f"  target: {resource.target_name}")
-        print(f"  owner: {resource.owner}")
+        print(f"- {_display(resource.name)}")
+        print(f"  source: {_display(resource.source_name)}")
+        print(f"  target: {_display(resource.target_name)}")
+        print(f"  owner: {_display(resource.owner)}")
+        print(f"  scope: {_display(resource.scope)}")
+        print("  transition: source -> live target")
         print(f"  status: {observation.status.value}")
         print(f"  action: {observation.action.value}")
-        print(f"  reason: {observation.reason}")
+        print(f"  reason: {_display(observation.reason)}")
+        impact = _impact_text(observation)
+        print(f"  impact: {impact}")
     summary = plan.summary()
     print(
         "Summary: "
@@ -165,3 +218,23 @@ def _emit_error(error: LuwuError, *, as_json: bool) -> None:
         _print_json({"error": {"code": error.code, "message": str(error)}})
     else:
         print(f"error[{error.code}]: {error}", file=sys.stderr)
+
+
+def _display(value: object) -> str:
+    """Keep control characters in user-controlled labels from becoming output."""
+
+    text = str(value)
+    return "".join(
+        character if 0x20 <= ord(character) != 0x7F else f"\\x{ord(character):02x}"
+        for character in text
+    )
+
+
+def _impact_text(observation: ResourceObservation) -> str:
+    action = observation.action.value
+    target = _display(observation.resource.target_name)
+    if action == "replace":
+        return f"overwrites {target}; outside declared target is not examined"
+    if action == "create":
+        return f"writes {target}; outside declared target is not examined"
+    return "writes nothing; outside declared target is not examined"

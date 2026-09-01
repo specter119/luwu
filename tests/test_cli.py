@@ -105,6 +105,7 @@ source = "templates/settings.conf.j2"
 target = "live/settings.conf"
 owner = "source"
 scope = "whole-file"
+variables_sensitivity = "public"
 
 [resources.settings.variables]
 profile = "developer"

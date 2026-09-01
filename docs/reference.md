@@ -16,6 +16,7 @@ source = "templates/settings.conf.j2"
 target = "live/settings.conf"
 owner = "source"
 scope = "whole-file"
+variables_sensitivity = "public"
 
 [resources.settings.variables]
 profile = "developer"
@@ -28,7 +29,8 @@ M1 accepts exactly one resource. It is intentionally single-resource so that the
 - `target`: a relative path without `..` inside the manifest directory;
 - `owner = "source"`: the declared source resource is the owner of the target;
 - `scope = "whole-file"`: the resource owns the complete target file;
-- `variables` (optional for templates): TOML scalar, array, or table values used as non-secret template inputs. Symbolic resources cannot have variables.
+- `variables_sensitivity = "public"` (required when template variables are present): explicitly classifies those manifest literals as public M1 inputs;
+- `variables` (optional for templates): TOML scalar, array, or table values. The loader classifies these manifest literals as public M1 inputs; obvious secret-bearing field names are rejected, and there is no provider or secret-value path into rendering. This is a closed capability boundary, not a scanner that can prove an arbitrary string is non-secret. Symbolic resources cannot have variables.
 
 `template` renders the source as Jinja; `symbolic` makes the target a symlink to the declared source. Explicit `kind = "template"` requires a `.j2` source. Unknown kinds, source/target overlap, absolute paths, path traversal, and provider/secret fields fail validation. A target's parent directory must already exist and must not contain a symlink. M1 does not infer resources from existing files.
 
@@ -38,9 +40,9 @@ All commands accept `--manifest PATH` (default `luwu.toml`) and `--json`. `inspe
 
 `inspect` reports the current state. `plan` reports the same observation together with the action an explicit apply could take. Both commands return exit code `0` after successfully calculating a plan, including when a resource is reported as `blocked`.
 
-`apply` always calculates a plan first. In human output, a confirmed apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. With `--yes`, it rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. JSON mode keeps stdout as one result document and includes the initial and verification plans in that document. A blocked or stale plan returns exit code `2` and does not begin a write.
+`apply` always calculates a plan first. In human output, a confirmed apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. With `--yes`, it rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. JSON mode keeps stdout as one result document and includes the initial and verification plans in that document when verification can recalculate one. A blocked or stale plan returns exit code `2` and does not begin a write.
 
-Writes use a temporary file or temporary symlink in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved for template targets; a new regular template target starts with mode `0644`. A template target symlink is refused rather than followed or replaced. A symbolic target symlink is accepted only when it resolves to the declared source; a different existing symlink is blocked. The current implementation uses descriptor-relative no-follow operations on POSIX and fails closed when those filesystem primitives are unavailable. M1 does not create parent directories, keep a baseline, or make a backup containing configuration content.
+Writes use a temporary file or temporary symlink in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved for template targets; a new regular template target starts with mode `0644`. A template target symlink is refused rather than followed or replaced. A symbolic target symlink is accepted only when it resolves to the declared source; a different existing symlink is blocked. The current implementation uses descriptor-relative no-follow operations, records source/target identities, and takes a non-blocking advisory lock for cooperating Luwu writers on POSIX. It fails closed when those filesystem primitives are unavailable. An advisory lock does not control unrelated writers that ignore it, so M1 does not claim protection against those races; a stronger kernel compare-and-swap boundary is future work. M1 does not create parent directories, keep a baseline, or make a backup containing configuration content.
 
 ## States and actions
 
@@ -48,11 +50,11 @@ Writes use a temporary file or temporary symlink in the target's existing parent
 | --- | --- | --- |
 | `in_sync` | rendered bytes equal a template target, or a symbolic target resolves to its source | `noop` |
 | `missing` | target is absent | `create` |
-| `formatting` | only line endings, trailing spaces, or final newline differ for a template | `noop` |
+| `formatting` | reserved for a future format adapter; M1 does not emit it | not applicable |
 | `drifted` | rendered content differs, or a symbolic target is a regular file | `replace` |
 | `blocked` | the target boundary or declared input cannot be handled safely | `block` |
 
-The formatting comparison is deliberately narrow: UTF-8 text has CRLF/CR normalized to LF, trailing spaces and tabs removed per line, and a missing final newline normalized. It is not a general-purpose formatter.
+M1 has no formatting equivalence. Without a format adapter or parser evidence, any byte difference—including line endings, trailing whitespace, and final-newline differences—is `drifted` and may be `replace`d. The reserved `formatting` value is not emitted by the current implementation.
 
 ## JSON output
 
@@ -73,7 +75,13 @@ Successful `inspect` and `plan` output has this shape:
       "scope": "whole-file",
       "status": "missing",
       "action": "create",
-      "reason": "target does not exist"
+      "reason": "target does not exist",
+      "impact": {
+        "writes": ["live/settings.conf"],
+        "overwrites": [],
+        "scope": "whole-file",
+        "undeclared": "content outside the declared target is not examined"
+      }
     }
   ],
   "summary": {
@@ -86,7 +94,7 @@ Successful `inspect` and `plan` output has this shape:
 }
 ```
 
-`apply` adds `applied`, `changed_targets`, and (after a successful confirmed apply) a `verification` plan. A confirmation preview has `applied = false` and `reason = "confirmation_required"`; a blocked apply uses `reason = "plan_blocked"`. Rendered bytes, variable values, diffs, and hashes are intentionally absent from machine-readable output.
+`apply` adds `applied`, `mutated`, `outcome`, `changed_targets`, `verification`, and `verification_error`. A confirmation preview has `applied = false` and `reason = "confirmation_required"`; a blocked apply uses `reason = "plan_blocked"`. A successful write has `outcome = "committed"`; a successful no-op has `outcome = "no_changes"`; both return exit code `0`, with `mutated` distinguishing whether a target was written. If a target was committed but verification could not recalculate a clean plan, the result has `outcome = "committed_but_verification_failed"`; if commit happened but durability or cleanup could not be confirmed, it has `outcome = "committed_state_unknown"`. If no target was written and verification failed, the outcome is `verification_failed`. All failure outcomes return exit code `2`; committed outcomes include every known changed target and callers must inspect before retrying. Rendered bytes, variable values, diffs, and hashes are intentionally absent from machine-readable output.
 
 Expected failures use exit code `2`. With `--json`, they are emitted as:
 

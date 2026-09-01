@@ -27,3 +27,15 @@ class ApplyError(LuwuError):
     """An explicit apply could not safely complete."""
 
     default_code = "apply_failed"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        committed: bool = False,
+        target_name: str | None = None,
+    ) -> None:
+        super().__init__(message, code=code)
+        self.committed = committed
+        self.target_name = target_name
