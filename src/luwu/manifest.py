@@ -1,4 +1,4 @@
-"""Loading and validating the M1 manifest contract."""
+"""Loading and validating versioned manifest contracts."""
 
 from __future__ import annotations
 
@@ -13,8 +13,11 @@ from typing import Any
 from .errors import ManifestError
 
 MANIFEST_VERSION = 1
+_MANIFEST_VERSION_V2 = 2
+_SUPPORTED_MANIFEST_VERSIONS = frozenset({MANIFEST_VERSION, _MANIFEST_VERSION_V2})
 _MANIFEST_FIELDS = {"version", "resources"}
 _RESOURCE_FIELDS = {
+    "comparison",
     "kind",
     "source",
     "target",
@@ -62,7 +65,7 @@ class _PublicVariables(Mapping[str, object]):
 
 @dataclass(frozen=True, slots=True)
 class Resource:
-    """One fully declared template or symbolic resource."""
+    """One fully declared template, symbolic, or M2 copy resource."""
 
     name: str
     kind: str
@@ -74,12 +77,14 @@ class Resource:
     scope: str
     variables: Mapping[str, object] = field(repr=False)
     variables_sensitivity: str | None = None
+    comparison: str = "exact-bytes"
 
 
 @dataclass(frozen=True, slots=True)
 class Manifest:
     """A validated manifest and the root against which it is scoped."""
 
+    version: int
     path: Path
     root: Path
     resources: tuple[Resource, ...]
@@ -136,9 +141,9 @@ def load_manifest(path: Path) -> Manifest:
         )
 
     version = document.get("version")
-    if type(version) is not int or version != MANIFEST_VERSION:
+    if type(version) is not int or version not in _SUPPORTED_MANIFEST_VERSIONS:
         raise ManifestError(
-            f"manifest version must be {MANIFEST_VERSION}",
+            "manifest version must be 1 or 2",
             code="manifest_version",
         )
 
@@ -148,7 +153,7 @@ def load_manifest(path: Path) -> Manifest:
             "manifest resources must be a non-empty table",
             code="manifest_resources",
         )
-    if len(raw_resources) != 1:
+    if version == MANIFEST_VERSION and len(raw_resources) != 1:
         raise ManifestError(
             "M1 supports exactly one resource",
             code="resource_count",
@@ -162,8 +167,9 @@ def load_manifest(path: Path) -> Manifest:
             code="manifest_unreadable",
         ) from None
     resources: list[Resource] = []
+    resolved_sources: list[Path] = []
 
-    for name, raw_resource in raw_resources.items():
+    for name, raw_resource in sorted(raw_resources.items()):
         if not isinstance(name, str) or not name.strip():
             raise ManifestError(
                 "resource names must be non-empty strings",
@@ -194,15 +200,40 @@ def load_manifest(path: Path) -> Manifest:
             kind = "template" if source_relative.suffix == ".j2" else "symbolic"
         else:
             kind = _required_string(raw_resource, "kind", resource_name=name)
-        if kind not in {"template", "symbolic"}:
+        supported_kinds = {"template", "symbolic"}
+        if version == _MANIFEST_VERSION_V2:
+            supported_kinds.add("copy")
+        if kind not in supported_kinds:
             raise ManifestError(
-                f"resource {name!r} kind must be 'template' or 'symbolic'",
+                f"resource {name!r} kind is not supported by manifest version {version}",
                 code="resource_kind",
             )
         if kind == "template" and source_relative.suffix != ".j2":
             raise ManifestError(
                 f"resource {name!r} template source must use the .j2 suffix",
                 code="resource_source_suffix",
+            )
+
+        raw_comparison = raw_resource.get("comparison")
+        if version == MANIFEST_VERSION and raw_comparison is not None:
+            raise ManifestError(
+                f"resource {name!r} comparison is only supported by manifest version 2",
+                code="resource_comparison_version",
+            )
+        comparison = (
+            "exact-bytes"
+            if raw_comparison is None
+            else _required_string(raw_resource, "comparison", resource_name=name)
+        )
+        if comparison not in {"exact-bytes", "json"}:
+            raise ManifestError(
+                f"resource {name!r} comparison must be 'exact-bytes' or 'json'",
+                code="resource_comparison",
+            )
+        if comparison == "json" and kind != "template":
+            raise ManifestError(
+                f"resource {name!r} json comparison requires a template resource",
+                code="resource_comparison_kind",
             )
 
         target_name = _required_string(raw_resource, "target", resource_name=name)
@@ -235,9 +266,9 @@ def load_manifest(path: Path) -> Manifest:
                 f"resource {name!r} variables must be a table",
                 code="resource_variables",
             )
-        if kind == "symbolic" and variables:
+        if kind in {"symbolic", "copy"} and variables:
             raise ManifestError(
-                f"resource {name!r} symbolic resources cannot have variables",
+                f"resource {name!r} {kind} resources cannot have variables",
                 code="resource_variables",
             )
         raw_sensitivity = raw_resource.get("variables_sensitivity")
@@ -290,10 +321,14 @@ def load_manifest(path: Path) -> Manifest:
                 scope=scope,
                 variables=_PublicVariables(variables, token=_PUBLIC_VARIABLES_TOKEN),
                 variables_sensitivity=raw_sensitivity,
+                comparison=comparison,
             )
         )
+        resolved_sources.append(resolved_source)
 
+    _validate_resource_relationships(resources, resolved_sources)
     manifest = Manifest(
+        version=version,
         path=manifest_path,
         root=root,
         resources=tuple(resources),
@@ -301,6 +336,71 @@ def load_manifest(path: Path) -> Manifest:
     )
     object.__setattr__(manifest, "_provenance", _LOADER_PROVENANCE)
     return manifest
+
+
+def _validate_resource_relationships(
+    resources: list[Resource],
+    resolved_sources: list[Path],
+) -> None:
+    """Reject ambiguous path relationships between declared resources."""
+
+    for left_index, left in enumerate(resources):
+        for right_index in range(left_index + 1, len(resources)):
+            right = resources[right_index]
+            if left.target == right.target:
+                raise ManifestError(
+                    f"resources {left.name!r} and {right.name!r} declare the "
+                    f"same target {left.target_name!r}",
+                    code="resource_target_conflict",
+                )
+            if left.target in {right.source, resolved_sources[right_index]}:
+                raise ManifestError(
+                    f"resource {left.name!r} target {left.target_name!r} "
+                    f"conflicts with resource {right.name!r} source "
+                    f"{right.source_name!r}",
+                    code="resource_path_conflict",
+                )
+            if right.target in {left.source, resolved_sources[left_index]}:
+                raise ManifestError(
+                    f"resource {right.name!r} target {right.target_name!r} "
+                    f"conflicts with resource {left.name!r} source "
+                    f"{left.source_name!r}",
+                    code="resource_path_conflict",
+                )
+            if _resources_have_ancestor_overlap(
+                left,
+                right,
+                left_resolved_source=resolved_sources[left_index],
+                right_resolved_source=resolved_sources[right_index],
+            ):
+                raise ManifestError(
+                    f"resources {left.name!r} and {right.name!r} have "
+                    "overlapping ancestor paths",
+                    code="resource_path_overlap",
+                )
+
+
+def _resources_have_ancestor_overlap(
+    left: Resource,
+    right: Resource,
+    *,
+    left_resolved_source: Path,
+    right_resolved_source: Path,
+) -> bool:
+    """Return whether any non-identical declared paths have an ancestor relation."""
+
+    left_paths = (left.source, left.target, left_resolved_source)
+    right_paths = (right.source, right.target, right_resolved_source)
+    return any(
+        _is_path_ancestor(left_path, right_path)
+        or _is_path_ancestor(right_path, left_path)
+        for left_path in left_paths
+        for right_path in right_paths
+    )
+
+
+def _is_path_ancestor(parent: Path, child: Path) -> bool:
+    return parent != child and parent in child.parents
 
 
 def _required_string(

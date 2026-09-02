@@ -1,4 +1,4 @@
-# Luwu M1 Design
+# Luwu M1/M2 Design
 
 Status: current implementation design
 
@@ -31,6 +31,24 @@ M1 supports only `owner = "source"` and `scope = "whole-file"`. That is an expli
 For templates, the desired side is always the rendered template. M1 only treats exact byte equality as `in_sync`; without a format adapter, line endings, trailing whitespace, and final-newline differences remain `drifted` and are replaceable. For symbolic resources, the desired side is the source path resolved within the manifest root. All other readable differences are `drifted`. Missing targets and unsafe target boundaries are separate states so the next action is visible.
 
 This deliberately avoids pretending that a generic formatter or parser can safely preserve every configuration language. Structured comparison and field-level reverse sync are later experiments with their own contracts. M1 template variables are loader-classified public literals; provider references and secret-bearing inputs have no accepted path into rendering.
+
+## M2 read-only observation
+
+M2 extends the flow only after manifest validation:
+
+```text
+version 2 manifest
+  -> stable multi-resource observations
+  -> explicit comparison adapter
+  -> metadata-only plan
+  -> read-only boundary
+```
+
+The manifest loader rejects cross-resource target conflicts and ancestor overlaps before any resource is planned. The planner then observes every resource in stable name order; a rendering failure becomes a resource-level blocked observation so another resource is not silently omitted. A blocked observation blocks the plan as a whole, but does not prevent the remaining resources from being explained.
+
+Exact bytes remain the default. The literal `copy` kind reads source bytes without Jinja rendering. The JSON adapter receives rendered template bytes and live target bytes, not Jinja source. It has a deliberately small strict-JSON equivalence relation: it retains all fields and array order, rejects duplicate keys and unsupported syntax, and distinguishes semantic drift from formatting-only representation differences. JSON semantic drift is reported rather than mapped to a write action.
+
+Version 2 has no apply capability. This is a capability boundary, not a dry-run flag: `inspect` and `plan` are observations, while `apply --yes` is rejected with `m2_read_only` before stale checks or target writes. Multi-resource transaction, rollback, baselines, field ownership, and reverse sync remain M3 responsibilities.
 
 ## Safety boundaries
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -25,7 +26,13 @@ from .filesystem import (
     verify_directory_identity,
 )
 from .manifest import _LOADER_PROVENANCE, Manifest, Resource, load_manifest
-from .rendering import render_template
+from .rendering import read_source, render_template
+from .semantic import (
+    ComparisonResult,
+    ComparisonStatus,
+    compare,
+    not_compared,
+)
 
 
 class Status(StrEnum):
@@ -44,6 +51,7 @@ class Action(StrEnum):
     NOOP = "noop"
     CREATE = "create"
     REPLACE = "replace"
+    REPORT = "report"
     BLOCK = "block"
 
 
@@ -58,6 +66,18 @@ class ApplyOutcome(StrEnum):
 
 
 _PLAN_PROVENANCE = object()
+_PLAN_CAPABILITY_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _PlanCapability:
+    """Immutable manifest identity and capability captured by the planner."""
+
+    manifest_path: Path
+    manifest_root: Path
+    manifest_digest: str
+    manifest_version: int
+    token: object = field(repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,14 +104,16 @@ class ResourceObservation:
     target_parent_identity: tuple[int, int] | None = field(
         default=None, repr=False, compare=False
     )
+    comparison: ComparisonResult | None = field(default=None, repr=False, compare=False)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class Plan:
     """An in-memory plan. It is intentionally not persisted by M1."""
 
     manifest: Manifest
     observations: tuple[ResourceObservation, ...]
+    manifest_version: int | None = field(default=None, init=True)
     _provenance: object | None = field(
         default=None, init=False, repr=False, compare=False
     )
@@ -114,10 +136,29 @@ class Plan:
 
     @property
     def can_apply(self) -> bool:
-        return not self.blocked
+        return self.apply_block_reason is None
+
+    @property
+    def contract_version(self) -> int:
+        capability = _capability_for(self)
+        if capability is not None:
+            return capability.manifest_version
+        return (
+            self.manifest_version
+            if self.manifest_version is not None
+            else self.manifest.version
+        )
+
+    @property
+    def apply_block_reason(self) -> str | None:
+        if self.blocked:
+            return "plan_blocked"
+        if self.contract_version >= 2:
+            return "m2_read_only"
+        return None
 
     def summary(self) -> dict[str, int]:
-        return {
+        summary = {
             "total": len(self.observations),
             "changes": len(self.changes),
             "in_sync": sum(
@@ -130,6 +171,11 @@ class Plan:
             ),
             "blocked": len(self.blocked),
         }
+        if self.contract_version >= 2:
+            summary["reported"] = sum(
+                observation.action is Action.REPORT for observation in self.observations
+            )
+        return summary
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +187,36 @@ class ApplyResult:
     verification_plan: Plan | None
     outcome: ApplyOutcome = ApplyOutcome.COMMITTED
     verification_error: str | None = None
+
+
+def _make_plan_capability_registry() -> tuple[
+    Callable[[Plan, _PlanCapability], None],
+    Callable[[Plan], _PlanCapability | None],
+]:
+    """Create planner-owned capability operations without a replaceable map."""
+
+    capabilities: dict[int, tuple[weakref.ReferenceType[Plan], _PlanCapability]] = {}
+
+    def register(plan: Plan, capability: _PlanCapability) -> None:
+        plan_id = id(plan)
+
+        def remove(reference: weakref.ReferenceType[Plan]) -> None:
+            entry = capabilities.get(plan_id)
+            if entry is not None and entry[0] is reference:
+                del capabilities[plan_id]
+
+        capabilities[plan_id] = (weakref.ref(plan, remove), capability)
+
+    def lookup(plan: Plan) -> _PlanCapability | None:
+        entry = capabilities.get(id(plan))
+        if entry is None or entry[0]() is not plan:
+            return None
+        return entry[1]
+
+    return register, lookup
+
+
+_register_plan_capability, _capability_for = _make_plan_capability_registry()
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,20 +233,71 @@ class _TargetState:
 def build_plan(manifest: Manifest) -> Plan:
     """Render and inspect the declared resource without writing any path."""
 
-    resource = _require_single_resource(manifest)
+    if manifest.version == 1:
+        resource = _require_single_resource(manifest)
     if manifest._provenance is not _LOADER_PROVENANCE:
         raise ManifestError(
             "manifest must be loaded by load_manifest before planning",
             code="invalid_manifest_provenance",
         )
-    observation = (
-        _plan_template(manifest, resource)
-        if resource.kind == "template"
-        else _plan_symbolic(manifest, resource)
+    if manifest.version == 1:
+        observations = (_plan_resource(manifest, resource),)
+    else:
+        observations = tuple(
+            _plan_resource(manifest, resource, collect_errors=True)
+            for resource in manifest.resources
+        )
+    plan = Plan(
+        manifest=manifest,
+        observations=observations,
+        manifest_version=manifest.version,
     )
-    plan = Plan(manifest=manifest, observations=(observation,))
     object.__setattr__(plan, "_provenance", _PLAN_PROVENANCE)
+    _register_plan_capability(
+        plan,
+        _PlanCapability(
+            manifest_path=manifest.path,
+            manifest_root=manifest.root,
+            manifest_digest=manifest.content_digest,
+            manifest_version=manifest.version,
+            token=_PLAN_CAPABILITY_TOKEN,
+        ),
+    )
     return plan
+
+
+def _plan_resource(
+    manifest: Manifest,
+    resource: Resource,
+    *,
+    collect_errors: bool = False,
+) -> ResourceObservation:
+    try:
+        return (
+            _plan_template(manifest, resource)
+            if resource.kind == "template"
+            else (
+                _plan_symbolic(manifest, resource)
+                if resource.kind == "symbolic"
+                else _plan_copy(manifest, resource)
+            )
+        )
+    except RenderError as exc:
+        if not collect_errors:
+            raise
+        return _blocked_observation(
+            resource,
+            reason=(f"resource could not be rendered safely [{exc.code}]: {exc}"),
+            comparison=(
+                not_compared(
+                    resource.comparison,
+                    code=exc.code,
+                    reason="resource could not be rendered; comparison was not run",
+                )
+                if manifest.version >= 2
+                else None
+            ),
+        )
 
 
 def _require_single_resource(manifest: Manifest) -> Resource:
@@ -193,7 +320,34 @@ def _plan_template(manifest: Manifest, resource: Resource) -> ResourceObservatio
             source_digest=rendered.source_digest,
             source_identity=rendered.source_identity,
             reason=parent_issue,
+            comparison=(
+                not_compared(
+                    resource.comparison,
+                    code="unsafe_target",
+                    reason="target boundary is unsafe; comparison was not run",
+                )
+                if manifest.version >= 2
+                else None
+            ),
         )
+
+    desired_comparison = None
+    if resource.comparison == "json":
+        desired_comparison = compare(
+            desired,
+            desired,
+            strategy=resource.comparison,
+        )
+        if desired_comparison.status is ComparisonStatus.UNSUPPORTED:
+            return _blocked_observation(
+                resource,
+                desired_bytes=desired,
+                source_digest=rendered.source_digest,
+                source_path=rendered.source_path,
+                reason=desired_comparison.reason,
+                source_identity=rendered.source_identity,
+                comparison=desired_comparison,
+            )
 
     live = _read_target(resource.target, root=manifest.root)
     if live.issue is not None or live.link_target is not None:
@@ -209,6 +363,15 @@ def _plan_template(manifest: Manifest, resource: Resource) -> ResourceObservatio
             live_link_target=live.link_target,
             live_identity=live.identity,
             target_parent_identity=live.parent_identity,
+            comparison=(
+                not_compared(
+                    resource.comparison,
+                    code="unsafe_target",
+                    reason="target boundary is unsafe; comparison was not run",
+                )
+                if manifest.version >= 2
+                else None
+            ),
         )
 
     if live.data is None:
@@ -226,19 +389,62 @@ def _plan_template(manifest: Manifest, resource: Resource) -> ResourceObservatio
             live_link_target=None,
             source_identity=rendered.source_identity,
             target_parent_identity=live.parent_identity,
+            comparison=(
+                not_compared(
+                    resource.comparison,
+                    code="target_missing",
+                    reason="target does not exist; comparison was not run",
+                )
+                if manifest.version >= 2
+                else None
+            ),
         )
 
-    if live.data == desired:
+    comparison = compare(
+        desired,
+        live.data,
+        strategy=resource.comparison,
+    )
+    if resource.comparison == "json":
+        if comparison.status is ComparisonStatus.EXACT:
+            status = Status.IN_SYNC
+            action = Action.NOOP
+            reason = "strict JSON bytes match"
+        elif comparison.status is ComparisonStatus.EQUIVALENT_BUT_REFORMATTED:
+            status = Status.FORMATTING
+            action = Action.NOOP
+            reason = comparison.reason
+        elif comparison.status is ComparisonStatus.DIFFERENT:
+            status = Status.DRIFTED
+            action = Action.REPORT
+            reason = comparison.reason
+        else:
+            return _blocked_observation(
+                resource,
+                desired_bytes=desired,
+                source_digest=rendered.source_digest,
+                source_path=rendered.source_path,
+                reason=comparison.reason,
+                live_digest=live.digest,
+                live_mode=live.mode,
+                source_identity=rendered.source_identity,
+                live_identity=live.identity,
+                target_parent_identity=live.parent_identity,
+                comparison=comparison,
+            )
+    elif comparison.status is ComparisonStatus.EXACT:
         status = Status.IN_SYNC
+        action = Action.NOOP
         reason = "rendered template matches target"
     else:
         status = Status.DRIFTED
+        action = Action.REPLACE
         reason = "rendered template differs from target"
 
     return ResourceObservation(
         resource=resource,
         status=status,
-        action=Action.NOOP if status is not Status.DRIFTED else Action.REPLACE,
+        action=action,
         reason=reason,
         desired_bytes=desired,
         desired_link=None,
@@ -250,6 +456,93 @@ def _plan_template(manifest: Manifest, resource: Resource) -> ResourceObservatio
         source_identity=rendered.source_identity,
         live_identity=live.identity,
         target_parent_identity=live.parent_identity,
+        comparison=(
+            comparison
+            if manifest.version >= 2 or resource.comparison != "exact-bytes"
+            else None
+        ),
+    )
+
+
+def _plan_copy(manifest: Manifest, resource: Resource) -> ResourceObservation:
+    source_path, desired, source_identity = read_source(resource, root=manifest.root)
+    parent_issue = _target_parent_issue(resource.target, root=manifest.root)
+    if parent_issue is not None:
+        return _blocked_observation(
+            resource,
+            desired_bytes=desired,
+            source_digest=_digest(desired),
+            source_path=source_path,
+            source_identity=source_identity,
+            reason=parent_issue,
+            comparison=not_compared(
+                resource.comparison,
+                code="unsafe_target",
+                reason="target boundary is unsafe; comparison was not run",
+            ),
+        )
+
+    live = _read_target(resource.target, root=manifest.root)
+    if live.issue is not None or live.link_target is not None:
+        reason = live.issue or "target is a symlink; refusing to replace it"
+        return _blocked_observation(
+            resource,
+            desired_bytes=desired,
+            source_digest=_digest(desired),
+            source_path=source_path,
+            reason=reason,
+            live_digest=live.digest,
+            live_mode=live.mode,
+            live_link_target=live.link_target,
+            live_identity=live.identity,
+            target_parent_identity=live.parent_identity,
+            comparison=not_compared(
+                resource.comparison,
+                code="unsafe_target",
+                reason="target boundary is unsafe; comparison was not run",
+            ),
+        )
+
+    comparison = None
+    if live.data is None:
+        status = Status.MISSING
+        action = Action.CREATE
+        reason = "target does not exist"
+    else:
+        comparison = compare(desired, live.data, strategy="exact-bytes")
+        if comparison.status is ComparisonStatus.EXACT:
+            status = Status.IN_SYNC
+            action = Action.NOOP
+            reason = "source file matches target"
+        else:
+            status = Status.DRIFTED
+            action = Action.REPLACE
+            reason = "source file differs from target"
+
+    return ResourceObservation(
+        resource=resource,
+        status=status,
+        action=action,
+        reason=reason,
+        desired_bytes=desired,
+        desired_link=None,
+        source_digest=_digest(desired),
+        source_path=source_path,
+        live_digest=live.digest,
+        live_mode=live.mode,
+        live_link_target=None,
+        source_identity=source_identity,
+        live_identity=live.identity,
+        target_parent_identity=live.parent_identity,
+        comparison=(
+            not_compared(
+                resource.comparison,
+                code="target_missing",
+                reason="target does not exist; comparison was not run",
+            )
+            if manifest.version >= 2 and comparison is None
+            else comparison
+        ),
     )
 
 
@@ -358,7 +651,7 @@ def apply_plan(plan: Plan) -> ApplyResult:
     """Apply a previously calculated plan after a complete stale-state check."""
 
     _require_single_plan(plan)
-    if not plan.can_apply:
+    if plan.apply_block_reason == "plan_blocked":
         raise ApplyError(
             "plan contains blocked resources; no files were changed",
             code="plan_blocked",
@@ -426,7 +719,22 @@ def apply_plan(plan: Plan) -> ApplyResult:
 
 
 def _require_single_plan(plan: Plan) -> None:
-    if len(plan.manifest.resources) != 1 or len(plan.observations) != 1:
+    if plan.manifest.version == 1 and (
+        len(plan.manifest.resources) != 1 or len(plan.observations) != 1
+    ):
+        raise ApplyError(
+            "M1 supports exactly one resource; no files were changed",
+            code="resource_count",
+        )
+    capability = _capability_for(plan)
+    if capability is None or capability.token is not _PLAN_CAPABILITY_TOKEN:
+        raise ApplyError(
+            "plan lacks a valid manifest capability; no files were changed",
+            code="invalid_plan",
+        )
+    if capability.manifest_version == 1 and (
+        len(plan.manifest.resources) != 1 or len(plan.observations) != 1
+    ):
         raise ApplyError(
             "M1 supports exactly one resource; no files were changed",
             code="resource_count",
@@ -439,9 +747,24 @@ def _require_single_plan(plan: Plan) -> None:
             "plan must be produced by build_plan; no files were changed",
             code="invalid_plan",
         )
-    if plan.observations[0].resource != plan.manifest.resources[0]:
+    if capability.manifest_version >= 2:
+        if plan.blocked:
+            raise ApplyError(
+                "plan contains blocked resources; no files were changed",
+                code="plan_blocked",
+            )
         raise ApplyError(
-            "plan does not match its manifest; no files were changed",
+            "manifest version 2 plans are read-only in M2; no files were changed",
+            code="m2_read_only",
+        )
+    if (
+        plan.manifest.path != capability.manifest_path
+        or plan.manifest.root != capability.manifest_root
+        or plan.manifest.content_digest != capability.manifest_digest
+        or plan.manifest.version != capability.manifest_version
+    ):
+        raise ApplyError(
+            "plan manifest version changed; no files were changed",
             code="invalid_plan",
         )
 
@@ -449,8 +772,8 @@ def _require_single_plan(plan: Plan) -> None:
 def plan_to_dict(plan: Plan, *, command: str) -> dict[str, object]:
     """Serialize only metadata and explanations; never rendered content."""
 
-    return {
-        "schema_version": 1,
+    payload: dict[str, object] = {
+        "schema_version": 1 if plan.contract_version == 1 else 2,
         "command": command,
         "manifest": str(plan.manifest.path),
         "resources": [
@@ -464,12 +787,34 @@ def plan_to_dict(plan: Plan, *, command: str) -> dict[str, object]:
                 "status": observation.status.value,
                 "action": observation.action.value,
                 "reason": observation.reason,
-                "impact": _impact_to_dict(observation),
+                "impact": _impact_to_dict(
+                    observation,
+                    read_only=plan.contract_version >= 2,
+                ),
+                **(
+                    {"comparison": observation.comparison.to_dict()}
+                    if observation.comparison is not None
+                    else {}
+                ),
+                **(
+                    {"comparison_strategy": observation.resource.comparison}
+                    if plan.contract_version >= 2
+                    else {}
+                ),
             }
             for observation in plan.observations
         ],
         "summary": plan.summary(),
     }
+    if plan.contract_version >= 2:
+        payload.update(
+            {
+                "manifest_version": plan.contract_version,
+                "applyable": plan.can_apply,
+                "apply_block_reason": plan.apply_block_reason,
+            }
+        )
+    return payload
 
 
 def _blocked_observation(
@@ -486,6 +831,7 @@ def _blocked_observation(
     source_identity: tuple[int, int] | None = None,
     live_identity: tuple[int, int] | None = None,
     target_parent_identity: tuple[int, int] | None = None,
+    comparison: ComparisonResult | None = None,
 ) -> ResourceObservation:
     return ResourceObservation(
         resource=resource,
@@ -502,19 +848,32 @@ def _blocked_observation(
         source_identity=source_identity,
         live_identity=live_identity,
         target_parent_identity=target_parent_identity,
+        comparison=comparison,
     )
 
 
-def _impact_to_dict(observation: ResourceObservation) -> dict[str, object]:
+def _impact_to_dict(
+    observation: ResourceObservation,
+    *,
+    read_only: bool = False,
+) -> dict[str, object]:
     target = observation.resource.target_name
-    return {
+    impact: dict[str, object] = {
         "writes": [target]
-        if observation.action in (Action.CREATE, Action.REPLACE)
+        if observation.action in (Action.CREATE, Action.REPLACE) and not read_only
         else [],
-        "overwrites": [target] if observation.action is Action.REPLACE else [],
+        "overwrites": [target]
+        if observation.action is Action.REPLACE and not read_only
+        else [],
         "scope": observation.resource.scope,
         "undeclared": "content outside the declared target is not examined",
     }
+    if read_only and observation.action in (
+        Action.CREATE,
+        Action.REPLACE,
+    ):
+        impact["deferred"] = [target]
+    return impact
 
 
 def _resolve_symbolic_source(
@@ -745,30 +1104,73 @@ def _preflight_source(plan: Plan, observation: ResourceObservation) -> None:
 
 
 def _preflight_manifest(plan: Plan) -> None:
+    capability = _capability_for(plan)
+    if capability is None or capability.token is not _PLAN_CAPABILITY_TOKEN:
+        raise ApplyError(
+            "plan lacks a valid manifest capability; no files were changed",
+            code="invalid_plan",
+        )
     try:
-        if plan.manifest.path.resolve(strict=True) != plan.manifest.path:
+        if capability.manifest_path.resolve(strict=True) != capability.manifest_path:
             raise OSError("manifest path is no longer stable")
-        current_digest = _digest(plan.manifest.path.read_bytes())
+        current_digest = _digest(capability.manifest_path.read_bytes())
     except (OSError, RuntimeError):
         raise ApplyError(
             "manifest changed or became unreadable after planning; run plan again",
             code="stale_plan",
         ) from None
-    if current_digest != plan.manifest.content_digest:
+    if current_digest != capability.manifest_digest:
         raise ApplyError(
             "manifest changed after planning; run plan again",
             code="stale_plan",
+        )
+    try:
+        current_manifest = load_manifest(capability.manifest_path)
+    except ManifestError:
+        raise ApplyError(
+            "manifest changed or became unreadable after planning; run plan again",
+            code="stale_plan",
+        ) from None
+    if current_manifest.version >= 2:
+        raise ApplyError(
+            "manifest version 2 plans are read-only in M2; no files were changed",
+            code="m2_read_only",
+        )
+    if current_manifest.version != capability.manifest_version:
+        raise ApplyError(
+            "manifest version changed after planning; run plan again",
+            code="stale_plan",
+        )
+    if (
+        plan.manifest.path != current_manifest.path
+        or plan.manifest.root != current_manifest.root
+        or plan.manifest.content_digest != current_manifest.content_digest
+        or plan.manifest.version != current_manifest.version
+        or plan.manifest.resources != current_manifest.resources
+        or tuple(observation.resource for observation in plan.observations)
+        != current_manifest.resources
+    ):
+        raise ApplyError(
+            "plan does not match its manifest; no files were changed",
+            code="invalid_plan",
         )
 
 
 def _load_current_manifest(plan: Plan) -> Manifest:
     """Reload the manifest so post-apply verification uses current inputs."""
 
-    current = load_manifest(plan.manifest.path)
+    capability = _capability_for(plan)
+    if capability is None or capability.token is not _PLAN_CAPABILITY_TOKEN:
+        raise ApplyError(
+            "plan lacks a valid manifest capability",
+            code="post_apply_verification_failed",
+        )
+    current = load_manifest(capability.manifest_path)
     if (
-        current.path != plan.manifest.path
-        or current.root != plan.manifest.root
-        or current.content_digest != plan.manifest.content_digest
+        current.path != capability.manifest_path
+        or current.root != capability.manifest_root
+        or current.content_digest != capability.manifest_digest
+        or current.version != capability.manifest_version
     ):
         raise ApplyError(
             "manifest changed during apply; run plan again",
@@ -929,7 +1331,8 @@ def _write_template_observation(
     parent_descriptor: int,
     target_name: str,
 ) -> bool:
-    if observation.desired_bytes is None:
+    desired_bytes = observation.desired_bytes
+    if desired_bytes is None:
         raise ApplyError(
             f"resource {observation.resource.name!r} has no rendered content",
             code="apply_failed",
@@ -944,7 +1347,7 @@ def _write_template_observation(
         )
         try:
             with os.fdopen(descriptor, "wb") as handle:
-                handle.write(observation.desired_bytes)
+                handle.write(desired_bytes)
                 handle.flush()
                 os.fsync(handle.fileno())
                 os.fchmod(handle.fileno(), mode)
@@ -975,7 +1378,8 @@ def _write_symbolic_observation(
     parent_descriptor: int,
     target_name: str,
 ) -> bool:
-    if observation.desired_link is None:
+    desired_link = observation.desired_link
+    if desired_link is None:
         raise ApplyError(
             f"resource {observation.resource.name!r} has no symbolic target",
             code="apply_failed",
@@ -985,7 +1389,7 @@ def _write_symbolic_observation(
         return create_temporary_symlink(
             parent_descriptor,
             prefix=f".{observation.resource.target.name}.luwu-",
-            target=observation.desired_link,
+            target=desired_link,
         )
 
     def validate_entry(created_name: str) -> None:
