@@ -70,7 +70,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not plan.can_apply:
             _emit_apply_blocked(plan, as_json=args.json)
             if not args.json:
-                print("No files changed because the plan is blocked.", file=sys.stderr)
+                reason = plan.apply_block_reason
+                if reason == "m2_read_only":
+                    print(
+                        "No files changed because manifest version 2 is read-only in M2.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        "No files changed because the plan is blocked.",
+                        file=sys.stderr,
+                    )
             return 2
 
         if not args.json:
@@ -123,7 +133,11 @@ def _emit_apply_preview(plan: Plan, *, as_json: bool) -> None:
         payload.update(
             {
                 "applied": False,
-                "reason": ("plan_blocked" if plan.blocked else "confirmation_required"),
+                "reason": (
+                    plan.apply_block_reason
+                    if plan.apply_block_reason is not None
+                    else "confirmation_required"
+                ),
             }
         )
         _print_json(payload)
@@ -134,7 +148,12 @@ def _emit_apply_preview(plan: Plan, *, as_json: bool) -> None:
 def _emit_apply_blocked(plan: Plan, *, as_json: bool) -> None:
     if as_json:
         payload = plan_to_dict(plan, command="apply")
-        payload.update({"applied": False, "reason": "plan_blocked"})
+        payload.update(
+            {
+                "applied": False,
+                "reason": plan.apply_block_reason or "plan_blocked",
+            }
+        )
         _print_json(payload)
         return
     _print_human_plan(plan, heading="Apply blocked")
@@ -194,19 +213,29 @@ def _print_human_plan(plan: Plan, *, heading: str) -> None:
         print(f"  target: {_display(resource.target_name)}")
         print(f"  owner: {_display(resource.owner)}")
         print(f"  scope: {_display(resource.scope)}")
+        if resource.comparison != "exact-bytes":
+            print(f"  comparison: {_display(resource.comparison)}")
         print("  transition: source -> live target")
         print(f"  status: {observation.status.value}")
         print(f"  action: {observation.action.value}")
         print(f"  reason: {_display(observation.reason)}")
-        impact = _impact_text(observation)
+        impact = _impact_text(
+            observation,
+            read_only=plan.contract_version >= 2,
+        )
         print(f"  impact: {impact}")
     summary = plan.summary()
+    change_label = "candidate change(s)" if plan.contract_version >= 2 else "change(s)"
     print(
         "Summary: "
         f"{summary['total']} resource(s), "
-        f"{summary['changes']} change(s), "
+        f"{summary['changes']} {change_label}, "
+        f"{summary.get('reported', 0)} report(s), "
         f"{summary['blocked']} blocked"
     )
+    if plan.contract_version >= 2:
+        print("Capability: read-only (M2)")
+        print(f"Apply: blocked ({plan.apply_block_reason})")
 
 
 def _print_json(payload: dict[str, object]) -> None:
@@ -230,9 +259,18 @@ def _display(value: object) -> str:
     )
 
 
-def _impact_text(observation: ResourceObservation) -> str:
+def _impact_text(
+    observation: ResourceObservation,
+    *,
+    read_only: bool = False,
+) -> str:
     action = observation.action.value
     target = _display(observation.resource.target_name)
+    if read_only and action in {"create", "replace"}:
+        return (
+            f"would write {target} in a future write-capable contract; "
+            "M2 writes nothing"
+        )
     if action == "replace":
         return f"overwrites {target}; outside declared target is not examined"
     if action == "create":

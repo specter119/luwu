@@ -43,7 +43,7 @@ def render_template(resource: Resource, *, root: Path) -> RenderedTemplate:
             f"variables for resource {resource.name!r} are not classified as public",
             code="variables_sensitivity",
         )
-    source_path, source, source_identity = _read_source(resource, root=root)
+    source_path, source, source_identity = read_source(resource, root=root)
 
     try:
         template_source = source.decode("utf-8")
@@ -84,7 +84,7 @@ def render_template(resource: Resource, *, root: Path) -> RenderedTemplate:
     )
 
 
-def _read_source(
+def read_source(
     resource: Resource,
     *,
     root: Path,

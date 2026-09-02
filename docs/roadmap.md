@@ -8,12 +8,12 @@ The roadmap is allowed to change when evidence changes the product direction. A 
 
 ## Milestone map
 
-| Milestone | Focus | Completion outcome |
-| --- | --- | --- |
-| M1 | Developer confidence preview | A safe, forward-only single-resource loop is observable, explainable, and explicitly applicable. |
-| M2 | Resource and semantic drift foundation | Multiple declared resources and explicitly supported resource/format experiments can be compared without claiming equivalence beyond their evidence. |
-| M3 | Ownership and auditable reconciliation | Baselines, field ownership, conflicts, controlled reverse sync, and recoverable multi-resource plans have explicit contracts. |
-| M4 | Providers, secrets, and operational maturity | External providers, secret boundaries, persistence, portability, and release-quality operational behavior are verified without hidden capabilities. |
+| Milestone | Focus                                        | Completion outcome                                                                                                                                   |
+| --------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1        | Developer confidence preview                 | A safe, forward-only single-resource loop is observable, explainable, and explicitly applicable.                                                     |
+| M2        | Resource and semantic drift foundation       | Multiple declared resources and explicitly supported resource/format experiments can be compared without claiming equivalence beyond their evidence. |
+| M3        | Ownership and auditable reconciliation       | Baselines, field ownership, conflicts, controlled reverse sync, and recoverable multi-resource plans have explicit contracts.                        |
+| M4        | Providers, secrets, and operational maturity | External providers, secret boundaries, persistence, portability, and release-quality operational behavior are verified without hidden capabilities.  |
 
 ## M1: Developer confidence preview
 
@@ -21,7 +21,7 @@ M1 is the current closed functional slice. Its fixed scope and exit evidence are
 
 ## M2: Resource and semantic drift foundation
 
-M2 expands the resource model only after the single-resource boundary has proven useful. It should establish the contracts and tests for multiple resources, resource kinds beyond the M1 slice, semantic observation of supported formats, and safe handling of partial or blocked plans. M2 comparison experiments are read-only until ownership and write semantics are accepted in M3. The exact supported formats and behavior belong in the M2 reference/design documents, not in this roadmap.
+M2 expands the resource model only after the single-resource boundary has proven useful. It establishes the contracts and tests for multiple resources, an observed literal-copy kind beyond the M1 slice, semantic observation of a supported format, and safe handling of partial or blocked plans. M2 comparison experiments are read-only until ownership and write semantics are accepted in M3. The exact supported formats and behavior belong in the M2 reference/design documents, not in this roadmap.
 
 ## M3: Ownership and auditable reconciliation
 
