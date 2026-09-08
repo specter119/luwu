@@ -76,6 +76,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "No files changed because manifest version 2 is read-only in M2.",
                         file=sys.stderr,
                     )
+                elif reason == "m3_read_only":
+                    print(
+                        "No files changed because manifest version 3 is read-only in M3a.",
+                        file=sys.stderr,
+                    )
                 else:
                     print(
                         "No files changed because the plan is blocked.",
@@ -215,7 +220,12 @@ def _print_human_plan(plan: Plan, *, heading: str) -> None:
         print(f"  scope: {_display(resource.scope)}")
         if resource.comparison != "exact-bytes":
             print(f"  comparison: {_display(resource.comparison)}")
-        print("  transition: source -> live target")
+        transition = (
+            "source fields -> live fields"
+            if plan.contract_version >= 3
+            else "source -> live target"
+        )
+        print(f"  transition: {transition}")
         print(f"  status: {observation.status.value}")
         print(f"  action: {observation.action.value}")
         print(f"  reason: {_display(observation.reason)}")
@@ -233,7 +243,10 @@ def _print_human_plan(plan: Plan, *, heading: str) -> None:
         f"{summary.get('reported', 0)} report(s), "
         f"{summary['blocked']} blocked"
     )
-    if plan.contract_version >= 2:
+    if plan.contract_version >= 3:
+        print("Capability: read-only (M3a)")
+        print(f"Apply: blocked ({plan.apply_block_reason})")
+    elif plan.contract_version >= 2:
         print("Capability: read-only (M2)")
         print(f"Apply: blocked ({plan.apply_block_reason})")
 

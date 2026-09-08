@@ -1,11 +1,6 @@
----
-name: luwu-boundary-review
-description: >
-  Use when reviewing Luwu path validation, symlinks, target writes, atomicity,
-  permissions, TOCTOU races, temporary files, or recoverability. Test whether a
-  change preserves filesystem and resource boundaries under hostile state. Do
-  not use for generic performance or formatting review.
----
+______________________________________________________________________
+
+## name: luwu-boundary-review description: > Use when reviewing Luwu path validation, symlinks, target writes, atomicity, permissions, TOCTOU races, temporary files, or recoverability. Test whether a change preserves filesystem and resource boundaries under hostile state. Do not use for generic performance or formatting review.
 
 # Luwu boundary review
 

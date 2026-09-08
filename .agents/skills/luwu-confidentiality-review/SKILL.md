@@ -1,12 +1,6 @@
----
-name: luwu-confidentiality-review
-description: >
-  Use when reviewing Luwu secrets, providers, template inputs, logs, JSON
-  output, persistence, caches, diffs, subprocesses, network access, or debug
-  surfaces. Test whether capability and information exposure remain minimal and
-  fail closed. Do not use for generic authentication or style review unrelated
-  to Luwu data flow.
----
+______________________________________________________________________
+
+## name: luwu-confidentiality-review description: > Use when reviewing Luwu secrets, providers, template inputs, logs, JSON output, persistence, caches, diffs, subprocesses, network access, or debug surfaces. Test whether capability and information exposure remain minimal and fail closed. Do not use for generic authentication or style review unrelated to Luwu data flow.
 
 # Luwu confidentiality review
 

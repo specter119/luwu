@@ -1,12 +1,6 @@
----
-name: luwu-verifiability-review
-description: >
-  Use when reviewing Luwu feature scope, status, manifests, JSON or error
-  contracts, documentation ownership, tests, migrations, rollback, or claims
-  that a capability is complete. Test whether the behavior is small, explicit,
-  and continuable by the next maintainer or agent. Do not use for generic
-  project management or release checklists without a Luwu contract question.
----
+______________________________________________________________________
+
+## name: luwu-verifiability-review description: > Use when reviewing Luwu feature scope, status, manifests, JSON or error contracts, documentation ownership, tests, migrations, rollback, or claims that a capability is complete. Test whether the behavior is small, explicit, and continuable by the next maintainer or agent. Do not use for generic project management or release checklists without a Luwu contract question.
 
 # Luwu verifiability review
 

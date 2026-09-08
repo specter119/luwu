@@ -1,12 +1,12 @@
-# Luwu M1/M2 Reference
+# Luwu M1/M2/M3a Reference
 
 Status: current preview contract
 
-This document owns the stable manifest, CLI, JSON, error, and compatibility contract for the developer-confidence preview and its M2 read-only extension. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
+This document owns the stable manifest, CLI, JSON, error, and compatibility contract for the developer-confidence preview and its read-only M2 and M3a extensions. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
 
 ## Manifest
 
-The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source and target. M1 uses manifest version `1`; M2 supports versions `1` and `2`.
+The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source, target, and baseline. M1 uses manifest version `1`; M2 supports versions `1` and `2`; M3a adds version `3`.
 
 ```toml
 version = 1
@@ -43,13 +43,21 @@ Version `2` is the read-only observation contract. It accepts multiple declared 
 
 Version 2 does not expand ownership, field scope, baseline, reverse sync, or provider capabilities. It is an observation experiment: `inspect` and `plan` are supported, while `apply` is rejected with `m2_read_only` before any target write. Version 1 remains the only applyable manifest contract in M2.
 
+### M3a manifest version 3
+
+Version `3` is a read-only field ownership experiment. It accepts multiple explicitly declared template resources, requires `comparison = "json"`, `owner = "fields"`, `scope = "fields"`, and `content_sensitivity = "public"`, and rejects template variables and implicit resource kinds. Its `[resources.NAME.fields]` table maps non-empty literal top-level JSON keys to `source`, `live`, `merge`, or `ignore`; dots and slashes have no path syntax, and nested objects and arrays are compared as one complete field. A resource may name one root-relative `baseline` file, but Luwu never creates or updates it.
+
+The baseline file is a strict JSON envelope with exactly `schema_version`, `resource`, `source`, `target`, `owners`, and `values`. `schema_version` is numeric `1`; `owners` must exactly match all declared fields, including ignored fields; `values` is an object containing only non-ignored declared fields. An absent value means that field was absent from the accepted comparison input, while a JSON `null` is a value. Baselines are read through the declared path with no-follow descriptor operations; symlinks, non-regular files, invalid envelopes, identity mismatches, and missing files block that resource. Desired and live JSON documents must both be objects, and live must already exist.
+
+For a supplied baseline, each field is classified as `unchanged`, `converged`, `source_changed`, `live_changed`, `conflict`, or `ignored`. Ownership determines whether a one-sided change is a `forward_candidate` or `reverse_candidate`; unsupported directions and two-sided changes remain `review`. Without a baseline, non-ignored fields are `unbased` and produce no candidate. Undeclared desired/live changes are reported by a boolean signal without exposing their names or values. Candidates are observations only. Version 3 `apply` is rejected with `m3_read_only` before any write, and M3a does not accept, reverse-sync, persist, or roll back configuration.
+
 ## Commands
 
 All commands accept `--manifest PATH` (default `luwu.toml`) and `--json`. `inspect` and `plan` never write the manifest, source, target, or any state file.
 
 `inspect` reports the current state. `plan` reports the same observation together with the action an explicit apply could take. Both commands return exit code `0` after successfully calculating a plan, including when a resource is reported as `blocked`.
 
-`apply` always calculates a plan first. In human output, a confirmed apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. With `--yes`, it rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. JSON mode keeps stdout as one result document and includes the initial and verification plans in that document when verification can recalculate one. A blocked, stale, or version 2 read-only plan returns exit code `2` and does not begin a write. A version 2 `apply` preview reports `m2_read_only`; a plan containing an unsafe resource reports `plan_blocked`.
+`apply` always calculates a plan first. In human output, a confirmed apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. With `--yes`, it rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. JSON mode keeps stdout as one result document and includes the initial and verification plans in that document when verification can recalculate one. A blocked, stale, or version 2/3 read-only plan returns exit code `2` and does not begin a write. A version 2 `apply` preview reports `m2_read_only`; a version 3 preview reports `m3_read_only`; a plan containing an unsafe resource reports `plan_blocked`.
 
 Writes use a temporary file or temporary symlink in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved for template targets; a new regular template target starts with mode `0644`. A template target symlink is refused rather than followed or replaced. A symbolic target symlink is accepted only when it resolves to the declared source; a different existing symlink is blocked. The current implementation uses descriptor-relative no-follow operations, records source/target identities, and takes a non-blocking advisory lock for cooperating Luwu writers on POSIX. It fails closed when those filesystem primitives are unavailable. An advisory lock does not control unrelated writers that ignore it, so M1 does not claim protection against those races; a stronger kernel compare-and-swap boundary is future work. M1 does not create parent directories, keep a baseline, or make a backup containing configuration content.
 
@@ -117,7 +125,7 @@ Successful `inspect` and `plan` output has this shape:
 
 `apply` adds `applied`, `mutated`, `outcome`, `changed_targets`, `verification`, and `verification_error`. A confirmation preview has `applied = false` and `reason = "confirmation_required"`; a blocked apply uses `reason = "plan_blocked"`. A successful write has `outcome = "committed"`; a successful no-op has `outcome = "no_changes"`; both return exit code `0`, with `mutated` distinguishing whether a target was written. If a target was committed but verification could not recalculate a clean plan, the result has `outcome = "committed_but_verification_failed"`; if commit happened but durability or cleanup could not be confirmed, it has `outcome = "committed_state_unknown"`. If no target was written and verification failed, the outcome is `verification_failed`. All failure outcomes return exit code `2`; committed outcomes include every known changed target and callers must inspect before retrying. Rendered bytes, variable values, diffs, and hashes are intentionally absent from machine-readable output.
 
-Version 2 successful observation output uses `schema_version = 2`, includes `manifest_version = 2`, `applyable = false`, and `apply_block_reason`. Version 2 summaries additionally include `reported`; resource entries may include metadata-only `comparison` results with `strategy`, `status`, `code`, `reason`, and `equivalent`. These fields never contain rendered configuration content.
+Version 2 successful observation output uses `schema_version = 2`, includes `manifest_version = 2`, `applyable = false`, and `apply_block_reason`. Version 2 summaries additionally include `reported`; resource entries may include metadata-only `comparison` results with `strategy`, `status`, `code`, `reason`, and `equivalent`. Version 3 uses `schema_version = 3`, includes `manifest_version = 3`, `applyable = false`, and `apply_block_reason = "m3_read_only"`; field-scoped resources add metadata-only `ownership` results and never include field values, diffs, or hashes. These fields never contain rendered configuration content.
 
 Expected failures use exit code `2`. With `--json`, they are emitted as:
 
@@ -134,4 +142,4 @@ Error messages identify the failing boundary but never print rendered content or
 
 ## Compatibility
 
-The manifest `version` and JSON `schema_version` are independent explicit contracts. M1 uses version `1` for both; M2 uses manifest version `2` and schema version `2` for its read-only observation output. A future incompatible change must introduce a new version or a deliberate migration; M1/M2 have no migration command.
+The manifest `version` and JSON `schema_version` are independent explicit contracts. M1 uses version `1` for both; M2 uses manifest version `2` and schema version `2` for its read-only observation output; M3a uses manifest version `3` and schema version `3` for its read-only field observation. A future incompatible change must introduce a new version or a deliberate migration. M1/M2/M3a have no migration command.

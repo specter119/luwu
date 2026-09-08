@@ -1,8 +1,8 @@
 # Luwu Implementation Status
 
-Status: M2 functional observation scope implemented; M1 apply scope retained; full-repository hook gate pending
+Status: M3a read-only ownership observation implemented; M1/M2 functional scope retained; repository gates pass
 
-This document records what the repository actually implements. The fixed M1 scope and closure checklist are maintained in [milestones/m1.md](milestones/m1.md); the M2 observation scope and closure checklist are maintained in [milestones/m2.md](milestones/m2.md). This document does not expand the product scope in [product.md](product.md), and it does not replace the contracts in [reference.md](reference.md).
+This document records what the repository actually implements. The fixed M1 scope and closure checklist are maintained in [milestones/m1.md](milestones/m1.md); the M2 observation scope and closure checklist are maintained in [milestones/m2.md](milestones/m2.md); the M3a implementation boundary and closure evidence are maintained in [milestones/m3.md](milestones/m3.md). This document does not expand the product scope in [product.md](product.md), and it does not replace the contracts in [reference.md](reference.md).
 
 ## Current implementation
 
@@ -43,17 +43,29 @@ formatting equivalence is `formatting/noop`; parsed semantic drift is
 rejected with `m2_read_only` before any write. M2 does not implement
 multi-resource apply, rollback, baselines, field ownership, or reverse sync.
 
+M3a now implements version 3 read-only field observation: explicit public JSON
+template resources declare literal top-level field owners, may name an
+explicit baseline envelope, and produce metadata-only three-way field
+classification. Baselines are read through the declared path with no-follow
+descriptor operations and are never created or updated. Missing baselines are
+reported as `unbased`; one-sided changes produce ownership-aware candidates,
+two-sided changes require review, and undeclared desired/live changes produce a
+separate boolean signal. Version 3 apply is rejected with `m3_read_only` before
+any writer path. M3a does not implement acceptance, reverse sync, persistent
+plans, or multi-resource execution/rollback; those remain M3b/M3c work.
+
 ## Verification
 
 The implementation and isolated fixture were re-verified on the current POSIX development environment:
 
 ```text
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -v  # 94 tests passed
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -v  # 112 tests passed
 PYTHONPYCACHEPREFIX=/tmp/luwu-compile python3 -m compileall -q src tests
 UV_CACHE_DIR=/tmp/luwu-uv-cache uv lock --check
 ruff check src tests
 ruff format --check src tests
 git diff --check
+M3a regression: tests/test_manifest_m3.py, tests/test_ownership.py, and tests/test_m3.py
 isolated CLI fixture E2E: plan -> apply --yes -> inspect; clean post-apply state
 ```
 
@@ -68,9 +80,6 @@ turn an M2 plan into a write-capable plan.
 
 The locked `uv` packaging workflow is verified: after allowing the required
 network access for the uncached Hatchling dependency, `uv build` produced both
-the source distribution and wheel in a temporary output directory. The
-targeted `prek run --files` check for all changed files passed, including type
-checking and Markdown formatting. The repository's `prek run --all-files` gate
-remains unverified because the
-`end-of-file-fixer` hook cannot modify the read-only `.agents/skills` entry in
-this environment, even with its cache redirected to `/tmp`.
+the source distribution and wheel in a temporary output directory. The full
+`prek run --all-files` gate passed, including type checking, Markdown
+formatting, lockfile validation, and secret scanning.

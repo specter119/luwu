@@ -46,18 +46,18 @@ The seed implementation uses Python with uv, explicit `.j2` templates, and narro
 
 Every normative fact has one owner. Other documents may summarize it briefly, but must link to the owner instead of copying a rule, field table, or competing explanation.
 
-| Document                   | Owns                                                              | Does not own                                                   |
-| -------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------- |
-| AGENTS.md                  | agent routing, global boundaries, and document governance         | full product narrative, internal algorithms, command reference |
-| README.md                  | user-facing overview, use cases, and quick start                  | agent workflow, internal contracts, decision history           |
-| docs/product.md            | product problem, scope, non-goals, and value tests                | implementation types, CLI fields, concrete algorithms          |
-| docs/roadmap.md             | coarse delivery sequence and milestone boundaries                 | detailed contracts, current status, milestone closure records   |
-| docs/decisions/<record>.md | why one high-impact choice was made and its consequences          | the current contract or an interface inventory                 |
-| docs/milestones/<milestone>.md | fixed milestone scope, exit checklist, and closure record       | current implementation status, product direction, detailed contracts |
-| docs/design.md             | how the current internal design works                             | product vision, user guide, complete public contract           |
-| docs/reference.md          | stable manifest, CLI, JSON, error, and compatibility contracts    | rationale, speculative designs, maintenance process            |
-| docs/maintenance.md        | development, testing, release, migration, and dependency workflow | product goals or complete algorithm definitions                |
-| docs/status.md             | what is implemented, exploratory, or not started                  | product scope or design authority                              |
+| Document                       | Owns                                                              | Does not own                                                         |
+| ------------------------------ | ----------------------------------------------------------------- | -------------------------------------------------------------------- |
+| AGENTS.md                      | agent routing, global boundaries, and document governance         | full product narrative, internal algorithms, command reference       |
+| README.md                      | user-facing overview, use cases, and quick start                  | agent workflow, internal contracts, decision history                 |
+| docs/product.md                | product problem, scope, non-goals, and value tests                | implementation types, CLI fields, concrete algorithms                |
+| docs/roadmap.md                | coarse delivery sequence and milestone boundaries                 | detailed contracts, current status, milestone closure records        |
+| docs/decisions/<record>.md     | why one high-impact choice was made and its consequences          | the current contract or an interface inventory                       |
+| docs/milestones/<milestone>.md | fixed milestone scope, exit checklist, and closure record         | current implementation status, product direction, detailed contracts |
+| docs/design.md                 | how the current internal design works                             | product vision, user guide, complete public contract                 |
+| docs/reference.md              | stable manifest, CLI, JSON, error, and compatibility contracts    | rationale, speculative designs, maintenance process                  |
+| docs/maintenance.md            | development, testing, release, migration, and dependency workflow | product goals or complete algorithm definitions                      |
+| docs/status.md                 | what is implemented, exploratory, or not started                  | product scope or design authority                                    |
 
 The map is a route, not a demand to create empty files. Create a specialist document only when a topic has an independent audience, change rate, or review boundary. A specialist document may include a short status or scope note when it prevents a real ambiguity; do not add `Owner`, `Scope`, or `Does not define` metadata as a ritual. If a status is used, it must distinguish early direction from accepted and verified behavior.
 

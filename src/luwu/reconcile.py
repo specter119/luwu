@@ -26,6 +26,7 @@ from .filesystem import (
     verify_directory_identity,
 )
 from .manifest import _LOADER_PROVENANCE, Manifest, Resource, load_manifest
+from .ownership import OwnershipResult, classify_fields
 from .rendering import read_source, render_template
 from .semantic import (
     ComparisonResult,
@@ -42,6 +43,8 @@ class Status(StrEnum):
     MISSING = "missing"
     FORMATTING = "formatting"
     DRIFTED = "drifted"
+    UNBASED = "unbased"
+    CONFLICT = "conflict"
     BLOCKED = "blocked"
 
 
@@ -105,6 +108,7 @@ class ResourceObservation:
         default=None, repr=False, compare=False
     )
     comparison: ComparisonResult | None = field(default=None, repr=False, compare=False)
+    ownership: OwnershipResult | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
@@ -153,6 +157,8 @@ class Plan:
     def apply_block_reason(self) -> str | None:
         if self.blocked:
             return "plan_blocked"
+        if self.contract_version >= 3:
+            return "m3_read_only"
         if self.contract_version >= 2:
             return "m2_read_only"
         return None
@@ -174,6 +180,15 @@ class Plan:
         if self.contract_version >= 2:
             summary["reported"] = sum(
                 observation.action is Action.REPORT for observation in self.observations
+            )
+        if self.contract_version >= 3:
+            summary["unbased"] = sum(
+                observation.status is Status.UNBASED
+                for observation in self.observations
+            )
+            summary["conflict"] = sum(
+                observation.status is Status.CONFLICT
+                for observation in self.observations
             )
         return summary
 
@@ -273,6 +288,8 @@ def _plan_resource(
     collect_errors: bool = False,
 ) -> ResourceObservation:
     try:
+        if resource.scope == "fields":
+            return _plan_fields(manifest, resource)
         return (
             _plan_template(manifest, resource)
             if resource.kind == "template"
@@ -298,6 +315,200 @@ def _plan_resource(
                 else None
             ),
         )
+
+
+def _plan_fields(manifest: Manifest, resource: Resource) -> ResourceObservation:
+    """Observe one M3a field-scoped JSON resource without creating a target."""
+
+    rendered = render_template(resource, root=manifest.root)
+    desired = rendered.data
+    parent_issue = _target_parent_issue(resource.target, root=manifest.root)
+    if parent_issue is not None:
+        return _blocked_observation(
+            resource,
+            desired_bytes=desired,
+            source_digest=rendered.source_digest,
+            source_path=rendered.source_path,
+            source_identity=rendered.source_identity,
+            reason=parent_issue,
+            comparison=not_compared(
+                resource.comparison,
+                code="unsafe_target",
+                reason="target boundary is unsafe; comparison was not run",
+            ),
+        )
+
+    live = _read_target(resource.target, root=manifest.root)
+    if live.issue is not None or live.link_target is not None:
+        return _blocked_observation(
+            resource,
+            desired_bytes=desired,
+            source_digest=rendered.source_digest,
+            source_path=rendered.source_path,
+            source_identity=rendered.source_identity,
+            reason=live.issue or "target is a symlink; refusing to inspect it",
+            live_digest=live.digest,
+            live_mode=live.mode,
+            live_link_target=live.link_target,
+            live_identity=live.identity,
+            target_parent_identity=live.parent_identity,
+            comparison=not_compared(
+                resource.comparison,
+                code="unsafe_target",
+                reason="target boundary is unsafe; comparison was not run",
+            ),
+        )
+    if live.data is None:
+        return _blocked_observation(
+            resource,
+            desired_bytes=desired,
+            source_digest=rendered.source_digest,
+            source_path=rendered.source_path,
+            source_identity=rendered.source_identity,
+            reason="target is required for field reconciliation",
+            target_parent_identity=live.parent_identity,
+            comparison=not_compared(
+                resource.comparison,
+                code="target_missing",
+                reason="target does not exist; field comparison was not run",
+            ),
+        )
+
+    baseline, baseline_issue = _read_baseline(resource, root=manifest.root)
+    if baseline_issue is not None:
+        return _blocked_observation(
+            resource,
+            desired_bytes=desired,
+            source_digest=rendered.source_digest,
+            source_path=rendered.source_path,
+            source_identity=rendered.source_identity,
+            reason=baseline_issue,
+            live_digest=live.digest,
+            live_mode=live.mode,
+            live_identity=live.identity,
+            target_parent_identity=live.parent_identity,
+            comparison=not_compared(
+                resource.comparison,
+                code="baseline_invalid",
+                reason="baseline could not be read safely; comparison was not run",
+            ),
+        )
+
+    try:
+        ownership = classify_fields(
+            desired,
+            live.data,
+            fields=resource.fields,
+            baseline=baseline,
+            resource_name=resource.name,
+            source_name=resource.source_name,
+            target_name=resource.target_name,
+        )
+    except Exception as exc:  # noqa: BLE001 - classifier has a stable error boundary
+        code = getattr(exc, "code", "ownership_invalid_input")
+        return _blocked_observation(
+            resource,
+            desired_bytes=desired,
+            source_digest=rendered.source_digest,
+            source_path=rendered.source_path,
+            source_identity=rendered.source_identity,
+            reason="field comparison input is unsupported",
+            live_digest=live.digest,
+            live_mode=live.mode,
+            live_identity=live.identity,
+            target_parent_identity=live.parent_identity,
+            comparison=not_compared(
+                resource.comparison,
+                code=code,
+                reason="field comparison was not run",
+            ),
+        )
+
+    comparison = compare(desired, live.data, strategy=resource.comparison)
+    if comparison.status is ComparisonStatus.UNSUPPORTED:
+        return _blocked_observation(
+            resource,
+            desired_bytes=desired,
+            source_digest=rendered.source_digest,
+            source_path=rendered.source_path,
+            source_identity=rendered.source_identity,
+            reason="field comparison input is unsupported",
+            live_digest=live.digest,
+            live_mode=live.mode,
+            live_identity=live.identity,
+            target_parent_identity=live.parent_identity,
+            comparison=comparison,
+        )
+
+    status, action, reason = _aggregate_ownership(ownership)
+    return ResourceObservation(
+        resource=resource,
+        status=status,
+        action=action,
+        reason=reason,
+        desired_bytes=desired,
+        desired_link=None,
+        source_digest=rendered.source_digest,
+        source_path=rendered.source_path,
+        live_digest=live.digest,
+        live_mode=live.mode,
+        live_link_target=None,
+        source_identity=rendered.source_identity,
+        live_identity=live.identity,
+        target_parent_identity=live.parent_identity,
+        comparison=comparison,
+        ownership=ownership,
+    )
+
+
+def _aggregate_ownership(
+    ownership: OwnershipResult,
+) -> tuple[Status, Action, str]:
+    if ownership.baseline_status == "absent":
+        return Status.UNBASED, Action.REPORT, "baseline is absent"
+    if any(
+        field.status == "conflict" or field.decision == "review"
+        for field in ownership.fields
+    ):
+        return Status.CONFLICT, Action.REPORT, "field changes require review"
+    if (
+        any(
+            field.status in {"source_changed", "live_changed", "converged"}
+            for field in ownership.fields
+        )
+        or ownership.undeclared_changed
+    ):
+        return Status.DRIFTED, Action.REPORT, "field changes are reported"
+    return Status.IN_SYNC, Action.NOOP, "declared fields match the baseline"
+
+
+def _read_baseline(
+    resource: Resource,
+    *,
+    root: Path,
+) -> tuple[bytes | None, str | None]:
+    if resource.baseline is None:
+        return None, None
+    try:
+        parent_descriptor, name = open_parent_directory(root, resource.baseline)
+    except FileNotFoundError:
+        return None, "baseline does not exist"
+    except (OSError, NotImplementedError, ValueError):
+        return None, "baseline cannot be read safely"
+    try:
+        try:
+            data, _ = read_regular_file_at(parent_descriptor, name)
+        except FileNotFoundError:
+            return None, "baseline does not exist"
+        except NotRegularFileError:
+            return None, "baseline is not a regular file"
+        except FileChangedError:
+            return None, "baseline changed during inspection"
+        except (OSError, NotImplementedError, RuntimeError):
+            return None, "baseline cannot be read safely"
+        return data, None
+    finally:
+        os.close(parent_descriptor)
 
 
 def _require_single_resource(manifest: Manifest) -> Resource:
@@ -753,6 +964,11 @@ def _require_single_plan(plan: Plan) -> None:
                 "plan contains blocked resources; no files were changed",
                 code="plan_blocked",
             )
+        if capability.manifest_version >= 3:
+            raise ApplyError(
+                "manifest version 3 plans are read-only in M3a; no files were changed",
+                code="m3_read_only",
+            )
         raise ApplyError(
             "manifest version 2 plans are read-only in M2; no files were changed",
             code="m2_read_only",
@@ -773,7 +989,7 @@ def plan_to_dict(plan: Plan, *, command: str) -> dict[str, object]:
     """Serialize only metadata and explanations; never rendered content."""
 
     payload: dict[str, object] = {
-        "schema_version": 1 if plan.contract_version == 1 else 2,
+        "schema_version": plan.contract_version,
         "command": command,
         "manifest": str(plan.manifest.path),
         "resources": [
@@ -799,6 +1015,16 @@ def plan_to_dict(plan: Plan, *, command: str) -> dict[str, object]:
                 **(
                     {"comparison_strategy": observation.resource.comparison}
                     if plan.contract_version >= 2
+                    else {}
+                ),
+                **(
+                    {"baseline": observation.resource.baseline_name}
+                    if plan.contract_version >= 3
+                    else {}
+                ),
+                **(
+                    {"ownership": observation.ownership.to_dict()}
+                    if observation.ownership is not None
                     else {}
                 ),
             }
@@ -832,6 +1058,7 @@ def _blocked_observation(
     live_identity: tuple[int, int] | None = None,
     target_parent_identity: tuple[int, int] | None = None,
     comparison: ComparisonResult | None = None,
+    ownership: OwnershipResult | None = None,
 ) -> ResourceObservation:
     return ResourceObservation(
         resource=resource,
@@ -849,6 +1076,7 @@ def _blocked_observation(
         live_identity=live_identity,
         target_parent_identity=target_parent_identity,
         comparison=comparison,
+        ownership=ownership,
     )
 
 
@@ -866,7 +1094,11 @@ def _impact_to_dict(
         if observation.action is Action.REPLACE and not read_only
         else [],
         "scope": observation.resource.scope,
-        "undeclared": "content outside the declared target is not examined",
+        "undeclared": (
+            "content outside declared fields is only reported as a change signal"
+            if observation.resource.scope == "fields"
+            else "content outside the declared target is not examined"
+        ),
     }
     if read_only and observation.action in (
         Action.CREATE,
@@ -1131,6 +1363,11 @@ def _preflight_manifest(plan: Plan) -> None:
             "manifest changed or became unreadable after planning; run plan again",
             code="stale_plan",
         ) from None
+    if current_manifest.version >= 3:
+        raise ApplyError(
+            "manifest version 3 plans are read-only in M3a; no files were changed",
+            code="m3_read_only",
+        )
     if current_manifest.version >= 2:
         raise ApplyError(
             "manifest version 2 plans are read-only in M2; no files were changed",
@@ -1349,8 +1586,8 @@ def _write_template_observation(
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(desired_bytes)
                 handle.flush()
-                os.fsync(handle.fileno())
                 os.fchmod(handle.fileno(), mode)
+                os.fsync(handle.fileno())
         except BaseException:
             try:
                 _cleanup_temporary_entry(parent_descriptor, created_name)

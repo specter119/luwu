@@ -321,6 +321,48 @@ scope = "whole-file"
 
 
 class M2CliTests(unittest.TestCase):
+    def test_rendered_encoding_error_keeps_other_resources_visible(self) -> None:
+        with _M2Project() as project:
+            project._write_source("alpha", '{{ "\\ud800" }}')
+            project._write_source("zeta", "healthy-output-sentinel")
+            project._write_manifest(project._two_resource_manifest())
+            before = {
+                path.relative_to(project.root): path.read_bytes()
+                for path in project.root.rglob("*")
+                if path.is_file()
+            }
+            for command in ("inspect", "plan"):
+                with self.subTest(command=command):
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        code = main(
+                            [
+                                command,
+                                "--manifest",
+                                str(project.manifest_path),
+                                "--json",
+                            ]
+                        )
+                    payload = json.loads(stdout.getvalue())
+                    self.assertEqual(code, 0)
+                    self.assertEqual(
+                        [entry["status"] for entry in payload["resources"]],
+                        ["blocked", "missing"],
+                    )
+                    self.assertEqual(
+                        payload["resources"][0]["comparison"]["code"],
+                        "rendered_encoding",
+                    )
+                    self.assertNotIn("healthy-output-sentinel", stdout.getvalue())
+                    self.assertNotIn("\\ud800", stdout.getvalue())
+                    self.assertEqual(stderr.getvalue(), "")
+            after = {
+                path.relative_to(project.root): path.read_bytes()
+                for path in project.root.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(before, after)
+
     def test_v2_human_plan_explains_read_only_capability(self) -> None:
         with _M2Project() as project:
             project._write_source("settings", '{"profile": "developer"}\n')

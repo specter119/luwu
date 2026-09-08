@@ -76,8 +76,16 @@ def render_template(resource: Resource, *, root: Path) -> RenderedTemplate:
             code="template_invalid",
         ) from None
 
+    try:
+        data = rendered.encode("utf-8")
+    except UnicodeEncodeError:
+        raise RenderError(
+            f"rendered output for resource {resource.name!r} is not valid UTF-8",
+            code="rendered_encoding",
+        ) from None
+
     return RenderedTemplate(
-        data=rendered.encode("utf-8"),
+        data=data,
         source_digest=hashlib.sha256(source).hexdigest(),
         source_path=source_path,
         source_identity=source_identity,
