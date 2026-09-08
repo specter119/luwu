@@ -1,12 +1,6 @@
----
-name: luwu-semantic-drift-review
-description: >
-  Use when reviewing Luwu drift detection, rendering, normalization,
-  formatting, parsers, structured comparison, or reverse synchronization. Test
-  whether the implementation distinguishes meaningful configuration changes
-  from presentation noise without changing ownership. Do not use for generic
-  formatter or parser implementation review without a drift question.
----
+______________________________________________________________________
+
+## name: luwu-semantic-drift-review description: > Use when reviewing Luwu drift detection, rendering, normalization, formatting, parsers, structured comparison, or reverse synchronization. Test whether the implementation distinguishes meaningful configuration changes from presentation noise without changing ownership. Do not use for generic formatter or parser implementation review without a drift question.
 
 # Luwu semantic-drift review
 

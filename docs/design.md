@@ -1,4 +1,4 @@
-# Luwu M1/M2 Design
+# Luwu M1/M2/M3a Design
 
 Status: current implementation design
 
@@ -49,6 +49,22 @@ The manifest loader rejects cross-resource target conflicts and ancestor overlap
 Exact bytes remain the default. The literal `copy` kind reads source bytes without Jinja rendering. The JSON adapter receives rendered template bytes and live target bytes, not Jinja source. It has a deliberately small strict-JSON equivalence relation: it retains all fields and array order, rejects duplicate keys and unsupported syntax, and distinguishes semantic drift from formatting-only representation differences. JSON semantic drift is reported rather than mapped to a write action.
 
 Version 2 has no apply capability. This is a capability boundary, not a dry-run flag: `inspect` and `plan` are observations, while `apply --yes` is rejected with `m2_read_only` before stale checks or target writes. Multi-resource transaction, rollback, baselines, field ownership, and reverse sync remain M3 responsibilities.
+
+## M3a field observation
+
+M3a keeps the M2 read-only boundary and adds one narrow three-way observation:
+
+```text
+version 3 manifest
+  -> render desired JSON
+  -> no-follow read live target and explicit baseline
+  -> classify declared top-level fields by ownership
+  -> report metadata only
+```
+
+`luwu/ownership.py` is a pure classifier. It parses desired and live objects with the existing strict JSON rules, validates a closed baseline envelope bound to the resource/source/target and complete field-owner map, and compares each declared top-level field as a whole subtree. Missing fields use a private sentinel so they remain distinct from JSON `null`. A missing baseline produces `unbased` observations and never grants a candidate. A source/live/merge owner only changes the direction of a one-sided candidate; it does not override a conflict. Undeclared desired/live changes are a separate boolean signal and do not expose unknown keys or values.
+
+`luwu/reconcile.py` reads a baseline through the original declared path with descriptor-relative no-follow operations. It does not use the rendering source resolver for this read, does not create a baseline, and blocks symlinks, non-regular files, missing files, invalid envelopes, and identity mismatches. M3a resources always return `m3_read_only` for apply; candidates are observations and are not translated into `create` or `replace` actions. Persistent plans, acceptance, reverse sync, patch generation, and rollback remain M3b/M3c work.
 
 ## Safety boundaries
 

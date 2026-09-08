@@ -14,7 +14,10 @@ from .errors import ManifestError
 
 MANIFEST_VERSION = 1
 _MANIFEST_VERSION_V2 = 2
-_SUPPORTED_MANIFEST_VERSIONS = frozenset({MANIFEST_VERSION, _MANIFEST_VERSION_V2})
+_MANIFEST_VERSION_V3 = 3
+_SUPPORTED_MANIFEST_VERSIONS = frozenset(
+    {MANIFEST_VERSION, _MANIFEST_VERSION_V2, _MANIFEST_VERSION_V3}
+)
 _MANIFEST_FIELDS = {"version", "resources"}
 _RESOURCE_FIELDS = {
     "comparison",
@@ -25,6 +28,20 @@ _RESOURCE_FIELDS = {
     "scope",
     "variables",
     "variables_sensitivity",
+    "fields",
+    "baseline",
+    "content_sensitivity",
+}
+_V3_RESOURCE_FIELDS = {
+    "comparison",
+    "kind",
+    "source",
+    "target",
+    "owner",
+    "scope",
+    "fields",
+    "baseline",
+    "content_sensitivity",
 }
 _LOADER_PROVENANCE = object()
 _PUBLIC_VARIABLES_TOKEN = object()
@@ -78,6 +95,12 @@ class Resource:
     variables: Mapping[str, object] = field(repr=False)
     variables_sensitivity: str | None = None
     comparison: str = "exact-bytes"
+    fields: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({}), repr=False
+    )
+    baseline: Path | None = None
+    baseline_name: str | None = None
+    content_sensitivity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,7 +166,7 @@ def load_manifest(path: Path) -> Manifest:
     version = document.get("version")
     if type(version) is not int or version not in _SUPPORTED_MANIFEST_VERSIONS:
         raise ManifestError(
-            "manifest version must be 1 or 2",
+            "manifest version must be 1, 2, or 3",
             code="manifest_version",
         )
 
@@ -181,7 +204,16 @@ def load_manifest(path: Path) -> Manifest:
                 code="resource_shape",
             )
 
-        unknown_resource_fields = set(raw_resource) - _RESOURCE_FIELDS
+        allowed_resource_fields = _RESOURCE_FIELDS
+        if version == _MANIFEST_VERSION_V3:
+            allowed_resource_fields = _V3_RESOURCE_FIELDS
+        else:
+            allowed_resource_fields = _RESOURCE_FIELDS - {
+                "fields",
+                "baseline",
+                "content_sensitivity",
+            }
+        unknown_resource_fields = set(raw_resource) - allowed_resource_fields
         if unknown_resource_fields:
             raise ManifestError(
                 f"resource {name!r} has unsupported field(s): "
@@ -196,6 +228,11 @@ def load_manifest(path: Path) -> Manifest:
         )
 
         raw_kind = raw_resource.get("kind")
+        if version == _MANIFEST_VERSION_V3 and raw_kind is None:
+            raise ManifestError(
+                f"resource {name!r} kind must be explicitly 'template' in manifest version 3",
+                code="resource_kind",
+            )
         if raw_kind is None:
             kind = "template" if source_relative.suffix == ".j2" else "symbolic"
         else:
@@ -203,6 +240,8 @@ def load_manifest(path: Path) -> Manifest:
         supported_kinds = {"template", "symbolic"}
         if version == _MANIFEST_VERSION_V2:
             supported_kinds.add("copy")
+        if version == _MANIFEST_VERSION_V3:
+            supported_kinds = {"template"}
         if kind not in supported_kinds:
             raise ManifestError(
                 f"resource {name!r} kind is not supported by manifest version {version}",
@@ -225,6 +264,11 @@ def load_manifest(path: Path) -> Manifest:
             if raw_comparison is None
             else _required_string(raw_resource, "comparison", resource_name=name)
         )
+        if version == _MANIFEST_VERSION_V3 and comparison != "json":
+            raise ManifestError(
+                f"resource {name!r} comparison must be 'json' in manifest version 3",
+                code="resource_comparison_version",
+            )
         if comparison not in {"exact-bytes", "json"}:
             raise ManifestError(
                 f"resource {name!r} comparison must be 'exact-bytes' or 'json'",
@@ -243,14 +287,26 @@ def load_manifest(path: Path) -> Manifest:
         )
 
         owner = _required_string(raw_resource, "owner", resource_name=name)
-        if owner != "source":
+        if version == _MANIFEST_VERSION_V3:
+            if owner != "fields":
+                raise ManifestError(
+                    f"resource {name!r} owner must be 'fields' in manifest version 3",
+                    code="resource_owner",
+                )
+        elif owner != "source":
             raise ManifestError(
                 f"resource {name!r} owner must be 'source'",
                 code="resource_owner",
             )
 
         scope = _required_string(raw_resource, "scope", resource_name=name)
-        if scope != "whole-file":
+        if version == _MANIFEST_VERSION_V3:
+            if scope != "fields":
+                raise ManifestError(
+                    f"resource {name!r} scope must be 'fields' in manifest version 3",
+                    code="resource_scope",
+                )
+        elif scope != "whole-file":
             raise ManifestError(
                 f"resource {name!r} scope must be 'whole-file'",
                 code="resource_scope",
@@ -282,6 +338,33 @@ def load_manifest(path: Path) -> Manifest:
                 f"resource {name!r} variables require explicit public sensitivity",
                 code="resource_sensitivity",
             )
+
+        raw_fields = raw_resource.get("fields")
+        fields = (
+            _parse_fields(raw_fields, resource_name=name)
+            if version == _MANIFEST_VERSION_V3
+            else MappingProxyType({})
+        )
+        raw_content_sensitivity = raw_resource.get("content_sensitivity")
+        if version == _MANIFEST_VERSION_V3 and raw_content_sensitivity != "public":
+            raise ManifestError(
+                f"resource {name!r} content_sensitivity must be 'public'",
+                code="resource_content_sensitivity",
+            )
+        content_sensitivity = (
+            raw_content_sensitivity if version == _MANIFEST_VERSION_V3 else None
+        )
+        baseline_name: str | None = None
+        baseline: Path | None = None
+        if version == _MANIFEST_VERSION_V3 and "baseline" in raw_resource:
+            baseline_name = _required_string(
+                raw_resource, "baseline", resource_name=name
+            )
+            baseline_relative = _declared_relative_path(
+                baseline_name,
+                field=f"resource {name!r} baseline",
+            )
+            baseline = root / baseline_relative
 
         source = root / source_relative
         try:
@@ -322,11 +405,19 @@ def load_manifest(path: Path) -> Manifest:
                 variables=_PublicVariables(variables, token=_PUBLIC_VARIABLES_TOKEN),
                 variables_sensitivity=raw_sensitivity,
                 comparison=comparison,
+                fields=fields,
+                baseline=baseline,
+                baseline_name=baseline_name,
+                content_sensitivity=content_sensitivity,
             )
         )
         resolved_sources.append(resolved_source)
 
-    _validate_resource_relationships(resources, resolved_sources)
+    _validate_resource_relationships(
+        resources,
+        resolved_sources,
+        manifest_path=manifest_path,
+    )
     manifest = Manifest(
         version=version,
         path=manifest_path,
@@ -341,6 +432,8 @@ def load_manifest(path: Path) -> Manifest:
 def _validate_resource_relationships(
     resources: list[Resource],
     resolved_sources: list[Path],
+    *,
+    manifest_path: Path,
 ) -> None:
     """Reject ambiguous path relationships between declared resources."""
 
@@ -379,6 +472,36 @@ def _validate_resource_relationships(
                     code="resource_path_overlap",
                 )
 
+    baselines = [(resource, resource.baseline) for resource in resources]
+    for resource, baseline in baselines:
+        if baseline is None:
+            continue
+        declared_paths = [manifest_path]
+        for other, resolved_source in zip(resources, resolved_sources):
+            declared_paths.extend((other.source, other.target, resolved_source))
+        for path in declared_paths:
+            if (
+                baseline == path
+                or _is_path_ancestor(baseline, path)
+                or _is_path_ancestor(path, baseline)
+            ):
+                raise ManifestError(
+                    f"resource {resource.name!r} baseline has a conflicting path",
+                    code="baseline_path_conflict",
+                )
+        for other, other_baseline in baselines:
+            if other_baseline is None or other is resource:
+                continue
+            if (
+                baseline == other_baseline
+                or _is_path_ancestor(baseline, other_baseline)
+                or _is_path_ancestor(other_baseline, baseline)
+            ):
+                raise ManifestError(
+                    "resources declare conflicting baseline paths",
+                    code="baseline_path_conflict",
+                )
+
 
 def _resources_have_ancestor_overlap(
     left: Resource,
@@ -401,6 +524,33 @@ def _resources_have_ancestor_overlap(
 
 def _is_path_ancestor(parent: Path, child: Path) -> bool:
     return parent != child and parent in child.parents
+
+
+def _parse_fields(raw_fields: object, *, resource_name: str) -> Mapping[str, str]:
+    if not isinstance(raw_fields, dict) or not raw_fields:
+        raise ManifestError(
+            f"resource {resource_name!r} fields must be a non-empty table",
+            code="resource_fields",
+        )
+    parsed: dict[str, str] = {}
+    for key, value in raw_fields.items():
+        if not isinstance(key, str) or not key:
+            raise ManifestError(
+                f"resource {resource_name!r} fields keys must be non-empty strings",
+                code="resource_fields",
+            )
+        if not isinstance(value, str) or value not in {
+            "source",
+            "live",
+            "merge",
+            "ignore",
+        }:
+            raise ManifestError(
+                f"resource {resource_name!r} fields values must be source, live, merge, or ignore",
+                code="resource_fields",
+            )
+        parsed[key] = value
+    return MappingProxyType(parsed)
 
 
 def _required_string(

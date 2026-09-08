@@ -1,12 +1,6 @@
----
-name: luwu-ownership-review
-description: >
-  Use when reviewing Luwu ownership, scope, provenance, adoption, precedence,
-  provider or live values, reverse sync, or conflict handling. Test whether a
-  change keeps configuration authority explicit and auditable. Do not use for
-  generic code style or filesystem-hardening review without an ownership
-  question.
----
+______________________________________________________________________
+
+## name: luwu-ownership-review description: > Use when reviewing Luwu ownership, scope, provenance, adoption, precedence, provider or live values, reverse sync, or conflict handling. Test whether a change keeps configuration authority explicit and auditable. Do not use for generic code style or filesystem-hardening review without an ownership question.
 
 # Luwu ownership review
 

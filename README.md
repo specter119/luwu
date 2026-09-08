@@ -22,7 +22,7 @@ uv run luwu apply --manifest "$demo_dir/luwu.toml" --yes
 uv run luwu inspect --manifest "$demo_dir/luwu.toml"
 ```
 
-Read [the current reference](docs/reference.md) for the manifest, CLI, JSON, and safety contract. This preview does not include providers, secrets, reverse sync, baselines, or automatic adoption of existing files.
+Read [the current reference](docs/reference.md) for the manifest, CLI, JSON, and safety contract. The current M3a slice can observe an explicitly supplied public baseline and field ownership, but it does not accept baselines, reverse-sync, persist plans, use providers, or automatically adopt existing files.
 
 Run the deterministic test suite with:
 
@@ -38,6 +38,7 @@ uv run --locked python -m unittest discover -s tests -v
 - [Current implementation design](docs/design.md)
 - [Current command and manifest reference](docs/reference.md)
 - [M1 milestone closure record](docs/milestones/m1.md)
+- [M2/M3 milestone records](docs/milestones/m2.md) and [M3](docs/milestones/m3.md)
 - [Implementation status](docs/status.md)
 
 Future design, reference, maintenance, status, and decision documents will be added only when they have a clear owner and an independent purpose. The documentation map and single-source-of-truth rules are defined in AGENTS.md.

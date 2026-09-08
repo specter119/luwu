@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 import tempfile
 import unittest
 from dataclasses import replace
@@ -389,6 +391,57 @@ scope = "whole-file"
 
             self.assertEqual(project.target.stat().st_mode & 0o777, 0o600)
             self.assertEqual(project.target.read_bytes(), project.desired)
+
+    def test_file_permissions_are_in_place_when_contents_are_synced(self) -> None:
+        with _Project() as project:
+            project.target.write_bytes(b"old target\n")
+            project.target.chmod(0o640)
+            plan = build_plan(project.manifest)
+            synced_modes = []
+            original_fsync = os.fsync
+
+            def record_sync(descriptor: int) -> None:
+                info = os.fstat(descriptor)
+                if stat.S_ISREG(info.st_mode):
+                    synced_modes.append(stat.S_IMODE(info.st_mode))
+                original_fsync(descriptor)
+
+            with patch("luwu.reconcile.os.fsync", side_effect=record_sync):
+                result = apply_plan(plan)
+
+            self.assertEqual(result.outcome, ApplyOutcome.COMMITTED)
+            self.assertEqual(synced_modes, [0o640])
+
+    def test_precommit_permission_or_sync_failure_preserves_old_target(self) -> None:
+        for operation in ("fchmod", "fsync"):
+            with self.subTest(operation=operation), _Project() as project:
+                project.target.write_bytes(b"old target\n")
+                project.target.chmod(0o640)
+                before = project.target.stat()
+                plan = build_plan(project.manifest)
+
+                with (
+                    patch(
+                        f"luwu.reconcile.os.{operation}", side_effect=OSError("failure")
+                    ),
+                    self.assertRaises(ApplyError) as context,
+                ):
+                    apply_plan(plan)
+
+                self.assertFalse(context.exception.committed)
+                self.assertEqual(project.target.read_bytes(), b"old target\n")
+                self.assertEqual(project.target.stat().st_ino, before.st_ino)
+                self.assertEqual(stat.S_IMODE(project.target.stat().st_mode), 0o640)
+                self.assertEqual(list(project.target.parent.glob("*.luwu-*")), [])
+
+    def test_rendered_unicode_encoding_failure_is_a_controlled_error(self) -> None:
+        with _Project() as project:
+            project.source.write_text('{{ "\\ud800" }}', encoding="utf-8")
+            with self.assertRaises(RenderError) as context:
+                build_plan(project.manifest)
+            self.assertEqual(context.exception.code, "rendered_encoding")
+            self.assertNotIn("\\ud800", str(context.exception))
+            self.assertFalse(project.target.exists())
 
     def test_default_non_j2_resource_is_applied_as_a_symbolic_link(self) -> None:
         with _SymbolicProject() as project:
