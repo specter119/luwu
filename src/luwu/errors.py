@@ -28,6 +28,53 @@ class MutationError(LuwuError):
 
     default_code = "mutation_failed"
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        committed: bool = False,
+        outcome: str | None = None,
+        operation: str | None = None,
+        resource: str | None = None,
+        fields: tuple[str, ...] = (),
+        write_path: str | None = None,
+    ) -> None:
+        super().__init__(message, code=code)
+        self.committed = committed
+        self.outcome = outcome
+        self.operation = operation
+        self.resource = resource
+        self.fields = fields
+        self.write_path = write_path
+
+    def attach_context(
+        self,
+        *,
+        operation: str,
+        resource: str,
+        fields: tuple[str, ...],
+        write_path: str | None,
+    ) -> None:
+        """Attach only mutation labels needed by the public error boundary."""
+
+        self.operation = operation
+        self.resource = resource
+        self.fields = fields
+        self.write_path = write_path
+
+    def metadata(self) -> dict[str, object]:
+        """Return metadata-only context safe for JSON and human CLI output."""
+
+        return {
+            "operation": self.operation,
+            "resource": self.resource,
+            "fields": list(self.fields),
+            "write": self.write_path,
+            "committed": self.committed,
+            "outcome": self.outcome,
+        }
+
 
 class ApplyError(LuwuError):
     """An explicit apply could not safely complete."""

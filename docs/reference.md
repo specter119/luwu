@@ -1,12 +1,12 @@
-# Luwu M1/M2/M3a/M3b Reference
+# Luwu M1/M2/M3a/M3b/M3c Reference
 
 Status: current preview contract
 
-This document owns the stable manifest, CLI, JSON, error, and compatibility contract for the developer-confidence preview and its M2, M3a, and narrow single-resource M3b extensions. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
+This document owns the stable manifest, CLI, JSON, error, and compatibility contract for the developer-confidence preview and its M2, M3a, narrow single-resource M3b, and explicit M3c execution extensions. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
 
 ## Manifest
 
-The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source, target, and baseline. M1 uses manifest version `1`; M2 supports versions `1` and `2`; M3a adds version `3`; M3b adds version `4`.
+The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source, target, and baseline. M1 uses manifest version `1`; M2 supports versions `1` and `2`; M3a adds version `3`; M3b adds version `4`; the current M3c execution slice adds version `5`.
 
 ```toml
 version = 1
@@ -53,19 +53,27 @@ For a supplied baseline, each field is classified as `unchanged`, `converged`, `
 
 ### M3b manifest version 4
 
-Version `4` preserves the v3 field contract while admitting two explicit, single-resource public mutations. It still requires an explicit template kind, strict JSON comparison, field scope, and `content_sensitivity = "public"`. The optional `reverse_sync` table must use `format = "literal-json"` and map declared live/merge fields to unique top-level literal keys in the source JSON. Dynamic Jinja expressions, nested path syntax, ignored/source-owned mappings, and provider or secret inputs are rejected.
+Version `4` preserves the v3 field contract while admitting two explicit, single-resource public mutations. It still requires an explicit template kind, strict JSON comparison, field scope, and `content_sensitivity = "public"`. The optional `reverse_sync` table must use `format = "literal-json"` and identity-map declared live/merge fields to their same-named top-level literal keys in the source JSON; alias mappings are rejected in this frozen slice. Dynamic Jinja expressions, nested path syntax, ignored/source-owned mappings, and provider or secret inputs are rejected.
 
-`accept` writes only explicitly selected declared fields to the baseline envelope, from either the current desired or live object. `reverse-sync` writes only selected `live_changed`/`reverse_candidate` fields through their explicit source mapping. Neither command copies a complete live file into a Jinja template, updates the baseline implicitly, or accepts undeclared content. Version 4 `apply` remains read-only; multi-resource mutation and durable plans remain M3c work.
+`accept` writes only explicitly selected declared fields to the baseline envelope, from either the current desired or live object. `reverse-sync` writes only selected `live_changed`/`reverse_candidate` fields through their explicit source mapping. Neither command copies a complete live file into a Jinja template, updates the baseline implicitly, or accepts undeclared content. Version 4 `apply` remains read-only; version 5 is the separate current multi-resource execution capability.
+
+### M3c manifest version 5 execution slice
+
+Version `5` is an independent execution capability, not an upgrade of versions `1`–`4`. It accepts multiple resources only when each resource explicitly declares `kind = "template"` or `kind = "symbolic"`, `owner = "source"`, `scope = "whole-file"`, and `content_sensitivity = "public"`. It rejects comparison, fields, baseline, reverse-sync, provider, and secret fields. Resources are ordered by name, and duplicate or overlapping source/target paths are rejected before planning.
+
+Version 5 `apply` uses a durable metadata-only journal. Without `--yes`, it is a pure preview and does not create the journal. With `--yes`, it requires an explicit `--record PATH`, completes full preflight for every resource before the first writer, and processes resources in stable order. Failure stops at the first failing resource; rollback is never attempted. Each resource is recorded as `unchanged`, `committed`, `unknown`, or `not-attempted`. A committed write whose durability or cleanup cannot be confirmed is reported as `recovery_required` or `unknown`, never as a clean success.
+
+The journal has a closed schema and stores only execution/mutation contracts, manifest identity, relative resource/path metadata, non-content file conditions, and state transitions. It does not store configuration values, bytes, rendered output, diffs, patches, provider payloads, secrets, or source/target content hashes. `record-inspect` (also accepted as `inspect-record`) accepts only the version-5 execution contract, reads that journal without replaying inputs or writing files, and rejects legacy records. `recover --record PATH` (also accepted as `record-reobserve`) re-observes the recorded manifest and paths without writing; it returns `confirmed` only when the recorded boundary is still observed and otherwise returns `recovery_required`. There is no automatic replay, rollback, or recovery mutation command in this slice.
 
 ## Commands
 
-All commands accept `--manifest PATH` (default `luwu.toml`) and `--json`. `inspect` and `plan` never write the manifest, source, target, or any state file.
+All manifest commands accept `--manifest PATH` (default `luwu.toml`) and `--json`. `inspect` and `plan` never write the manifest, source, target, or any state file. `record-inspect --record PATH` and `recover --record PATH` read only the named execution journal; neither requires a manifest argument or writes state.
 
 `inspect` reports the current state. `plan` reports the same observation together with the action an explicit apply could take. Both commands return exit code `0` after successfully calculating a plan, including when a resource is reported as `blocked`.
 
-`apply` always calculates a plan first. In human output, a confirmed apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. With `--yes`, it rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. JSON mode keeps stdout as one result document and includes the initial and verification plans in that document when verification can recalculate one. A blocked, stale, or version 2/3/4 read-only plan returns exit code `2` and does not begin a write. A version 2 `apply` preview reports `m2_read_only`; a version 3 or 4 preview reports `m3_read_only`; a plan containing an unsafe resource reports `plan_blocked`.
+`apply` always calculates a plan first. In human output, a confirmed version 1 apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. Version 1 with `--yes` rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. Version 5 uses the execution journal contract described above and requires `--record PATH` for a confirmed apply. JSON mode keeps stdout as one result document; version 1 includes the initial and verification plans when verification can recalculate one, while version 5 includes only preview/journal metadata, target names, states, outcomes, and changed target names. A blocked, stale, or version 2/3/4 read-only plan returns exit code `2` and does not begin a write. A version 2 `apply` preview reports `m2_read_only`; a version 3 or 4 preview reports `m3_read_only`; a plan containing an unsafe resource reports `plan_blocked`.
 
-`accept` and `reverse-sync` require `--resource`, one or more `--field` values, and explicit `--yes` confirmation for mutation. Without `--yes`, both return exit code `2` and emit a metadata-only preview. Successful mutation returns exit code `0`, records the selected fields and write path, and includes a fresh verification plan. The result never contains accepted values, rendered content, diffs, or hashes.
+`accept` and `reverse-sync` require `--resource`, one or more `--field` values, and explicit `--yes` confirmation for mutation. Without `--yes`, both return exit code `2` and emit a metadata-only preview. The preview is explanatory and is not a persisted plan token; `--yes` recalculates the current inputs and then performs the documented stale checks. Successful mutation returns exit code `0`, records the selected fields and write path, and includes a fresh verification plan. The result never contains accepted values, rendered content, diffs, or hashes.
 
 Writes use a temporary file or temporary symlink in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved for template targets; a new regular template target starts with mode `0644`. A template target symlink is refused rather than followed or replaced. A symbolic target symlink is accepted only when it resolves to the declared source; a different existing symlink is blocked. The current implementation uses descriptor-relative no-follow operations, records source/target identities, and takes a non-blocking advisory lock for cooperating Luwu writers on POSIX. It fails closed when those filesystem primitives are unavailable. An advisory lock does not control unrelated writers that ignore it, so M1 does not claim protection against those races; a stronger kernel compare-and-swap boundary is future work. M1 does not create parent directories, keep a baseline, or make a backup containing configuration content.
 
@@ -135,6 +143,8 @@ Successful `inspect` and `plan` output has this shape:
 
 Version 2 successful observation output uses `schema_version = 2`, includes `manifest_version = 2`, `applyable = false`, and `apply_block_reason`. Version 2 summaries additionally include `reported`; resource entries may include metadata-only `comparison` results with `strategy`, `status`, `code`, `reason`, and `equivalent`. Version 3 and 4 observations use their matching schema and manifest versions, remain `applyable = false`, and include metadata-only field ownership. M3b mutation results use `schema_version = 4`, identify the operation/resource/selected fields/write path, and never include field values, rendered content, diffs, or hashes.
 
+Version 5 apply output has `preview`, `journal`, `target_names`, `state`, `outcome`, and `changed_targets`; a preview has `journal.created = false`, and a failed confirmed execution includes the readable journal state so partial success is not hidden. `record-inspect` emits the same journal metadata without path conditions or transition history. `recover --record PATH --json` emits `schema_version`, `command = "recover"`, `mode = "reobserve-only"`, `plan_id`, `record_state`, `outcome`, and metadata-only per-resource/path observations; human output reports the same state and outcome without configuration values.
+
 Expected failures use exit code `2`. With `--json`, they are emitted as:
 
 ```json
@@ -150,4 +160,4 @@ Error messages identify the failing boundary but never print rendered content or
 
 ## Compatibility
 
-The manifest `version` and JSON `schema_version` are independent explicit contracts. M1 uses version `1` for both; M2 uses version `2`; M3a uses version `3`; M3b uses manifest and mutation result version `4`. A future incompatible change must introduce a new version or a deliberate migration. M1/M2/M3a/M3b have no migration command.
+The manifest `version` and JSON `schema_version` are independent explicit contracts. M1 uses version `1` for both; M2 uses version `2`; M3a uses version `3`; M3b uses manifest and mutation result version `4`; M3c execution and re-observation use version `5`. A future incompatible change must introduce a new version or a deliberate migration. There is no migration or automatic recovery mutation command.

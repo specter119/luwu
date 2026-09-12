@@ -1,6 +1,6 @@
 # Luwu Implementation Status
 
-Status: M3b single-resource public mutation slice implemented; M3c durable multi-resource execution not started
+Status: M3 complete within the frozen public v3/v4/v5 contracts; automatic replay and rollback remain explicitly out of scope
 
 This document records what the repository actually implements. The fixed M1 scope and closure checklist are maintained in [milestones/m1.md](milestones/m1.md); the M2 observation scope and closure checklist are maintained in [milestones/m2.md](milestones/m2.md); the M3a implementation boundary and closure evidence are maintained in [milestones/m3.md](milestones/m3.md). This document does not expand the product scope in [product.md](product.md), and it does not replace the contracts in [reference.md](reference.md).
 
@@ -46,13 +46,14 @@ multi-resource apply, rollback, baselines, field ownership, or reverse sync.
 M3a now implements version 3 read-only field observation: explicit public JSON
 template resources declare literal top-level field owners, may name an
 explicit baseline envelope, and produce metadata-only three-way field
-classification. Baselines are read through the declared path with no-follow
+classification with strict JSON type distinctions. Baselines are read through the declared path with no-follow
 descriptor operations and are never created or updated. Missing baselines are
 reported as `unbased`; one-sided changes produce ownership-aware candidates,
 two-sided changes require review, and undeclared desired/live changes produce a
 separate boolean signal. Version 3 apply is rejected with `m3_read_only` before
 any writer path. M3a itself does not implement acceptance or reverse sync;
-persistent plans and multi-resource execution/rollback remain M3c work.
+persistent plans and multi-resource execution are provided by the separate M3c
+contract; rollback remains explicitly outside the frozen scope.
 
 M3b now adds version 4 as a narrow public mutation slice. `accept` can
 explicitly write selected desired/live fields to a declared baseline, and
@@ -60,20 +61,28 @@ explicitly write selected desired/live fields to a declared baseline, and
 literal-JSON source mapping. Both commands require one resource, explicit
 fields, and `--yes`; previews are zero-write and results are metadata-only.
 Dynamic Jinja reverse writes, undeclared content, provider/secret inputs, and
-version 4 `apply` remain blocked. Durable plan records, multi-resource apply,
-partial-success recovery, and rollback are not implemented.
+version 4 `apply` remain blocked. The module-level single-resource guard,
+identity-only mapping, stale/parent checks, post-write verification, and
+structured committed/unknown CLI outcomes close the frozen M3b contract.
 
-M3c groundwork now includes an unexposed metadata-only `PlanRecord` schema
-with closed validation, immutable transitions, atomic JSON persistence, and a
-fixed `rollback = "never"` policy. It is not yet connected to planning,
-execution, recovery, or a CLI command.
+M3c now has a narrow version 5 execution capability for explicit public,
+source-owned, whole-file template and symbolic resources. Planning uses stable
+resource order and full preflight; confirmed execution writes a closed,
+metadata-only `PlanRecord` before and after each intent/commit boundary, stops
+without rollback, and records committed, unchanged, unknown, and
+not-attempted resources. The CLI requires an explicit journal path for
+confirmed version 5 apply and exposes `record-inspect` plus the read-only
+`recover`/`record-reobserve` commands, all restricted to the version-5
+execution contract. Automatic replay, rollback, and guarantees against
+unrelated writers that ignore advisory locks remain explicitly outside scope;
+the implemented M3c contract is complete without those behaviors.
 
 ## Verification
 
 The implementation and isolated fixture were re-verified on the current POSIX development environment:
 
 ```text
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -v  # 126 tests passed
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -v  # 190 tests passed
 PYTHONPYCACHEPREFIX=/tmp/luwu-compile python3 -m compileall -q src tests
 UV_CACHE_DIR=/tmp/luwu-uv-cache uv lock --check
 ruff check src tests
@@ -81,7 +90,8 @@ ruff format --check src tests
 git diff --check
 M3a regression: tests/test_manifest_m3.py, tests/test_ownership.py, and tests/test_m3.py
 M3b regression: tests/test_m3b.py and the v4 manifest/mutation boundary tests
-M3c record regression: tests/test_plan_record.py
+M3c record regression: tests/test_plan_record.py and tests/test_m3c_execution.py
+M3c CLI regression: tests/test_cli.py
 isolated CLI fixture E2E: plan -> apply --yes -> inspect; clean post-apply state
 ```
 
@@ -94,8 +104,11 @@ level error collection, metadata-only output, and the zero-write version 2
 apply boundary. It confirms that a changed in-memory manifest version cannot
 turn an M2 plan into a write-capable plan.
 
-The locked `uv` packaging workflow is verified: after allowing the required
-network access for the uncached Hatchling dependency, `uv build` produced both
-the source distribution and wheel in a temporary output directory. The full
-`prek run --all-files` gate passed, including type checking, Markdown
-formatting, lockfile validation, and secret scanning.
+The current focused source/test checks pass, including the 190-test suite,
+compileall, Ruff check/format, lockfile validation, and `git diff --check`.
+The M3 ablation experiment also passes its 13 reference scenarios and all
+documented counterexample counts. The full `prek` gate is not claimed for this
+sandbox: with a temporary writable cache its hook clone requires GitHub DNS;
+the default cache is read-only. `uv build` is likewise environment-blocked
+while resolving `hatchling` because the configured package index cannot be
+resolved. These are verification-environment limits, not passing gate claims.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -20,6 +20,7 @@ from .filesystem import (
     read_regular_file_at,
     sync_directory,
     unlock_directory,
+    verify_directory_identity,
 )
 from .manifest import Resource
 from .semantic import _parse_strict_json
@@ -118,6 +119,10 @@ def make_baseline(
         raise MutationError(
             "resource has no declared baseline", code="baseline_required"
         )
+    if len(set(selected_fields)) != len(selected_fields):
+        raise MutationError(
+            "fields must be selected at most once", code="field_duplicate"
+        )
     values = (
         baseline_values(existing, resource=resource) if existing is not None else {}
     )
@@ -145,7 +150,14 @@ def make_baseline(
     return encode_public_json(envelope)
 
 
-def write_baseline(root: Path, resource: Resource, data: bytes) -> None:
+def write_baseline(
+    root: Path,
+    resource: Resource,
+    data: bytes,
+    *,
+    expected_data: bytes | None,
+    check_inputs: Callable[[], None] | None = None,
+) -> None:
     """Atomically replace a baseline while preserving an existing mode."""
 
     if resource.baseline is None:
@@ -160,9 +172,12 @@ def write_baseline(root: Path, resource: Resource, data: bytes) -> None:
         ) from None
     temporary: str | None = None
     locked = False
+    committed = False
+    cleanup_error: MutationError | None = None
     try:
         lock_directory(parent)
         locked = True
+        _verify_parent(parent, resource.baseline.parent)
         try:
             info = os.stat(name, dir_fd=parent, follow_symlinks=False)
             if not stat.S_ISREG(info.st_mode):
@@ -172,6 +187,20 @@ def write_baseline(root: Path, resource: Resource, data: bytes) -> None:
             mode = info.st_mode & 0o777
         except FileNotFoundError:
             mode = 0o644
+            current = None
+        else:
+            try:
+                current, _ = read_regular_file_at(parent, name)
+            except FileNotFoundError:
+                current = None
+            except (NotRegularFileError, FileChangedError, OSError, RuntimeError):
+                raise MutationError(
+                    "baseline cannot be read safely", code="baseline_invalid"
+                ) from None
+        if current != expected_data:
+            raise MutationError(
+                "baseline changed; run the mutation again", code="stale_plan"
+            )
         descriptor, temporary = create_temporary_file(parent, prefix=f".{name}.luwu-")
         try:
             with os.fdopen(descriptor, "wb") as handle:
@@ -181,31 +210,124 @@ def write_baseline(root: Path, resource: Resource, data: bytes) -> None:
                 os.fsync(handle.fileno())
         except BaseException:
             if temporary is not None:
-                _remove_temporary(parent, temporary)
+                try:
+                    _remove_temporary(parent, temporary)
+                except OSError as exc:
+                    raise MutationError(
+                        "baseline temporary entry could not be cleaned up",
+                        code="cleanup_failed",
+                        outcome="not_committed",
+                    ) from exc
             raise
+        if check_inputs is not None:
+            check_inputs()
+        _check_current_baseline(parent, name, expected_data)
+        _verify_parent(parent, resource.baseline.parent)
         os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+        committed = True
         temporary = None
+        try:
+            _verify_parent(parent, resource.baseline.parent)
+        except MutationError as exc:
+            raise MutationError(
+                "baseline path changed after replacement",
+                code="baseline_state_unknown",
+                committed=True,
+                outcome="committed_state_unknown",
+            ) from exc
+        if check_inputs is not None:
+            try:
+                check_inputs()
+            except Exception as exc:
+                raise MutationError(
+                    "baseline inputs changed after replacement",
+                    code="baseline_state_unknown",
+                    committed=True,
+                    outcome="committed_state_unknown",
+                ) from exc
         sync_directory(parent)
+        if check_inputs is not None:
+            try:
+                check_inputs()
+            except Exception as exc:
+                raise MutationError(
+                    "baseline inputs changed after directory sync",
+                    code="baseline_state_unknown",
+                    committed=True,
+                    outcome="committed_state_unknown",
+                ) from exc
     except MutationError:
         raise
     except (OSError, NotImplementedError) as exc:
-        raise MutationError(
-            "baseline write could not be confirmed", code="baseline_write_failed"
-        ) from exc
+        error = MutationError(
+            "baseline write could not be confirmed",
+            code=("baseline_state_unknown" if committed else "baseline_write_failed"),
+            committed=committed,
+            outcome="committed_state_unknown" if committed else "not_committed",
+        )
+        raise error from exc
     finally:
         if temporary is not None:
-            _remove_temporary(parent, temporary)
+            try:
+                _remove_temporary(parent, temporary)
+            except OSError as exc:
+                cleanup_error = MutationError(
+                    "baseline temporary entry could not be cleaned up",
+                    code="cleanup_failed",
+                    committed=committed,
+                    outcome=(
+                        "committed_state_unknown" if committed else "not_committed"
+                    ),
+                )
+                cleanup_error.__cause__ = exc
         if locked:
-            unlock_directory(parent)
+            try:
+                unlock_directory(parent)
+            except OSError as exc:
+                if committed:
+                    error = MutationError(
+                        "baseline write state could not be confirmed",
+                        code="baseline_state_unknown",
+                        committed=True,
+                        outcome="committed_state_unknown",
+                    )
+                    raise error from exc
         os.close(parent)
+        if cleanup_error is not None:
+            raise cleanup_error
+
+
+def _verify_parent(parent: int, path: Path) -> None:
+    try:
+        verify_directory_identity(parent, path)
+    except (FileChangedError, OSError, NotImplementedError) as exc:
+        raise MutationError(
+            "baseline parent changed; run the mutation again",
+            code="stale_plan",
+        ) from exc
+
+
+def _check_current_baseline(
+    parent: int, name: str, expected_data: bytes | None
+) -> None:
+    try:
+        current, _ = read_regular_file_at(parent, name)
+    except FileNotFoundError:
+        current = None
+    except (NotRegularFileError, FileChangedError, OSError, RuntimeError) as exc:
+        raise MutationError(
+            "baseline cannot be rechecked safely", code="baseline_invalid"
+        ) from exc
+    if current != expected_data:
+        raise MutationError(
+            "baseline changed; run the mutation again", code="stale_plan"
+        )
 
 
 def _remove_temporary(parent: int, name: str) -> None:
     try:
         os.unlink(name, dir_fd=parent)
     except FileNotFoundError:
-        pass
-    except OSError:
         pass
 
 
@@ -217,9 +339,19 @@ def _encode_value(value: Any) -> str:
     if value is False:
         return "false"
     if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise MutationError(
+                "JSON input contains a non-finite number",
+                code="mutation_input_invalid",
+            )
         return str(value)
     if isinstance(value, (int, float)):
-        return json.dumps(value, allow_nan=False)
+        try:
+            return json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise MutationError(
+                "JSON input contains an invalid number", code="mutation_input_invalid"
+            ) from exc
     if isinstance(value, str):
         return json.dumps(value, ensure_ascii=False)
     if isinstance(value, list):
@@ -227,8 +359,12 @@ def _encode_value(value: Any) -> str:
     if isinstance(value, dict):
         members = []
         for key, item in value.items():
+            if not isinstance(key, str):
+                raise MutationError(
+                    "JSON object keys must be strings", code="mutation_input_invalid"
+                )
             members.append(
-                json.dumps(str(key), ensure_ascii=False) + ":" + _encode_value(item)
+                json.dumps(key, ensure_ascii=False) + ":" + _encode_value(item)
             )
         return "{" + ",".join(members) + "}"
     raise MutationError(
