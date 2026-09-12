@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from uuid import uuid4
 
 from .errors import ApplyError, ManifestError, RenderError
 from .filesystem import (
@@ -25,8 +26,15 @@ from .filesystem import (
     unlock_directory,
     verify_directory_identity,
 )
-from .manifest import _LOADER_PROVENANCE, Manifest, Resource, load_manifest
+from .manifest import (
+    _LOADER_PROVENANCE,
+    EXECUTION_MANIFEST_VERSION,
+    Manifest,
+    Resource,
+    load_manifest,
+)
 from .ownership import OwnershipResult, classify_fields
+from .plan_record import PlanRecord, PlanRecordError
 from .rendering import read_source, render_template
 from .semantic import (
     ComparisonResult,
@@ -70,6 +78,7 @@ class ApplyOutcome(StrEnum):
 
 _PLAN_PROVENANCE = object()
 _PLAN_CAPABILITY_TOKEN = object()
+_EXECUTION_RECORD_CONTRACT = "public-source-whole-file-v5"
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +166,8 @@ class Plan:
     def apply_block_reason(self) -> str | None:
         if self.blocked:
             return "plan_blocked"
+        if self.contract_version == EXECUTION_MANIFEST_VERSION:
+            return "execution_required"
         if self.contract_version >= 3:
             return "m3_read_only"
         if self.contract_version >= 2:
@@ -202,6 +213,19 @@ class ApplyResult:
     verification_plan: Plan | None
     outcome: ApplyOutcome = ApplyOutcome.COMMITTED
     verification_error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionResult:
+    """Metadata-only result of the v5 multi-resource execution boundary."""
+
+    preview: dict[str, object]
+    record: PlanRecord | None
+    changed_targets: tuple[str, ...] = ()
+
+    @property
+    def record_state(self) -> str | None:
+        return None if self.record is None else str(self.record.to_dict()["state"])
 
 
 def _make_plan_capability_registry() -> tuple[
@@ -929,6 +953,605 @@ def apply_plan(plan: Plan) -> ApplyResult:
     )
 
 
+def execute_execution_plan(
+    plan: Plan, record_path: Path, *, confirm: bool
+) -> ExecutionResult:
+    """Execute a loader/planner-issued v5 plan with a durable journal.
+
+    Preview is completely side-effect free. Confirmed execution preflights all
+    resources before creating the journal and processes them in stable order.
+    A failure is never rolled back; the journal records the recovery boundary.
+    """
+
+    _require_execution_plan(plan)
+    preview = _execution_preview(plan)
+    if not confirm:
+        return ExecutionResult(preview=preview, record=None)
+
+    _preflight_execution_manifest(plan)
+    for observation in plan.observations:
+        _preflight_observation(plan, observation)
+    _check_execution_record_path(plan, record_path)
+
+    record = _execution_record(plan)
+    _write_execution_record(record, record_path)
+    previous = record
+    record = record.transition("preflighted")
+    _write_execution_record(record, record_path, expected=previous)
+    for ordinal in range(len(plan.observations)):
+        previous = record
+        record = record.transition_path(ordinal, "preflighted")
+        _write_execution_record(record, record_path, expected=previous)
+    previous = record
+    record = record.transition("commit_intent")
+    _write_execution_record(record, record_path, expected=previous)
+
+    changed_targets: list[str] = []
+    for ordinal, observation in enumerate(plan.observations):
+        if observation.action is Action.NOOP:
+            previous = record
+            record = record.transition_path(ordinal, "unchanged")
+            _write_execution_record(record, record_path, expected=previous)
+            continue
+        previous = record
+        record = record.transition_path(ordinal, "commit_intent")
+        _write_execution_record(record, record_path, expected=previous)
+        try:
+            _write_observation(plan, observation, execution=True)
+        except ApplyError as exc:
+            recovery_required = exc.committed or any(
+                resource["ordinal"] < ordinal and resource["state"] == "committed"
+                for resource in record.to_dict()["resources"]
+            )
+            _mark_execution_failure(
+                record, plan, ordinal, record_path, committed=recovery_required
+            )
+            raise ApplyError(
+                f"execution stopped at resource {observation.resource.name!r}; "
+                "rollback=never",
+                code=("recovery_required" if recovery_required else "execution_failed"),
+                committed=recovery_required,
+                target_name=observation.resource.target_name,
+            ) from exc
+        changed_targets.append(observation.resource.target_name)
+        try:
+            postcondition = _execution_condition(
+                observation.resource.target, plan.manifest.root
+            )
+            if not _condition_matches_expected(
+                postcondition,
+                _execution_postcondition(
+                    observation,
+                    _execution_condition(
+                        observation.resource.target, plan.manifest.root
+                    ),
+                ),
+            ):
+                raise ApplyError(
+                    f"postcondition for resource {observation.resource.name!r} "
+                    "could not be confirmed",
+                    code="durability_unconfirmed",
+                    committed=True,
+                    target_name=observation.resource.target_name,
+                )
+            committed_record = record.update_path_condition(
+                ordinal,
+                observation.resource.target_name,
+                postcondition=postcondition,
+            ).transition_path(ordinal, "committed")
+            _write_execution_record(committed_record, record_path, expected=record)
+        except ApplyError as exc:
+            recovery_required = True
+            _mark_execution_failure(
+                record, plan, ordinal, record_path, committed=recovery_required
+            )
+            raise ApplyError(
+                f"execution stopped at resource {observation.resource.name!r}; "
+                "rollback=never",
+                code="recovery_required",
+                committed=True,
+                target_name=observation.resource.target_name,
+            ) from exc
+        record = committed_record
+
+    previous = record
+    record = record.transition("committed")
+    _write_execution_record(record, record_path, expected=previous)
+    return ExecutionResult(
+        preview=preview, record=record, changed_targets=tuple(changed_targets)
+    )
+
+
+def inspect_execution_record(record_path: Path) -> dict[str, object]:
+    """Read a journal for recovery decisions without replaying or writing."""
+
+    record = PlanRecord.read(record_path).to_dict()
+    manifest = record["manifest"]
+    if (
+        not isinstance(manifest, dict)
+        or manifest["version"] != EXECUTION_MANIFEST_VERSION
+        or record["execution_contract"] != _EXECUTION_RECORD_CONTRACT
+    ):
+        raise PlanRecordError(
+            "record is not a version-5 execution journal",
+            code="execution_record_contract",
+        )
+    _validate_execution_record(record)
+    return record
+
+
+def _validate_execution_record(record: dict[str, object]) -> None:
+    """Validate the execution-specific meaning of the closed record schema."""
+
+    if record["mutation_contract"] != "atomic-single-file":
+        raise PlanRecordError(
+            "execution journal mutation contract is unsupported",
+            code="execution_record_contract",
+        )
+    manifest = record["manifest"]
+    if not isinstance(manifest, dict):
+        raise PlanRecordError(
+            "execution journal manifest is invalid", code="execution_record_contract"
+        )
+    root = Path(str(manifest["root"]))
+    manifest_path = Path(str(manifest["path"]))
+    if (
+        not root.is_absolute()
+        or not manifest_path.is_absolute()
+        or manifest_path.parent != root
+    ):
+        raise PlanRecordError(
+            "execution journal manifest paths are invalid",
+            code="execution_record_contract",
+        )
+    resources = record["resources"]
+    if not isinstance(resources, list):
+        raise PlanRecordError(
+            "execution journal resources are invalid",
+            code="execution_record_contract",
+        )
+    for resource in resources:
+        if not isinstance(resource, dict) or resource["operation"] not in {
+            Action.NOOP.value,
+            Action.CREATE.value,
+            Action.REPLACE.value,
+        }:
+            raise PlanRecordError(
+                "execution journal resource operation is invalid",
+                code="execution_record_contract",
+            )
+        paths = resource["paths"]
+        if not isinstance(paths, list) or len(paths) != 2:
+            raise PlanRecordError(
+                "execution journal resource paths are invalid",
+                code="execution_record_contract",
+            )
+        roles = {path["role"] for path in paths if isinstance(path, dict)}
+        if roles != {"source", "target"}:
+            raise PlanRecordError(
+                "execution journal path roles are invalid",
+                code="execution_record_contract",
+            )
+        for path in paths:
+            if not isinstance(path, dict):
+                raise PlanRecordError(
+                    "execution journal path is invalid",
+                    code="execution_record_contract",
+                )
+            expected_operation = (
+                "observe" if path["role"] == "source" else "atomic_replace"
+            )
+            if path["operation"] != expected_operation:
+                raise PlanRecordError(
+                    "execution journal path operation is invalid",
+                    code="execution_record_contract",
+                )
+
+
+def reobserve_execution_record(record_path: Path) -> dict[str, object]:
+    """Re-observe a v5 journal without replaying inputs or writing state."""
+
+    record = inspect_execution_record(record_path)
+    manifest_info = record["manifest"]
+    if not isinstance(manifest_info, dict):
+        raise PlanRecordError(
+            "execution journal manifest is invalid", code="execution_record_contract"
+        )
+    manifest_path = Path(str(manifest_info["path"]))
+    try:
+        manifest_path_is_stable = manifest_path.resolve(strict=True) == manifest_path
+    except (OSError, RuntimeError):
+        manifest_path_is_stable = False
+    if not manifest_path_is_stable:
+        return _reobserve_blocked(record, "manifest_unavailable")
+    try:
+        manifest = load_manifest(manifest_path)
+        current_digest = _digest(manifest_path.read_bytes())
+    except (ManifestError, OSError, RuntimeError):
+        return _reobserve_blocked(record, "manifest_unavailable")
+    expected_digest = str(manifest_info["digest"])[len("sha256:") :]
+    if (
+        manifest.version != EXECUTION_MANIFEST_VERSION
+        or current_digest != expected_digest
+        or str(manifest.root) != str(manifest_info["root"])
+    ):
+        return _reobserve_blocked(record, "manifest_changed")
+
+    try:
+        plan = build_plan(manifest)
+    except (ManifestError, RenderError, OSError, RuntimeError):
+        return _reobserve_blocked(record, "observation_failed")
+    observations = {item.resource.name: item for item in plan.observations}
+    persisted_resources = record["resources"]
+    if not isinstance(persisted_resources, list) or len(persisted_resources) != len(
+        plan.observations
+    ):
+        return _reobserve_blocked(record, "record_manifest_mismatch")
+    for ordinal, observation in enumerate(plan.observations):
+        persisted = persisted_resources[ordinal]
+        if not isinstance(persisted, dict):
+            return _reobserve_blocked(record, "record_manifest_mismatch")
+        paths = {
+            path["role"]: path["path"]
+            for path in persisted["paths"]
+            if isinstance(path, dict)
+        }
+        if (
+            persisted["ordinal"] != ordinal
+            or persisted["name"] != observation.resource.name
+            or paths
+            != {
+                "source": observation.resource.source_name,
+                "target": observation.resource.target_name,
+            }
+        ):
+            return _reobserve_blocked(record, "record_manifest_mismatch")
+    resources: list[dict[str, object]] = []
+    for persisted in persisted_resources:
+        if not isinstance(persisted, dict):
+            continue
+        observation = observations.get(str(persisted["name"]))
+        path_results: list[dict[str, object]] = []
+        for persisted_path in persisted["paths"]:
+            if not isinstance(persisted_path, dict):
+                continue
+            relative = Path(str(persisted_path["path"]))
+            current = _execution_condition(manifest.root / relative, manifest.root)
+            expected = persisted_path["postcondition"]
+            matches = _condition_matches_expected(current, expected)
+            path_results.append(
+                {
+                    "role": persisted_path["role"],
+                    "path": persisted_path["path"],
+                    "matches_postcondition": matches,
+                    "current_type": current["type"],
+                }
+            )
+        resource_state = str(persisted["state"])
+        all_match = all(bool(item["matches_postcondition"]) for item in path_results)
+        if resource_state in {"committed", "unchanged"} and all_match:
+            reobserved = "confirmed"
+        elif resource_state in {"unknown", "recovery_required"} and all_match:
+            reobserved = "matches_postcondition"
+        elif resource_state == "not-attempted":
+            reobserved = "not-attempted"
+        else:
+            reobserved = "changed_or_unknown"
+        resources.append(
+            {
+                "ordinal": persisted["ordinal"],
+                "name": persisted["name"],
+                "record_state": resource_state,
+                "reobserved_state": reobserved,
+                "plan_status": (
+                    observation.status.value if observation is not None else "missing"
+                ),
+                "paths": path_results,
+            }
+        )
+    overall = "confirmed"
+    if any(
+        item["reobserved_state"] in {"changed_or_unknown", "matches_postcondition"}
+        for item in resources
+    ):
+        overall = "recovery_required"
+    return {
+        "schema_version": EXECUTION_MANIFEST_VERSION,
+        "command": "recover",
+        "mode": "reobserve-only",
+        "plan_id": record["plan_id"],
+        "record_state": record["state"],
+        "outcome": overall,
+        "resources": resources,
+    }
+
+
+def _reobserve_blocked(record: dict[str, object], reason: str) -> dict[str, object]:
+    return {
+        "schema_version": EXECUTION_MANIFEST_VERSION,
+        "command": "recover",
+        "mode": "reobserve-only",
+        "plan_id": record["plan_id"],
+        "record_state": record["state"],
+        "outcome": "recovery_required",
+        "reason": reason,
+        "resources": [],
+    }
+
+
+def _require_execution_plan(plan: Plan) -> None:
+    capability = _capability_for(plan)
+    if (
+        capability is None
+        or capability.token is not _PLAN_CAPABILITY_TOKEN
+        or plan._provenance is not _PLAN_PROVENANCE
+        or plan.manifest._provenance is not _LOADER_PROVENANCE
+    ):
+        raise ApplyError("plan lacks a valid execution capability", code="invalid_plan")
+    if capability.manifest_version != 5 or plan.manifest.execution_capability != (
+        "public-source-whole-file"
+    ):
+        raise ApplyError("plan is not a version-5 execution plan", code="invalid_plan")
+    if (
+        plan.manifest.path != capability.manifest_path
+        or plan.manifest.root != capability.manifest_root
+        or plan.manifest.content_digest != capability.manifest_digest
+        or plan.manifest.version != capability.manifest_version
+    ):
+        raise ApplyError("plan manifest identity is invalid", code="invalid_plan")
+    if (
+        not plan.observations
+        or tuple(observation.resource for observation in plan.observations)
+        != plan.manifest.resources
+    ):
+        raise ApplyError(
+            "plan observations must match manifest resources", code="invalid_plan"
+        )
+    for observation in plan.observations:
+        if observation.resource.capability != "public-source-whole-file":
+            raise ApplyError("resource capability is invalid", code="invalid_plan")
+        if observation.status is Status.BLOCKED or observation.action is Action.BLOCK:
+            raise ApplyError("plan contains blocked resources", code="plan_blocked")
+        if observation.action not in (Action.NOOP, Action.CREATE, Action.REPLACE):
+            raise ApplyError(
+                "plan contains a non-executable action", code="invalid_plan"
+            )
+
+
+def _execution_preview(plan: Plan) -> dict[str, object]:
+    return {
+        "schema_version": 5,
+        "execution_capability": "public-source-whole-file",
+        "rollback": "never",
+        "resources": [
+            {
+                "ordinal": ordinal,
+                "name": observation.resource.name,
+                "source": observation.resource.source_name,
+                "target": observation.resource.target_name,
+                "status": observation.status.value,
+                "action": observation.action.value,
+                "reason": observation.reason,
+            }
+            for ordinal, observation in enumerate(plan.observations)
+        ],
+    }
+
+
+def _check_execution_record_path(plan: Plan, record_path: Path) -> None:
+    record_candidates = {_absolute_path(record_path)}
+    try:
+        record_candidates.add(record_path.expanduser().resolve(strict=False))
+    except (OSError, RuntimeError):
+        pass
+    declared = [plan.manifest.path]
+    declared.extend(
+        path
+        for observation in plan.observations
+        for path in (observation.resource.source, observation.resource.target)
+    )
+    for candidate in declared:
+        candidate_paths = {_absolute_path(candidate)}
+        try:
+            candidate_paths.add(candidate.resolve(strict=False))
+        except (OSError, RuntimeError):
+            pass
+        if any(
+            _paths_overlap(record_candidate, declared_candidate)
+            for record_candidate in record_candidates
+            for declared_candidate in candidate_paths
+        ):
+            raise ApplyError(
+                "execution journal path overlaps a declared path; no files were changed",
+                code="record_path_conflict",
+            )
+
+
+def _absolute_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return left == right or left in right.parents or right in left.parents
+
+
+def _execution_condition(path: Path, root: Path) -> dict[str, int | str]:
+    try:
+        path.relative_to(root)
+        parent, name = open_parent_directory(root, path)
+    except FileNotFoundError:
+        return {"type": "missing", "mode": 0, "size": 0, "mtime_ns": 0, "file_id": 0}
+    except (NotImplementedError, OSError, ValueError):
+        return {"type": "unsafe", "mode": 0, "size": 0, "mtime_ns": 0, "file_id": 0}
+    try:
+        verify_directory_identity(parent, path.parent)
+        try:
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return {
+                "type": "missing",
+                "mode": 0,
+                "size": 0,
+                "mtime_ns": 0,
+                "file_id": 0,
+            }
+        verify_directory_identity(parent, path.parent)
+    except (FileChangedError, NotImplementedError, OSError, ValueError):
+        return {"type": "unsafe", "mode": 0, "size": 0, "mtime_ns": 0, "file_id": 0}
+    finally:
+        os.close(parent)
+    file_type = (
+        "symlink"
+        if stat.S_ISLNK(info.st_mode)
+        else ("regular" if stat.S_ISREG(info.st_mode) else "other")
+    )
+    return {
+        "type": file_type,
+        "mode": stat.S_IMODE(info.st_mode),
+        "size": info.st_size,
+        "mtime_ns": info.st_mtime_ns,
+        "file_id": info.st_ino,
+    }
+
+
+def _execution_postcondition(
+    observation: ResourceObservation, current: dict[str, int | str]
+) -> dict[str, int | str]:
+    if observation.action is Action.NOOP:
+        return current
+    if observation.resource.kind == "symbolic":
+        return {
+            "type": "symlink",
+            "mode": 0o777,
+            "size": len((observation.desired_link or "").encode()),
+            "mtime_ns": 0,
+            "file_id": 0,
+        }
+    mode = int(current["mode"]) if current["type"] == "regular" else 0o644
+    return {
+        "type": "regular",
+        "mode": mode,
+        "size": len(observation.desired_bytes or b""),
+        "mtime_ns": 0,
+        "file_id": 0,
+    }
+
+
+def _condition_matches_expected(
+    current: dict[str, int | str], expected: object
+) -> bool:
+    if not isinstance(expected, dict):
+        return False
+    if current.get("type") != expected.get("type"):
+        return False
+    if current.get("mode") != expected.get("mode"):
+        return False
+    if current.get("size") != expected.get("size"):
+        return False
+    for key in ("mtime_ns", "file_id"):
+        expected_value = expected.get(key)
+        if expected_value not in (0, current.get(key)):
+            return False
+    return True
+
+
+def _execution_record(plan: Plan) -> PlanRecord:
+    resources = []
+    for ordinal, observation in enumerate(plan.observations):
+        resource = observation.resource
+        source_condition = _execution_condition(resource.source, plan.manifest.root)
+        target_condition = _execution_condition(resource.target, plan.manifest.root)
+        resources.append(
+            {
+                "ordinal": ordinal,
+                "name": resource.name,
+                "operation": observation.action.value,
+                "paths": [
+                    _execution_path(
+                        "source",
+                        resource.source_name,
+                        source_condition,
+                        source_condition,
+                    ),
+                    _execution_path(
+                        "target",
+                        resource.target_name,
+                        target_condition,
+                        _execution_postcondition(observation, target_condition),
+                    ),
+                ],
+                "state": "planned",
+            }
+        )
+    return PlanRecord.create(
+        plan_id=str(uuid4()),
+        execution_contract=_EXECUTION_RECORD_CONTRACT,
+        mutation_contract="atomic-single-file",
+        manifest={
+            "path": str(plan.manifest.path),
+            "root": str(plan.manifest.root),
+            "version": 5,
+            "digest": f"sha256:{plan.manifest.content_digest}",
+        },
+        resources=resources,
+    )
+
+
+def _execution_path(
+    role: str, path: str, pre: dict[str, int | str], post: dict[str, int | str]
+) -> dict[str, object]:
+    return {
+        "role": role,
+        "path": path,
+        "operation": "observe" if role == "source" else "atomic_replace",
+        "precondition": pre,
+        "postcondition": post,
+        "state": "planned",
+    }
+
+
+def _write_execution_record(
+    record: PlanRecord,
+    record_path: Path,
+    *,
+    expected: PlanRecord | None = None,
+) -> None:
+    try:
+        record.write(record_path, expected=expected)
+    except PlanRecordError as exc:
+        raise ApplyError(
+            "execution journal durability is unknown; recovery is required",
+            code="recovery_required",
+            committed=exc.committed,
+        ) from exc
+
+
+def _mark_execution_failure(
+    record: PlanRecord, plan: Plan, ordinal: int, record_path: Path, *, committed: bool
+) -> None:
+    try:
+        failed = record.transition_path(ordinal, "unknown")
+        previous = record
+        _write_execution_record(failed, record_path, expected=previous)
+        for later in range(ordinal + 1, len(plan.observations)):
+            previous = failed
+            failed = failed.transition_path(later, "not-attempted")
+            _write_execution_record(failed, record_path, expected=previous)
+        previous = failed
+        failed = failed.transition("recovery_required" if committed else "unknown")
+        _write_execution_record(failed, record_path, expected=previous)
+    except (ApplyError, PlanRecordError) as exc:
+        raise ApplyError(
+            "execution journal durability is unknown; recovery is required",
+            code="recovery_required",
+            committed=committed,
+        ) from exc
+
+
+def _preflight_execution_manifest(plan: Plan) -> None:
+    _preflight_manifest(plan, execution=True)
+
+
 def _require_single_plan(plan: Plan) -> None:
     if plan.manifest.version == 1 and (
         len(plan.manifest.resources) != 1 or len(plan.observations) != 1
@@ -959,6 +1582,11 @@ def _require_single_plan(plan: Plan) -> None:
             code="invalid_plan",
         )
     if capability.manifest_version >= 2:
+        if capability.manifest_version == EXECUTION_MANIFEST_VERSION:
+            raise ApplyError(
+                "version 5 plans require the execution API; no files were changed",
+                code="execution_required",
+            )
         if plan.blocked:
             raise ApplyError(
                 "plan contains blocked resources; no files were changed",
@@ -1005,7 +1633,7 @@ def plan_to_dict(plan: Plan, *, command: str) -> dict[str, object]:
                 "reason": observation.reason,
                 "impact": _impact_to_dict(
                     observation,
-                    read_only=plan.contract_version >= 2,
+                    read_only=2 <= plan.contract_version < EXECUTION_MANIFEST_VERSION,
                 ),
                 **(
                     {"comparison": observation.comparison.to_dict()}
@@ -1014,12 +1642,12 @@ def plan_to_dict(plan: Plan, *, command: str) -> dict[str, object]:
                 ),
                 **(
                     {"comparison_strategy": observation.resource.comparison}
-                    if plan.contract_version >= 2
+                    if 2 <= plan.contract_version < EXECUTION_MANIFEST_VERSION
                     else {}
                 ),
                 **(
                     {"baseline": observation.resource.baseline_name}
-                    if plan.contract_version >= 3
+                    if 3 <= plan.contract_version < EXECUTION_MANIFEST_VERSION
                     else {}
                 ),
                 **(
@@ -1335,7 +1963,7 @@ def _preflight_source(plan: Plan, observation: ResourceObservation) -> None:
         )
 
 
-def _preflight_manifest(plan: Plan) -> None:
+def _preflight_manifest(plan: Plan, *, execution: bool = False) -> None:
     capability = _capability_for(plan)
     if capability is None or capability.token is not _PLAN_CAPABILITY_TOKEN:
         raise ApplyError(
@@ -1363,12 +1991,17 @@ def _preflight_manifest(plan: Plan) -> None:
             "manifest changed or became unreadable after planning; run plan again",
             code="stale_plan",
         ) from None
-    if current_manifest.version >= 3:
+    if execution and current_manifest.version != 5:
+        raise ApplyError(
+            "manifest is no longer a version-5 execution manifest; no files were changed",
+            code="stale_plan",
+        )
+    if not execution and current_manifest.version >= 3:
         raise ApplyError(
             "manifest version 3 plans are read-only in M3a; no files were changed",
             code="m3_read_only",
         )
-    if current_manifest.version >= 2:
+    if not execution and current_manifest.version >= 2:
         raise ApplyError(
             "manifest version 2 plans are read-only in M2; no files were changed",
             code="m2_read_only",
@@ -1472,7 +2105,9 @@ def _check_target_state(
         )
 
 
-def _write_observation(plan: Plan, observation: ResourceObservation) -> bool:
+def _write_observation(
+    plan: Plan, observation: ResourceObservation, *, execution: bool = False
+) -> bool:
     try:
         parent_descriptor, target_name = open_parent_directory(
             plan.manifest.root,
@@ -1515,7 +2150,7 @@ def _write_observation(plan: Plan, observation: ResourceObservation) -> bool:
                 "changed during apply",
                 code="concurrent_change",
             ) from None
-        _preflight_manifest(plan)
+        _preflight_manifest(plan, execution=execution)
         _check_target_parent(plan, observation, phase="during apply")
         _preflight_source(plan, observation)
         _check_target_state(
@@ -1526,7 +2161,7 @@ def _write_observation(plan: Plan, observation: ResourceObservation) -> bool:
         )
         if observation.resource.kind == "symbolic":
             committed = _write_symbolic_observation(
-                plan, observation, parent_descriptor, target_name
+                plan, observation, parent_descriptor, target_name, execution=execution
             )
         else:
             committed = _write_template_observation(
@@ -1534,6 +2169,7 @@ def _write_observation(plan: Plan, observation: ResourceObservation) -> bool:
                 observation,
                 parent_descriptor,
                 target_name,
+                execution=execution,
             )
     except ApplyError as exc:
         write_error = exc
@@ -1567,6 +2203,8 @@ def _write_template_observation(
     observation: ResourceObservation,
     parent_descriptor: int,
     target_name: str,
+    *,
+    execution: bool = False,
 ) -> bool:
     desired_bytes = observation.desired_bytes
     if desired_bytes is None:
@@ -1606,6 +2244,7 @@ def _write_template_observation(
         parent_descriptor,
         target_name,
         create_entry=create_entry,
+        execution=execution,
     )
 
 
@@ -1614,6 +2253,8 @@ def _write_symbolic_observation(
     observation: ResourceObservation,
     parent_descriptor: int,
     target_name: str,
+    *,
+    execution: bool = False,
 ) -> bool:
     desired_link = observation.desired_link
     if desired_link is None:
@@ -1648,6 +2289,7 @@ def _write_symbolic_observation(
         target_name,
         create_entry=create_entry,
         validate_entry=validate_entry,
+        execution=execution,
     )
 
 
@@ -1659,6 +2301,7 @@ def _write_temporary_entry(
     *,
     create_entry: Callable[[], str],
     validate_entry: Callable[[str], None] | None = None,
+    execution: bool = False,
 ) -> bool:
     temporary_name: str | None = None
     committed = False
@@ -1678,7 +2321,7 @@ def _write_temporary_entry(
         )
         temporary_identity = _identity(temporary_info)
         temporary_is_symlink = stat.S_ISLNK(temporary_info.st_mode)
-        _preflight_manifest(plan)
+        _preflight_manifest(plan, execution=execution)
         _preflight_source(plan, observation)
         _check_target_state(
             plan,

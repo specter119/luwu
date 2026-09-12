@@ -1,4 +1,4 @@
-# Luwu M1/M2/M3a/M3b Design
+# Luwu M1/M2/M3a/M3b/M3c Design
 
 Status: current implementation design
 
@@ -64,7 +64,7 @@ version 3 manifest
 
 `luwu/ownership.py` is a pure classifier. It parses desired and live objects with the existing strict JSON rules, validates a closed baseline envelope bound to the resource/source/target and complete field-owner map, and compares each declared top-level field as a whole subtree. Missing fields use a private sentinel so they remain distinct from JSON `null`. A missing baseline produces `unbased` observations and never grants a candidate. A source/live/merge owner only changes the direction of a one-sided candidate; it does not override a conflict. Undeclared desired/live changes are a separate boolean signal and do not expose unknown keys or values.
 
-`luwu/reconcile.py` reads a baseline through the original declared path with descriptor-relative no-follow operations. It does not use the rendering source resolver for this read, does not create a baseline, and blocks symlinks, non-regular files, missing files, invalid envelopes, and identity mismatches. M3a resources always return `m3_read_only` for apply; candidates are observations and are not translated into `create` or `replace` actions. Persistent plans, multi-resource execution, and rollback remain M3c work.
+`luwu/reconcile.py` reads a baseline through the original declared path with descriptor-relative no-follow operations. It does not use the rendering source resolver for this read, does not create a baseline, and blocks symlinks, non-regular files, missing files, invalid envelopes, and identity mismatches. M3a resources always return `m3_read_only` for apply; candidates are observations and are not translated into `create` or `replace` actions. Persistent plans, multi-resource execution, and rollback belong to the separate M3c contract described below.
 
 ## M3b explicit mutation
 
@@ -76,15 +76,44 @@ top-level key in a literal JSON source. Dynamic Jinja source is rejected; the
 live target is never copied wholesale into a template. Both writers use
 descriptor-relative no-follow parents, temporary entries, directory locks,
 atomic replacement, and a fresh post-write plan. Durable plan records and
-multi-resource execution are intentionally still outside this slice.
+multi-resource execution are separated into the version 5 execution slice.
+
+## M3c execution slice
+
+Version 5 keeps observation and mutation separate while granting a new,
+narrow capability to explicit public whole-file resources:
+
+```text
+version 5 manifest
+  -> stable observations
+  -> complete source/target/manifest preflight
+  -> durable planned/preflighted/commit_intent journal
+  -> one locked atomic writer at a time
+  -> committed / unchanged / unknown / not-attempted states
+  -> read-only recover/reobserve
+```
+
+The execution journal is a closed metadata schema. It binds the manifest
+identity, resource order, source and target roles, relative paths, operation,
+non-content file conditions, and state transitions; it never persists rendered
+bytes, values, diffs, provider payloads, secrets, or source/target content
+hashes; the manifest digest is retained only to bind the manifest identity. A
+resource is marked committed only after its atomic replacement and directory sync return
+success. If the replacement or cleanup boundary is uncertain, execution stops,
+records recovery-required state when possible, and never rolls back an earlier
+resource. `record-inspect` and `recover`/`record-reobserve` are deliberately
+read-only: they inspect or re-observe the recorded boundary, do not replay old
+inputs, and do not provide an automatic recovery mutation.
 
 ## Safety boundaries
 
 The normative manifest, CLI, error, and write contract is owned by
 [reference.md](reference.md); this section does not repeat its field and state
 tables. The design consequences are deliberately narrow: M1 remains
-single-resource and forward-only, keeps the plan in memory, and defers
-providers, secret persistence, reverse sync, and multi-file transaction
-semantics until they have their own contracts. The descriptor-relative,
-no-follow implementation is the mechanism that preserves the target boundary
-described by the reference contract.
+single-resource and forward-only, v2–v4 remain observation or explicit
+single-resource mutation contracts, and version 5 is the only current
+multi-resource execution capability. Providers, secret persistence, automatic
+recovery mutation, rollback, and unrelated-writer race guarantees remain
+outside the verified closure. The descriptor-relative, no-follow implementation is the
+mechanism that preserves the target boundary described by the reference
+contract.

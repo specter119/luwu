@@ -7,19 +7,24 @@ import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 from . import __version__
-from .errors import LuwuError
-from .manifest import load_manifest
+from .errors import LuwuError, MutationError
+from .manifest import is_execution_manifest, load_manifest
 from .mutations import accept_baseline, reverse_sync
 from .reconcile import (
     ApplyOutcome,
     ApplyResult,
+    ExecutionResult,
     Plan,
     ResourceObservation,
     apply_plan,
     build_plan,
+    execute_execution_plan,
+    inspect_execution_record,
     plan_to_dict,
+    reobserve_execution_record,
 )
 
 
@@ -47,6 +52,39 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="confirm the calculated plan and permit atomic target writes",
     )
+    apply.add_argument(
+        "--record",
+        type=Path,
+        help="version-5 execution journal path (required with --yes)",
+    )
+
+    record_inspect = commands.add_parser(
+        "record-inspect",
+        aliases=("inspect-record",),
+        help="inspect a version-5 execution journal without writing",
+    )
+    record_inspect.add_argument(
+        "--record", type=Path, required=True, help="execution journal path"
+    )
+    record_inspect.add_argument(
+        "--json",
+        action="store_true",
+        help="emit metadata-only JSON for agents and scripts",
+    )
+
+    recover = commands.add_parser(
+        "recover",
+        aliases=("record-reobserve",),
+        help="re-observe a version-5 execution journal without writing",
+    )
+    recover.add_argument(
+        "--record", type=Path, required=True, help="execution journal path"
+    )
+    recover.add_argument(
+        "--json",
+        action="store_true",
+        help="emit metadata-only JSON for agents and scripts",
+    )
 
     accept = commands.add_parser(
         "accept", help="explicitly accept selected public baseline fields"
@@ -72,23 +110,46 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command in {"record-inspect", "inspect-record"}:
+            record = inspect_execution_record(args.record)
+            _emit_record_inspection(record, record_path=args.record, as_json=args.json)
+            return 0
+
+        if args.command in {"recover", "record-reobserve"}:
+            result = reobserve_execution_record(args.record)
+            _emit_reobserve_result(result, record_path=args.record, as_json=args.json)
+            return 0 if result.get("outcome") == "confirmed" else 2
+
         manifest = load_manifest(args.manifest)
         if args.command in {"accept", "reverse-sync"}:
-            if args.command == "accept":
-                result = accept_baseline(
-                    manifest,
-                    resource_name=args.resource,
-                    value_from=args.value_from,
+            try:
+                if args.command == "accept":
+                    result = accept_baseline(
+                        manifest,
+                        resource_name=args.resource,
+                        value_from=args.value_from,
+                        fields=tuple(args.field),
+                        confirm=args.yes,
+                    )
+                else:
+                    result = reverse_sync(
+                        manifest,
+                        resource_name=args.resource,
+                        fields=tuple(args.field),
+                        confirm=args.yes,
+                    )
+            except MutationError as exc:
+                exc.attach_context(
+                    operation=args.command,
+                    resource=args.resource,
                     fields=tuple(args.field),
-                    confirm=args.yes,
+                    write_path=_mutation_write_path(
+                        manifest,
+                        operation=args.command,
+                        resource_name=args.resource,
+                    ),
                 )
-            else:
-                result = reverse_sync(
-                    manifest,
-                    resource_name=args.resource,
-                    fields=tuple(args.field),
-                    confirm=args.yes,
-                )
+                raise
             if args.json:
                 _print_json(result.to_dict())
             else:
@@ -96,11 +157,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Resource: {_display(result.resource)}")
                 print(f"Fields: {len(result.fields)}")
                 print(f"Write: {_display(result.write_path)}")
-            return 0 if args.yes else 2
+            return 0 if args.yes and result.outcome == "committed" else 2
+        if (
+            args.command == "apply"
+            and is_execution_manifest(manifest)
+            and args.yes
+            and args.record is None
+        ):
+            raise LuwuError(
+                "version 5 apply with --yes requires explicit --record PATH",
+                code="record_required",
+            )
+
         plan = build_plan(manifest)
         if args.command in {"inspect", "plan"}:
             _emit_plan(plan, command=args.command, as_json=args.json)
             return 0
+
+        if is_execution_manifest(manifest):
+            record_path = args.record or manifest.root / ".luwu-preview.journal"
+            try:
+                result = execute_execution_plan(plan, record_path, confirm=args.yes)
+            except LuwuError as exc:
+                _emit_execution_error(exc, record_path=record_path, as_json=args.json)
+                return 2
+            _emit_execution_result(
+                result,
+                record_path=record_path,
+                as_json=args.json,
+            )
+            return 0 if args.yes else 2
 
         if not args.yes:
             _emit_apply_preview(plan, as_json=args.json)
@@ -252,6 +338,189 @@ def _emit_apply_result(result: ApplyResult, *, as_json: bool) -> None:
         )
 
 
+def _emit_execution_result(
+    result: ExecutionResult, *, record_path: Path, as_json: bool
+) -> None:
+    target_names = _execution_target_names(result.preview)
+    state = result.record_state or "preview"
+    outcome = "preview" if result.record is None else state
+    if as_json:
+        journal = (
+            _execution_journal_metadata(
+                result.record.to_dict(), record_path=record_path
+            )
+            if result.record is not None
+            else {"path": str(record_path), "created": False}
+        )
+        if result.record is not None:
+            journal["created"] = True
+        _print_json(
+            {
+                "preview": result.preview,
+                "journal": journal,
+                "target_names": target_names,
+                "state": state,
+                "outcome": outcome,
+                "changed_targets": list(result.changed_targets),
+            }
+        )
+        return
+
+    print("Execution" if result.record is not None else "Execution preview")
+    print(f"Targets: {len(target_names)}")
+    for target_name in target_names:
+        print(f"- {_display(target_name)}")
+    print(f"State: {_display(state)}")
+    print(f"Outcome: {_display(outcome)}")
+    if result.record is not None:
+        print(f"Journal: {_display(record_path)}")
+
+
+def _emit_record_inspection(
+    record: dict[str, object], *, record_path: Path, as_json: bool
+) -> None:
+    target_names = _record_target_names(record)
+    state = str(record["state"])
+    journal = _execution_journal_metadata(record, record_path=record_path)
+    if as_json:
+        _print_json(
+            {
+                "journal": journal,
+                "target_names": target_names,
+                "state": state,
+                "outcome": state,
+            }
+        )
+        return
+
+    print(f"Journal: {_display(record_path)}")
+    print(f"State: {_display(state)}")
+    print(f"Outcome: {_display(state)}")
+    print(f"Targets: {len(target_names)}")
+
+
+def _emit_reobserve_result(
+    result: dict[str, object], *, record_path: Path, as_json: bool
+) -> None:
+    """Emit only the metadata returned by the read-only re-observation API."""
+
+    outcome = str(result.get("outcome", "recovery_required"))
+    payload = {
+        "journal": {"path": str(record_path)},
+        "plan_id": result.get("plan_id"),
+        "record_state": result.get("record_state"),
+        "outcome": outcome,
+        "resources": result.get("resources", []),
+    }
+    for key in ("schema_version", "command", "mode", "reason"):
+        if key in result:
+            payload[key] = result[key]
+
+    if as_json:
+        _print_json(payload)
+        return
+
+    print("Recovery re-observation")
+    print(f"Journal: {_display(record_path)}")
+    print(f"Plan ID: {_display(result.get('plan_id'))}")
+    print(f"State: {_display(result.get('record_state'))}")
+    print(f"Outcome: {_display(outcome)}")
+    if "reason" in result:
+        print(f"Reason: {_display(result['reason'])}")
+    resources = result.get("resources", [])
+    if isinstance(resources, list):
+        print(f"Resources: {len(resources)}")
+        for resource in resources:
+            if not isinstance(resource, dict):
+                continue
+            print(
+                f"- {_display(resource.get('name'))}: "
+                f"record={_display(resource.get('record_state'))}; "
+                f"reobserved={_display(resource.get('reobserved_state'))}"
+            )
+
+
+def _emit_execution_error(
+    error: LuwuError, *, record_path: Path, as_json: bool
+) -> None:
+    journal: dict[str, object] = {
+        "path": str(record_path),
+        "created": False,
+    }
+    if record_path.exists():
+        journal["created"] = True
+        try:
+            record = inspect_execution_record(record_path)
+        except LuwuError:
+            journal["state"] = "unreadable"
+        else:
+            journal.update(_execution_journal_metadata(record, record_path=record_path))
+    if as_json:
+        _print_json(
+            {
+                "error": {"code": error.code, "message": str(error)},
+                "journal": journal,
+            }
+        )
+        return
+    print(f"error[{error.code}]: {error}", file=sys.stderr)
+    if journal["created"]:
+        print(
+            f"Journal: {_display(record_path)}; "
+            f"state: {_display(journal.get('state', 'unreadable'))}",
+            file=sys.stderr,
+        )
+
+
+def _execution_target_names(preview: dict[str, object]) -> list[str]:
+    resources = cast(list[object], preview.get("resources", []))
+    return [
+        str(resource["target"])
+        for resource in resources
+        if isinstance(resource, dict) and "target" in resource
+    ]
+
+
+def _record_target_names(record: dict[str, object]) -> list[str]:
+    target_names: list[str] = []
+    resources = record.get("resources", [])
+    if not isinstance(resources, list):
+        return target_names
+    for resource in resources:
+        if not isinstance(resource, dict):
+            continue
+        paths = resource.get("paths", [])
+        if not isinstance(paths, list):
+            continue
+        for path in paths:
+            if isinstance(path, dict) and path.get("role") == "target":
+                target_names.append(str(path["path"]))
+    return target_names
+
+
+def _execution_journal_metadata(
+    record: dict[str, object], *, record_path: Path
+) -> dict[str, object]:
+    manifest = cast(dict[str, object], record["manifest"])
+    policy = cast(dict[str, object], record["policy"])
+    resources = cast(list[dict[str, object]], record["resources"])
+    return {
+        "path": str(record_path),
+        "record_schema_version": record["record_schema_version"],
+        "plan_id": record["plan_id"],
+        "execution_contract": record["execution_contract"],
+        "mutation_contract": record["mutation_contract"],
+        "manifest_version": manifest["version"],
+        "on_failure": policy["on_failure"],
+        "rollback": policy["rollback"],
+        "state": record["state"],
+        "resources": [
+            {"name": resource["name"], "state": resource["state"]}
+            for resource in resources
+        ],
+    }
+
+
 def _print_human_plan(plan: Plan, *, heading: str) -> None:
     print(heading)
     print(f"Manifest: {_display(plan.manifest.path)}")
@@ -266,7 +535,7 @@ def _print_human_plan(plan: Plan, *, heading: str) -> None:
             print(f"  comparison: {_display(resource.comparison)}")
         transition = (
             "source fields -> live fields"
-            if plan.contract_version >= 3
+            if 3 <= plan.contract_version < 5
             else "source -> live target"
         )
         print(f"  transition: {transition}")
@@ -275,11 +544,13 @@ def _print_human_plan(plan: Plan, *, heading: str) -> None:
         print(f"  reason: {_display(observation.reason)}")
         impact = _impact_text(
             observation,
-            read_only=plan.contract_version >= 2,
+            read_only=2 <= plan.contract_version < 5,
         )
         print(f"  impact: {impact}")
     summary = plan.summary()
-    change_label = "candidate change(s)" if plan.contract_version >= 2 else "change(s)"
+    change_label = (
+        "candidate change(s)" if 2 <= plan.contract_version < 5 else "change(s)"
+    )
     print(
         "Summary: "
         f"{summary['total']} resource(s), "
@@ -287,12 +558,15 @@ def _print_human_plan(plan: Plan, *, heading: str) -> None:
         f"{summary.get('reported', 0)} report(s), "
         f"{summary['blocked']} blocked"
     )
-    if plan.contract_version >= 3:
+    if 3 <= plan.contract_version < 5:
         print("Capability: read-only (M3a)")
         print(f"Apply: blocked ({plan.apply_block_reason})")
-    elif plan.contract_version >= 2:
+    elif 2 <= plan.contract_version < 5:
         print("Capability: read-only (M2)")
         print(f"Apply: blocked ({plan.apply_block_reason})")
+    elif plan.contract_version == 5:
+        print("Capability: explicit execution (M3c)")
+        print("Apply: use --yes with --record PATH")
 
 
 def _print_json(payload: dict[str, object]) -> None:
@@ -300,10 +574,43 @@ def _print_json(payload: dict[str, object]) -> None:
 
 
 def _emit_error(error: LuwuError, *, as_json: bool) -> None:
+    error_payload: dict[str, object] = {
+        "code": error.code,
+        "message": str(error),
+    }
+    if isinstance(error, MutationError):
+        error_payload.update(error.metadata())
     if as_json:
-        _print_json({"error": {"code": error.code, "message": str(error)}})
+        _print_json({"error": error_payload})
     else:
-        print(f"error[{error.code}]: {error}", file=sys.stderr)
+        details = ""
+        if isinstance(error, MutationError):
+            fields = ",".join(_display(field) for field in error.fields) or "-"
+            details = (
+                f"; operation={_display(error.operation)}"
+                f"; resource={_display(error.resource)}"
+                f"; fields={fields}"
+                f"; write={_display(error.write_path)}"
+                f"; committed={str(error.committed).lower()}"
+                f"; outcome={_display(error.outcome)}"
+            )
+        print(f"error[{error.code}]: {error}{details}", file=sys.stderr)
+
+
+def _mutation_write_path(
+    manifest: object,
+    *,
+    operation: str,
+    resource_name: str,
+) -> str | None:
+    """Resolve a mutation's declared write label without reading its contents."""
+
+    resources = getattr(manifest, "resources", ())
+    matches = [resource for resource in resources if resource.name == resource_name]
+    if len(matches) != 1:
+        return None
+    resource = matches[0]
+    return resource.baseline_name if operation == "accept" else resource.source_name
 
 
 def _display(value: object) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -16,12 +17,15 @@ MANIFEST_VERSION = 1
 _MANIFEST_VERSION_V2 = 2
 _MANIFEST_VERSION_V3 = 3
 _MANIFEST_VERSION_V4 = 4
+EXECUTION_MANIFEST_VERSION = 5
+EXECUTION_RESOURCE_CAPABILITY = "public-source-whole-file"
 _SUPPORTED_MANIFEST_VERSIONS = frozenset(
     {
         MANIFEST_VERSION,
         _MANIFEST_VERSION_V2,
         _MANIFEST_VERSION_V3,
         _MANIFEST_VERSION_V4,
+        EXECUTION_MANIFEST_VERSION,
     }
 )
 _MANIFEST_FIELDS = {"version", "resources"}
@@ -50,6 +54,16 @@ _V3_RESOURCE_FIELDS = {
     "content_sensitivity",
 }
 _V4_RESOURCE_FIELDS = _V3_RESOURCE_FIELDS | {"reverse_sync"}
+_EXECUTION_RESOURCE_FIELDS = {
+    "content_sensitivity",
+    "kind",
+    "source",
+    "target",
+    "owner",
+    "scope",
+    "variables",
+    "variables_sensitivity",
+}
 _LOADER_PROVENANCE = object()
 _PUBLIC_VARIABLES_TOKEN = object()
 _SENSITIVE_VARIABLE_KEYS = {
@@ -62,6 +76,10 @@ _SENSITIVE_VARIABLE_KEYS = {
     "secret",
     "secrets",
     "token",
+    "access_token",
+    "client_secret",
+    "refresh_token",
+    "session_token",
 }
 
 
@@ -111,6 +129,7 @@ class Resource:
     reverse_sync: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType({}), repr=False
     )
+    capability: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +144,20 @@ class Manifest:
     _provenance: object | None = field(
         default=None, init=False, repr=False, compare=False
     )
+
+    @property
+    def execution_capability(self) -> str | None:
+        """Return the write capability exposed to the M3c executor."""
+
+        if self.version == EXECUTION_MANIFEST_VERSION:
+            return EXECUTION_RESOURCE_CAPABILITY
+        return None
+
+
+def is_execution_manifest(manifest: Manifest) -> bool:
+    """Whether *manifest* uses the explicit M3c execution contract."""
+
+    return manifest.version == EXECUTION_MANIFEST_VERSION
 
 
 def load_manifest(path: Path) -> Manifest:
@@ -176,7 +209,7 @@ def load_manifest(path: Path) -> Manifest:
     version = document.get("version")
     if type(version) is not int or version not in _SUPPORTED_MANIFEST_VERSIONS:
         raise ManifestError(
-            "manifest version must be 1, 2, 3, or 4",
+            "manifest version must be 1, 2, 3, 4, or 5",
             code="manifest_version",
         )
 
@@ -219,6 +252,8 @@ def load_manifest(path: Path) -> Manifest:
             allowed_resource_fields = _V3_RESOURCE_FIELDS
         elif version == _MANIFEST_VERSION_V4:
             allowed_resource_fields = _V4_RESOURCE_FIELDS
+        elif version == EXECUTION_MANIFEST_VERSION:
+            allowed_resource_fields = _EXECUTION_RESOURCE_FIELDS
         else:
             allowed_resource_fields = _RESOURCE_FIELDS - {
                 "fields",
@@ -240,9 +275,12 @@ def load_manifest(path: Path) -> Manifest:
         )
 
         raw_kind = raw_resource.get("kind")
-        if version == _MANIFEST_VERSION_V3 and raw_kind is None:
+        if (
+            version in {_MANIFEST_VERSION_V3, EXECUTION_MANIFEST_VERSION}
+            and raw_kind is None
+        ):
             raise ManifestError(
-                f"resource {name!r} kind must be explicitly 'template' in manifest version 3",
+                f"resource {name!r} kind must be explicitly 'template' or 'symbolic' in manifest version {version}",
                 code="resource_kind",
             )
         if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4} and raw_kind is None:
@@ -261,6 +299,8 @@ def load_manifest(path: Path) -> Manifest:
             supported_kinds = {"template"}
         if version == _MANIFEST_VERSION_V4:
             supported_kinds = {"template"}
+        if version == EXECUTION_MANIFEST_VERSION:
+            supported_kinds = {"template", "symbolic"}
         if kind not in supported_kinds:
             raise ManifestError(
                 f"resource {name!r} kind is not supported by manifest version {version}",
@@ -381,6 +421,16 @@ def load_manifest(path: Path) -> Manifest:
             if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}
             else None
         )
+        if (
+            version == EXECUTION_MANIFEST_VERSION
+            and raw_content_sensitivity != "public"
+        ):
+            raise ManifestError(
+                f"resource {name!r} content_sensitivity must be 'public'",
+                code="resource_content_sensitivity",
+            )
+        if version == EXECUTION_MANIFEST_VERSION:
+            content_sensitivity = "public"
         baseline_name: str | None = None
         baseline: Path | None = None
         if (
@@ -450,6 +500,11 @@ def load_manifest(path: Path) -> Manifest:
                 baseline_name=baseline_name,
                 content_sensitivity=content_sensitivity,
                 reverse_sync=reverse_sync,
+                capability=(
+                    EXECUTION_RESOURCE_CAPABILITY
+                    if version == EXECUTION_MANIFEST_VERSION
+                    else None
+                ),
             )
         )
         resolved_sources.append(resolved_source)
@@ -644,6 +699,11 @@ def _parse_reverse_sync(
                 f"resource {resource_name!r} reverse_sync source key must be non-empty",
                 code="reverse_sync_source_key",
             )
+        if source_name != field_name:
+            raise ManifestError(
+                f"resource {resource_name!r} reverse_sync requires an identity field mapping",
+                code="reverse_sync_owner",
+            )
         if source_name in source_names:
             raise ManifestError(
                 f"resource {resource_name!r} reverse_sync source keys must be unique",
@@ -703,7 +763,7 @@ def _copy_supported_value(value: Any, *, field: str) -> object:
                     f"{field} keys must be strings",
                     code="resource_variables",
                 )
-            if key.casefold().replace("-", "_") in _SENSITIVE_VARIABLE_KEYS:
+            if _is_sensitive_variable_key(key):
                 raise ManifestError(
                     f"{field}.{key} is not accepted in the public M1 input boundary",
                     code="resource_secret_field",
@@ -713,6 +773,14 @@ def _copy_supported_value(value: Any, *, field: str) -> object:
     raise ManifestError(
         f"{field} contains an unsupported value type",
         code="resource_variables",
+    )
+
+
+def _is_sensitive_variable_key(key: str) -> bool:
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).casefold()
+    normalized = normalized.replace("-", "_")
+    return normalized in _SENSITIVE_VARIABLE_KEYS or normalized.endswith(
+        ("_credential", "_credentials", "_key", "_password", "_secret", "_token")
     )
 
 

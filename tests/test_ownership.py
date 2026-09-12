@@ -80,6 +80,45 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(field["decision"], "none")
         self.assertEqual(result.baseline_status, "absent")
 
+    def test_equal_undeclared_content_is_not_reported_changed(self) -> None:
+        result = classify_fields(
+            b'{"declared":1,"extra":2}',
+            b'{"declared":1,"extra":2}',
+            fields={"declared": "source"},
+            baseline=_baseline({"declared": 1}, {"declared": "source"}),
+            resource_name="resource",
+            source_name="source",
+            target_name="target",
+        )
+
+        self.assertFalse(result.undeclared_changed)
+
+    def test_boolean_and_number_are_not_equivalent_json_values(self) -> None:
+        result = classify_fields(
+            b'{"declared":true}',
+            b'{"declared":1}',
+            fields={"declared": "source"},
+            baseline=_baseline({"declared": False}, {"declared": "source"}),
+            resource_name="resource",
+            source_name="source",
+            target_name="target",
+        )
+
+        self.assertEqual(result.fields[0].status, "conflict")
+
+    def test_undeclared_boolean_and_number_are_not_equivalent(self) -> None:
+        result = classify_fields(
+            b'{"declared":1,"extra":true}',
+            b'{"declared":1,"extra":1}',
+            fields={"declared": "source"},
+            baseline=_baseline({"declared": 1}, {"declared": "source"}),
+            resource_name="resource",
+            source_name="source",
+            target_name="target",
+        )
+
+        self.assertTrue(result.undeclared_changed)
+
     def test_baseline_envelope_is_closed_and_bound_to_declaration(self) -> None:
         for baseline in (
             b'{"schema_version":1,"resource":"resource","source":"source","target":"target","owners":{"source_field":"source"},"values":{"unknown":1}}',

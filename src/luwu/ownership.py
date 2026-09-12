@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from .errors import LuwuError
-from .semantic import _parse_strict_json
+from .semantic import _json_values_equal, _parse_strict_json
 
 _OWNERS = frozenset({"source", "live", "merge", "ignore"})
 _MISSING = object()
@@ -88,11 +88,12 @@ def classify_fields(
         for name, owner in sorted(fields.items())
     )
     declared = set(fields)
+    undeclared_keys = (set(desired_value) | set(live_value)) - declared
     undeclared_changed = any(
-        key not in declared
-        or desired_value.get(key, _MISSING) != live_value.get(key, _MISSING)
-        for key in desired_value.keys() | live_value.keys()
-        if key not in declared
+        not _values_equal(
+            desired_value.get(key, _MISSING), live_value.get(key, _MISSING)
+        )
+        for key in undeclared_keys
     )
     return OwnershipResult(
         fields=result_fields,
@@ -119,8 +120,8 @@ def _classify_field(
     desired_value = desired.get(name, _MISSING)
     live_value = live.get(name, _MISSING)
     baseline_value = baseline.get(name, _MISSING)
-    desired_changed = desired_value != baseline_value
-    live_changed = live_value != baseline_value
+    desired_changed = not _values_equal(desired_value, baseline_value)
+    live_changed = not _values_equal(live_value, baseline_value)
 
     if not desired_changed and not live_changed:
         status, decision, reason = (
@@ -128,7 +129,7 @@ def _classify_field(
             "none",
             "desired and live match baseline",
         )
-    elif desired_value == live_value:
+    elif _values_equal(desired_value, live_value):
         status, decision, reason = "converged", "none", "desired and live converged"
     elif desired_changed and not live_changed:
         status, decision, reason = (
@@ -149,6 +150,12 @@ def _classify_field(
             "desired and live changed from baseline",
         )
     return OwnershipField(name, owner, status, decision, reason)
+
+
+def _values_equal(left: Any, right: Any) -> bool:
+    if left is _MISSING or right is _MISSING:
+        return left is right
+    return _json_values_equal(left, right)
 
 
 def _forward_decision(owner: str) -> str:

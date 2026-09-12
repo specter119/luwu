@@ -50,9 +50,14 @@ def build_source_patch(
         raise MutationError(
             "at least one field must be selected", code="field_required"
         )
+    if len(set(selected_fields)) != len(selected_fields):
+        raise MutationError(
+            "fields must be selected at most once", code="field_duplicate"
+        )
 
     patched = dict(source_value)
     source_keys: list[str] = []
+    seen_source_keys: set[str] = set()
     for name in selected_fields:
         if name not in fields:
             raise MutationError("field is not declared", code="field_not_declared")
@@ -63,6 +68,17 @@ def build_source_patch(
             raise MutationError(
                 "field has no reverse-sync mapping", code="reverse_sync_unmapped"
             )
+        if source_key != name or owners.get(source_key) not in {"live", "merge"}:
+            raise MutationError(
+                "literal reverse-sync requires an identity mapping to a live-owned field",
+                code="reverse_sync_mapping",
+            )
+        if source_key in seen_source_keys:
+            raise MutationError(
+                "reverse-sync source keys must be unique",
+                code="reverse_sync_duplicate_source",
+            )
+        seen_source_keys.add(source_key)
         source_keys.append(source_key)
         value = live_value.get(name, _MISSING)
         if value is _MISSING:
