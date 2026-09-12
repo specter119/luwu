@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Self
+from typing import Any, Self, cast
 
 from luwu.cli import main
 from luwu.manifest import load_manifest
@@ -18,7 +18,7 @@ class M3bMutationTests(unittest.TestCase):
             resource = load_manifest(project.manifest).resources[0]
             self.assertEqual(resource.reverse_sync["runtime"], "runtime")
             with self.assertRaises(TypeError):
-                resource.reverse_sync["new"] = "new"  # type: ignore[index]
+                cast(Any, resource.reverse_sync)["new"] = "new"
 
     def test_accept_preview_does_not_create_baseline_and_confirmed_accept_writes_it(
         self,
@@ -110,7 +110,8 @@ class M3bMutationTests(unittest.TestCase):
                 {"setting": 1, "runtime": 2, "undeclared": "source"},
             )
             self.assertEqual(
-                payload["verification"]["resources"][0]["status"], "drifted"
+                cast(dict[str, Any], payload["verification"])["resources"][0]["status"],
+                "drifted",
             )
 
     def test_v4_apply_remains_read_only(self) -> None:
