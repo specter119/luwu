@@ -22,7 +22,7 @@ uv run luwu apply --manifest "$demo_dir/luwu.toml" --yes
 uv run luwu inspect --manifest "$demo_dir/luwu.toml"
 ```
 
-Read [the current reference](docs/reference.md) for the manifest, CLI, JSON, and safety contract. The current M3a slice can observe an explicitly supplied public baseline and field ownership, but it does not accept baselines, reverse-sync, persist plans, use providers, or automatically adopt existing files.
+Read [the current reference](docs/reference.md) for the manifest, CLI, JSON, and safety contract. The current M3b slice additionally supports explicit single-resource public baseline acceptance and literal-JSON reverse-sync; it does not persist plans, execute multi-resource mutations, use providers, or automatically adopt existing files.
 
 Run the deterministic test suite with:
 

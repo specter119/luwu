@@ -1,6 +1,6 @@
 # Luwu Implementation Status
 
-Status: M3a read-only ownership observation implemented; M1/M2 functional scope retained; repository gates pass
+Status: M3b single-resource public mutation slice implemented; M3c durable multi-resource execution not started
 
 This document records what the repository actually implements. The fixed M1 scope and closure checklist are maintained in [milestones/m1.md](milestones/m1.md); the M2 observation scope and closure checklist are maintained in [milestones/m2.md](milestones/m2.md); the M3a implementation boundary and closure evidence are maintained in [milestones/m3.md](milestones/m3.md). This document does not expand the product scope in [product.md](product.md), and it does not replace the contracts in [reference.md](reference.md).
 
@@ -51,21 +51,37 @@ descriptor operations and are never created or updated. Missing baselines are
 reported as `unbased`; one-sided changes produce ownership-aware candidates,
 two-sided changes require review, and undeclared desired/live changes produce a
 separate boolean signal. Version 3 apply is rejected with `m3_read_only` before
-any writer path. M3a does not implement acceptance, reverse sync, persistent
-plans, or multi-resource execution/rollback; those remain M3b/M3c work.
+any writer path. M3a itself does not implement acceptance or reverse sync;
+persistent plans and multi-resource execution/rollback remain M3c work.
+
+M3b now adds version 4 as a narrow public mutation slice. `accept` can
+explicitly write selected desired/live fields to a declared baseline, and
+`reverse-sync` can write selected live-owned fields through an explicit
+literal-JSON source mapping. Both commands require one resource, explicit
+fields, and `--yes`; previews are zero-write and results are metadata-only.
+Dynamic Jinja reverse writes, undeclared content, provider/secret inputs, and
+version 4 `apply` remain blocked. Durable plan records, multi-resource apply,
+partial-success recovery, and rollback are not implemented.
+
+M3c groundwork now includes an unexposed metadata-only `PlanRecord` schema
+with closed validation, immutable transitions, atomic JSON persistence, and a
+fixed `rollback = "never"` policy. It is not yet connected to planning,
+execution, recovery, or a CLI command.
 
 ## Verification
 
 The implementation and isolated fixture were re-verified on the current POSIX development environment:
 
 ```text
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -v  # 112 tests passed
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -v  # 126 tests passed
 PYTHONPYCACHEPREFIX=/tmp/luwu-compile python3 -m compileall -q src tests
 UV_CACHE_DIR=/tmp/luwu-uv-cache uv lock --check
 ruff check src tests
 ruff format --check src tests
 git diff --check
 M3a regression: tests/test_manifest_m3.py, tests/test_ownership.py, and tests/test_m3.py
+M3b regression: tests/test_m3b.py and the v4 manifest/mutation boundary tests
+M3c record regression: tests/test_plan_record.py
 isolated CLI fixture E2E: plan -> apply --yes -> inspect; clean post-apply state
 ```
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from . import __version__
 from .errors import LuwuError
 from .manifest import load_manifest
+from .mutations import accept_baseline, reverse_sync
 from .reconcile import (
     ApplyOutcome,
     ApplyResult,
@@ -46,6 +47,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="confirm the calculated plan and permit atomic target writes",
     )
+
+    accept = commands.add_parser(
+        "accept", help="explicitly accept selected public baseline fields"
+    )
+    _add_common_arguments(accept)
+    accept.add_argument("--resource", required=True)
+    accept.add_argument(
+        "--from", dest="value_from", choices=("desired", "live"), required=True
+    )
+    accept.add_argument("--field", action="append", required=True)
+    accept.add_argument("--yes", action="store_true")
+
+    reverse = commands.add_parser(
+        "reverse-sync", help="explicitly write selected live-owned fields to source"
+    )
+    _add_common_arguments(reverse)
+    reverse.add_argument("--resource", required=True)
+    reverse.add_argument("--field", action="append", required=True)
+    reverse.add_argument("--yes", action="store_true")
     return parser
 
 
@@ -53,6 +73,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         manifest = load_manifest(args.manifest)
+        if args.command in {"accept", "reverse-sync"}:
+            if args.command == "accept":
+                result = accept_baseline(
+                    manifest,
+                    resource_name=args.resource,
+                    value_from=args.value_from,
+                    fields=tuple(args.field),
+                    confirm=args.yes,
+                )
+            else:
+                result = reverse_sync(
+                    manifest,
+                    resource_name=args.resource,
+                    fields=tuple(args.field),
+                    confirm=args.yes,
+                )
+            if args.json:
+                _print_json(result.to_dict())
+            else:
+                print(f"{result.operation}: {result.outcome}")
+                print(f"Resource: {_display(result.resource)}")
+                print(f"Fields: {len(result.fields)}")
+                print(f"Write: {_display(result.write_path)}")
+            return 0 if args.yes else 2
         plan = build_plan(manifest)
         if args.command in {"inspect", "plan"}:
             _emit_plan(plan, command=args.command, as_json=args.json)
