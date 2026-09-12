@@ -1,4 +1,4 @@
-# Luwu M1/M2/M3a Design
+# Luwu M1/M2/M3a/M3b Design
 
 Status: current implementation design
 
@@ -64,7 +64,19 @@ version 3 manifest
 
 `luwu/ownership.py` is a pure classifier. It parses desired and live objects with the existing strict JSON rules, validates a closed baseline envelope bound to the resource/source/target and complete field-owner map, and compares each declared top-level field as a whole subtree. Missing fields use a private sentinel so they remain distinct from JSON `null`. A missing baseline produces `unbased` observations and never grants a candidate. A source/live/merge owner only changes the direction of a one-sided candidate; it does not override a conflict. Undeclared desired/live changes are a separate boolean signal and do not expose unknown keys or values.
 
-`luwu/reconcile.py` reads a baseline through the original declared path with descriptor-relative no-follow operations. It does not use the rendering source resolver for this read, does not create a baseline, and blocks symlinks, non-regular files, missing files, invalid envelopes, and identity mismatches. M3a resources always return `m3_read_only` for apply; candidates are observations and are not translated into `create` or `replace` actions. Persistent plans, acceptance, reverse sync, patch generation, and rollback remain M3b/M3c work.
+`luwu/reconcile.py` reads a baseline through the original declared path with descriptor-relative no-follow operations. It does not use the rendering source resolver for this read, does not create a baseline, and blocks symlinks, non-regular files, missing files, invalid envelopes, and identity mismatches. M3a resources always return `m3_read_only` for apply; candidates are observations and are not translated into `create` or `replace` actions. Persistent plans, multi-resource execution, and rollback remain M3c work.
+
+## M3b explicit mutation
+
+Version 4 keeps the M3a observation path and adds a separate single-resource
+mutation path. `accept` builds a new closed baseline envelope from an explicit
+desired/live choice and selected fields. `reverse-sync` first requires a
+`live_changed` reverse candidate and then patches only an explicitly mapped
+top-level key in a literal JSON source. Dynamic Jinja source is rejected; the
+live target is never copied wholesale into a template. Both writers use
+descriptor-relative no-follow parents, temporary entries, directory locks,
+atomic replacement, and a fresh post-write plan. Durable plan records and
+multi-resource execution are intentionally still outside this slice.
 
 ## Safety boundaries
 

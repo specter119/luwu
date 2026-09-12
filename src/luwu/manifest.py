@@ -15,8 +15,14 @@ from .errors import ManifestError
 MANIFEST_VERSION = 1
 _MANIFEST_VERSION_V2 = 2
 _MANIFEST_VERSION_V3 = 3
+_MANIFEST_VERSION_V4 = 4
 _SUPPORTED_MANIFEST_VERSIONS = frozenset(
-    {MANIFEST_VERSION, _MANIFEST_VERSION_V2, _MANIFEST_VERSION_V3}
+    {
+        MANIFEST_VERSION,
+        _MANIFEST_VERSION_V2,
+        _MANIFEST_VERSION_V3,
+        _MANIFEST_VERSION_V4,
+    }
 )
 _MANIFEST_FIELDS = {"version", "resources"}
 _RESOURCE_FIELDS = {
@@ -43,6 +49,7 @@ _V3_RESOURCE_FIELDS = {
     "baseline",
     "content_sensitivity",
 }
+_V4_RESOURCE_FIELDS = _V3_RESOURCE_FIELDS | {"reverse_sync"}
 _LOADER_PROVENANCE = object()
 _PUBLIC_VARIABLES_TOKEN = object()
 _SENSITIVE_VARIABLE_KEYS = {
@@ -101,6 +108,9 @@ class Resource:
     baseline: Path | None = None
     baseline_name: str | None = None
     content_sensitivity: str | None = None
+    reverse_sync: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({}), repr=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +176,7 @@ def load_manifest(path: Path) -> Manifest:
     version = document.get("version")
     if type(version) is not int or version not in _SUPPORTED_MANIFEST_VERSIONS:
         raise ManifestError(
-            "manifest version must be 1, 2, or 3",
+            "manifest version must be 1, 2, 3, or 4",
             code="manifest_version",
         )
 
@@ -207,6 +217,8 @@ def load_manifest(path: Path) -> Manifest:
         allowed_resource_fields = _RESOURCE_FIELDS
         if version == _MANIFEST_VERSION_V3:
             allowed_resource_fields = _V3_RESOURCE_FIELDS
+        elif version == _MANIFEST_VERSION_V4:
+            allowed_resource_fields = _V4_RESOURCE_FIELDS
         else:
             allowed_resource_fields = _RESOURCE_FIELDS - {
                 "fields",
@@ -233,6 +245,11 @@ def load_manifest(path: Path) -> Manifest:
                 f"resource {name!r} kind must be explicitly 'template' in manifest version 3",
                 code="resource_kind",
             )
+        if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4} and raw_kind is None:
+            raise ManifestError(
+                f"resource {name!r} kind must be explicitly 'template' in manifest version {version}",
+                code="resource_kind",
+            )
         if raw_kind is None:
             kind = "template" if source_relative.suffix == ".j2" else "symbolic"
         else:
@@ -241,6 +258,8 @@ def load_manifest(path: Path) -> Manifest:
         if version == _MANIFEST_VERSION_V2:
             supported_kinds.add("copy")
         if version == _MANIFEST_VERSION_V3:
+            supported_kinds = {"template"}
+        if version == _MANIFEST_VERSION_V4:
             supported_kinds = {"template"}
         if kind not in supported_kinds:
             raise ManifestError(
@@ -264,9 +283,12 @@ def load_manifest(path: Path) -> Manifest:
             if raw_comparison is None
             else _required_string(raw_resource, "comparison", resource_name=name)
         )
-        if version == _MANIFEST_VERSION_V3 and comparison != "json":
+        if (
+            version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}
+            and comparison != "json"
+        ):
             raise ManifestError(
-                f"resource {name!r} comparison must be 'json' in manifest version 3",
+                f"resource {name!r} comparison must be 'json' in manifest version {version}",
                 code="resource_comparison_version",
             )
         if comparison not in {"exact-bytes", "json"}:
@@ -287,10 +309,10 @@ def load_manifest(path: Path) -> Manifest:
         )
 
         owner = _required_string(raw_resource, "owner", resource_name=name)
-        if version == _MANIFEST_VERSION_V3:
+        if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}:
             if owner != "fields":
                 raise ManifestError(
-                    f"resource {name!r} owner must be 'fields' in manifest version 3",
+                    f"resource {name!r} owner must be 'fields' in manifest version {version}",
                     code="resource_owner",
                 )
         elif owner != "source":
@@ -300,10 +322,10 @@ def load_manifest(path: Path) -> Manifest:
             )
 
         scope = _required_string(raw_resource, "scope", resource_name=name)
-        if version == _MANIFEST_VERSION_V3:
+        if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}:
             if scope != "fields":
                 raise ManifestError(
-                    f"resource {name!r} scope must be 'fields' in manifest version 3",
+                    f"resource {name!r} scope must be 'fields' in manifest version {version}",
                     code="resource_scope",
                 )
         elif scope != "whole-file":
@@ -342,21 +364,29 @@ def load_manifest(path: Path) -> Manifest:
         raw_fields = raw_resource.get("fields")
         fields = (
             _parse_fields(raw_fields, resource_name=name)
-            if version == _MANIFEST_VERSION_V3
+            if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}
             else MappingProxyType({})
         )
         raw_content_sensitivity = raw_resource.get("content_sensitivity")
-        if version == _MANIFEST_VERSION_V3 and raw_content_sensitivity != "public":
+        if (
+            version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}
+            and raw_content_sensitivity != "public"
+        ):
             raise ManifestError(
                 f"resource {name!r} content_sensitivity must be 'public'",
                 code="resource_content_sensitivity",
             )
         content_sensitivity = (
-            raw_content_sensitivity if version == _MANIFEST_VERSION_V3 else None
+            raw_content_sensitivity
+            if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}
+            else None
         )
         baseline_name: str | None = None
         baseline: Path | None = None
-        if version == _MANIFEST_VERSION_V3 and "baseline" in raw_resource:
+        if (
+            version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}
+            and "baseline" in raw_resource
+        ):
             baseline_name = _required_string(
                 raw_resource, "baseline", resource_name=name
             )
@@ -365,6 +395,16 @@ def load_manifest(path: Path) -> Manifest:
                 field=f"resource {name!r} baseline",
             )
             baseline = root / baseline_relative
+
+        reverse_sync = (
+            _parse_reverse_sync(
+                raw_resource.get("reverse_sync"),
+                fields=fields,
+                resource_name=name,
+            )
+            if version == _MANIFEST_VERSION_V4
+            else MappingProxyType({})
+        )
 
         source = root / source_relative
         try:
@@ -409,6 +449,7 @@ def load_manifest(path: Path) -> Manifest:
                 baseline=baseline,
                 baseline_name=baseline_name,
                 content_sensitivity=content_sensitivity,
+                reverse_sync=reverse_sync,
             )
         )
         resolved_sources.append(resolved_source)
@@ -550,6 +591,66 @@ def _parse_fields(raw_fields: object, *, resource_name: str) -> Mapping[str, str
                 code="resource_fields",
             )
         parsed[key] = value
+    return MappingProxyType(parsed)
+
+
+def _parse_reverse_sync(
+    raw_reverse_sync: object,
+    *,
+    fields: Mapping[str, str],
+    resource_name: str,
+) -> Mapping[str, str]:
+    """Parse v4's narrow literal-JSON source-input mapping."""
+
+    if raw_reverse_sync is None:
+        return MappingProxyType({})
+    if not isinstance(raw_reverse_sync, dict):
+        raise ManifestError(
+            f"resource {resource_name!r} reverse_sync must be a table",
+            code="reverse_sync_shape",
+        )
+    unknown = set(raw_reverse_sync) - {"format", "fields"}
+    if unknown:
+        raise ManifestError(
+            f"resource {resource_name!r} reverse_sync has unsupported field(s)",
+            code="reverse_sync_unknown_field",
+        )
+    if raw_reverse_sync.get("format") != "literal-json":
+        raise ManifestError(
+            f"resource {resource_name!r} reverse_sync format must be 'literal-json'",
+            code="reverse_sync_format",
+        )
+    raw_mappings = raw_reverse_sync.get("fields")
+    if not isinstance(raw_mappings, dict) or not raw_mappings:
+        raise ManifestError(
+            f"resource {resource_name!r} reverse_sync fields must be a non-empty table",
+            code="reverse_sync_fields",
+        )
+    parsed: dict[str, str] = {}
+    source_names: set[str] = set()
+    for field_name, source_name in raw_mappings.items():
+        if field_name not in fields:
+            raise ManifestError(
+                f"resource {resource_name!r} reverse_sync field is not declared",
+                code="reverse_sync_undeclared_field",
+            )
+        if fields[field_name] not in {"live", "merge"}:
+            raise ManifestError(
+                f"resource {resource_name!r} reverse_sync field is not live-owned",
+                code="reverse_sync_owner",
+            )
+        if not isinstance(source_name, str) or not source_name:
+            raise ManifestError(
+                f"resource {resource_name!r} reverse_sync source key must be non-empty",
+                code="reverse_sync_source_key",
+            )
+        if source_name in source_names:
+            raise ManifestError(
+                f"resource {resource_name!r} reverse_sync source keys must be unique",
+                code="reverse_sync_duplicate_source",
+            )
+        parsed[field_name] = source_name
+        source_names.add(source_name)
     return MappingProxyType(parsed)
 
 

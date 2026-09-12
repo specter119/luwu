@@ -23,6 +23,12 @@ class RenderError(LuwuError):
     default_code = "template_error"
 
 
+class MutationError(LuwuError):
+    """An explicit M3 mutation could not safely complete."""
+
+    default_code = "mutation_failed"
+
+
 class ApplyError(LuwuError):
     """An explicit apply could not safely complete."""
 
