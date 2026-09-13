@@ -200,6 +200,11 @@ def reverse_sync(
         raise MutationError("field ownership was not observed", code="review_required")
     if observation.ownership.undeclared_changed:
         raise MutationError("undeclared content changed", code="undeclared_changed")
+    baseline_digest = observation.baseline_digest
+    if baseline_digest is None:
+        raise MutationError(
+            "baseline is required for reverse sync", code="review_required"
+        )
     ownership = {field.name: field for field in observation.ownership.fields}
     for name in fields:
         item = ownership.get(name)
@@ -238,25 +243,25 @@ def reverse_sync(
             patch=patch.to_dict(),
         )
     _check_manifest_fresh(manifest)
+    check_inputs = lambda: _check_reverse_sync_inputs(
+        manifest,
+        resource,
+        expected_baseline_digest=baseline_digest,
+        expected_live_identity=live_identity,
+        expected_live_digest=live_state.digest,
+        expected_live_parent_identity=live_state.parent_identity,
+    )
     _write_source(
         manifest.root,
         resource,
         patch,
         expected_identity=source_identity,
         expected_digest=source_digest,
-        expected_live_identity=live_identity,
-        expected_live_digest=live_state.digest,
-        expected_live_parent_identity=live_state.parent_identity,
+        check_inputs=check_inputs,
     )
     verification, outcome = _verify_after_commit(
         manifest,
-        check_inputs=lambda: _check_live_snapshot(
-            resource,
-            root=manifest.root,
-            expected_identity=live_identity,
-            expected_digest=live_state.digest,
-            expected_parent_identity=live_state.parent_identity,
-        ),
+        check_inputs=check_inputs,
     )
     return MutationResult(
         operation="reverse-sync",
@@ -378,9 +383,7 @@ def _write_source(
     *,
     expected_identity: tuple[int, int],
     expected_digest: str,
-    expected_live_identity: tuple[int, int] | None = None,
-    expected_live_digest: str | None = None,
-    expected_live_parent_identity: tuple[int, int] | None = None,
+    check_inputs: Callable[[], None],
 ) -> None:
     try:
         parent, name = open_parent_directory(root, resource.source)
@@ -414,14 +417,7 @@ def _write_source(
             raise MutationError(
                 "source changed; run the mutation again", code="stale_plan"
             )
-        if expected_live_identity is not None:
-            _check_live_snapshot(
-                resource,
-                root=root,
-                expected_identity=expected_live_identity,
-                expected_digest=expected_live_digest,
-                expected_parent_identity=expected_live_parent_identity,
-            )
+        check_inputs()
         descriptor, temporary = create_temporary_file(parent, prefix=f".{name}.luwu-")
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(patch.data)
@@ -430,28 +426,15 @@ def _write_source(
             os.fsync(handle.fileno())
         _check_source_current(parent, name, expected_identity, expected_digest)
         _verify_source_parent(parent, resource.source.parent)
-        if expected_live_identity is not None:
-            _check_live_snapshot(
-                resource,
-                root=root,
-                expected_identity=expected_live_identity,
-                expected_digest=expected_live_digest,
-                expected_parent_identity=expected_live_parent_identity,
-            )
+        check_inputs()
         os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
         committed = True
         temporary = None
         try:
             _verify_source_parent(parent, resource.source.parent)
-            if expected_live_identity is not None:
-                _check_live_snapshot(
-                    resource,
-                    root=root,
-                    expected_identity=expected_live_identity,
-                    expected_digest=expected_live_digest,
-                    expected_parent_identity=expected_live_parent_identity,
-                )
-        except MutationError as exc:
+            check_inputs()
+        except Exception as exc:
+            # The replacement succeeded; any input recheck failure is state unknown.
             raise MutationError(
                 "source commit state could not be confirmed",
                 code="source_state_unknown",
@@ -574,6 +557,40 @@ def _check_live_snapshot(
         raise MutationError(
             "live target changed; run the mutation again", code="stale_plan"
         )
+
+
+def _check_reverse_sync_inputs(
+    manifest: Manifest,
+    resource: Resource,
+    *,
+    expected_baseline_digest: str,
+    expected_live_identity: tuple[int, int],
+    expected_live_digest: str | None,
+    expected_live_parent_identity: tuple[int, int] | None,
+) -> None:
+    try:
+        current_baseline = read_baseline(manifest.root, resource)
+    except MutationError as exc:
+        raise MutationError(
+            "baseline changed; run the mutation again", code="stale_plan"
+        ) from exc
+    current_baseline_digest = (
+        None
+        if current_baseline is None
+        else hashlib.sha256(current_baseline).hexdigest()
+    )
+    if current_baseline_digest != expected_baseline_digest:
+        raise MutationError(
+            "baseline changed; run the mutation again", code="stale_plan"
+        )
+    _check_manifest_fresh(manifest)
+    _check_live_snapshot(
+        resource,
+        root=manifest.root,
+        expected_identity=expected_live_identity,
+        expected_digest=expected_live_digest,
+        expected_parent_identity=expected_live_parent_identity,
+    )
 
 
 def _verify_source_parent(parent: int, path: Path) -> None:

@@ -34,7 +34,7 @@ from .manifest import (
     load_manifest,
 )
 from .ownership import OwnershipResult, classify_fields
-from .plan_record import PlanRecord, PlanRecordError
+from .plan_record import PlanRecord, PlanRecordError, record_lock_path
 from .rendering import read_source, render_template
 from .semantic import (
     ComparisonResult,
@@ -118,6 +118,7 @@ class ResourceObservation:
     )
     comparison: ComparisonResult | None = field(default=None, repr=False, compare=False)
     ownership: OwnershipResult | None = field(default=None, repr=False, compare=False)
+    baseline_digest: str | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
@@ -482,6 +483,7 @@ def _plan_fields(manifest: Manifest, resource: Resource) -> ResourceObservation:
         target_parent_identity=live.parent_identity,
         comparison=comparison,
         ownership=ownership,
+        baseline_digest=None if baseline is None else _digest(baseline),
     )
 
 
@@ -1229,9 +1231,14 @@ def reobserve_execution_record(record_path: Path) -> dict[str, object]:
             )
         resource_state = str(persisted["state"])
         all_match = all(bool(item["matches_postcondition"]) for item in path_results)
-        if resource_state in {"committed", "unchanged"} and all_match:
+        fresh_in_sync = observation is not None and observation.status is Status.IN_SYNC
+        if resource_state in {"committed", "unchanged"} and all_match and fresh_in_sync:
             reobserved = "confirmed"
-        elif resource_state in {"unknown", "recovery_required"} and all_match:
+        elif (
+            resource_state in {"unknown", "recovery_required"}
+            and all_match
+            and fresh_in_sync
+        ):
             reobserved = "matches_postcondition"
         elif resource_state == "not-attempted":
             reobserved = "not-attempted"
@@ -1339,11 +1346,13 @@ def _execution_preview(plan: Plan) -> dict[str, object]:
 
 
 def _check_execution_record_path(plan: Plan, record_path: Path) -> None:
-    record_candidates = {_absolute_path(record_path)}
-    try:
-        record_candidates.add(record_path.expanduser().resolve(strict=False))
-    except (OSError, RuntimeError):
-        pass
+    record_candidates: set[Path] = set()
+    for path in (record_path, record_lock_path(record_path)):
+        record_candidates.add(_absolute_path(path))
+        try:
+            record_candidates.add(path.expanduser().resolve(strict=False))
+        except (OSError, RuntimeError):
+            pass
     declared = [plan.manifest.path]
     declared.extend(
         path
@@ -1362,7 +1371,8 @@ def _check_execution_record_path(plan: Plan, record_path: Path) -> None:
             for declared_candidate in candidate_paths
         ):
             raise ApplyError(
-                "execution journal path overlaps a declared path; no files were changed",
+                "execution journal or lock path overlaps a declared path; "
+                "no files were changed",
                 code="record_path_conflict",
             )
 

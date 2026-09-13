@@ -78,6 +78,13 @@ descriptor-relative no-follow parents, temporary entries, directory locks,
 atomic replacement, and a fresh post-write plan. Durable plan records and
 multi-resource execution are separated into the version 5 execution slice.
 
+Field observations retain a private baseline digest calculated from the bytes
+actually supplied to the classifier, alongside existing source/live stale
+evidence. Reverse-sync reuses that binding in its writer callback; it does not
+infer authorization from an independently reread baseline or persist another
+snapshot. The callback covers the manifest and baseline around replacement
+and post-write verification. Public behavior is defined in [reference.md](reference.md).
+
 ## M3c execution slice
 
 Version 5 keeps observation and mutation separate while granting a new,
@@ -104,6 +111,12 @@ records recovery-required state when possible, and never rolls back an earlier
 resource. `record-inspect` and `recover`/`record-reobserve` are deliberately
 read-only: they inspect or re-observe the recorded boundary, do not replay old
 inputs, and do not provide an automatic recovery mutation.
+
+The journal writer and execution preflight share one deterministic lock-name
+function, so the auxiliary write cannot escape path-conflict checks. Recovery
+combines existing non-content condition checks with the fresh plan's resource
+status when classifying confirmed resources; it adds no persistent content
+evidence or recovery engine.
 
 ## Safety boundaries
 
