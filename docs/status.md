@@ -1,6 +1,6 @@
 # Luwu Implementation Status
 
-Status: M3 complete within the frozen public v3/v4/v5 contracts; automatic replay and rollback remain explicitly out of scope
+Status: M3 complete within the frozen public v3/v4/v5 contracts, including the 2026-09-13 follow-up; automatic replay and rollback remain explicitly out of scope
 
 This document records what the repository actually implements. The fixed M1 scope and closure checklist are maintained in [milestones/m1.md](milestones/m1.md); the M2 observation scope and closure checklist are maintained in [milestones/m2.md](milestones/m2.md); the M3a implementation boundary and closure evidence are maintained in [milestones/m3.md](milestones/m3.md). This document does not expand the product scope in [product.md](product.md), and it does not replace the contracts in [reference.md](reference.md).
 
@@ -82,7 +82,7 @@ the implemented M3c contract is complete without those behaviors.
 The implementation and isolated fixture were re-verified on the current POSIX development environment:
 
 ```text
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -v  # 190 tests passed
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -v  # 213 tests passed
 PYTHONPYCACHEPREFIX=/tmp/luwu-compile python3 -m compileall -q src tests
 UV_CACHE_DIR=/tmp/luwu-uv-cache uv lock --check
 ruff check src tests
@@ -104,11 +104,36 @@ level error collection, metadata-only output, and the zero-write version 2
 apply boundary. It confirms that a changed in-memory manifest version cannot
 turn an M2 plan into a write-capable plan.
 
-The current focused source/test checks pass, including the 190-test suite,
-compileall, Ruff check/format, lockfile validation, and `git diff --check`.
-The M3 ablation experiment also passes its 13 reference scenarios and all
-documented counterexample counts. The full `prek` gate is not claimed for this
-sandbox: with a temporary writable cache its hook clone requires GitHub DNS;
-the default cache is read-only. `uv build` is likewise environment-blocked
-while resolving `hatchling` because the configured package index cannot be
-resolved. These are verification-environment limits, not passing gate claims.
+The 213-test suite, compileall, Ruff check/format, lockfile validation, and
+`git diff --check` pass. Both M3 ablation experiments pass. The earlier
+cache/network limitations are historical: this follow-up successfully built
+the wheel and source distribution and ran the repository hooks with
+`PREK_HOME=/tmp/luwu-prek`. Explicit `--files` hook runs include all new,
+untracked follow-up files; `-a` alone checks only tracked files. The full
+tracked-file gate cannot open the protected `.agents/skills` files for writing
+in this sandbox. Final complete-hook verification therefore uses an isolated
+temporary copy of every tracked and untracked repository file, leaving the
+original index and protected files untouched.
+
+## 2026-09-13 follow-up
+
+The current-worktree audit reproduced three gaps despite the previous 190
+tests passing: the journal lock sidecar could create a declared target before
+execution, reverse-sync did not bind its authorization to the classified
+baseline, and recovery could report confirmed while its fresh plan reported
+drift. The reviewed plan and ablation record are in
+[milestones/m3-followup.md](milestones/m3-followup.md).
+
+The follow-up adds the lock path to preflight, binds a private baseline digest
+to the actual classifier input, rechecks authorization around source writes,
+and combines recovery metadata checks with the current plan state. These
+changes preserve the existing manifest versions and metadata-only output;
+their stable behavior is defined in [reference.md](reference.md).
+
+Independent logic/value reviews identified the gaps and reviewed the plan;
+the final independent code review found no remaining blocking issue in the
+frozen contracts. The follow-up adds 23 tests, including baseline ABA binding,
+pre/post-commit input changes, lock collisions with declared paths, metadata-
+preserving content drift, unknown-state recovery, and CLI redaction/outcomes.
+M3a, M3b, and M3c are implemented within their frozen scopes. M4 provider,
+secret, portability, and operational work remains unstarted.

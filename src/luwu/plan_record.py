@@ -751,7 +751,7 @@ def _require_parent_identity(
 
 
 def _open_record_lock(parent: int, leaf: str) -> int:
-    lock_name = f".{leaf}.luwu-lock"
+    lock_name = _record_lock_name(leaf)
     descriptor: int | None = None
     try:
         descriptor = os.open(
@@ -776,6 +776,16 @@ def _open_record_lock(parent: int, leaf: str) -> int:
         raise PlanRecordError(
             "plan record lock could not be acquired", code="plan_record_write"
         ) from exc
+
+
+def record_lock_path(record_path: Path) -> Path:
+    """Return the deterministic sidecar lock path for a plan record."""
+
+    return record_path.parent / _record_lock_name(record_path.name)
+
+
+def _record_lock_name(leaf: str) -> str:
+    return f".{leaf}.luwu-lock"
 
 
 def _check_expected_record(parent: int, leaf: str, expected: PlanRecord | None) -> None:
