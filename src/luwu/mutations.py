@@ -399,7 +399,9 @@ def _write_source(
     temporary: str | None = None
     locked = False
     committed = False
+    replace_attempted = False
     cleanup_error: MutationError | None = None
+    pending_error: BaseException | None = None
     try:
         lock_directory(parent)
         locked = True
@@ -411,6 +413,7 @@ def _write_source(
                     "source is not a regular file", code="unsafe_source"
                 )
             mode = stat.S_IMODE(info.st_mode)
+            old_identity = _entry_identity(info)
         except FileNotFoundError:
             raise MutationError("source does not exist", code="unsafe_source") from None
         if (info.st_dev, info.st_ino) != expected_identity:
@@ -429,10 +432,54 @@ def _write_source(
             handle.flush()
             os.fchmod(handle.fileno(), mode)
             os.fsync(handle.fileno())
+        temporary_name = temporary
+        if temporary_name is None:
+            raise MutationError(
+                "source temporary entry was not created", code="source_write_failed"
+            )
+        staged_identity = _entry_identity_at(parent, temporary_name)
+        if staged_identity is None:
+            raise MutationError(
+                "source temporary entry disappeared", code="source_write_failed"
+            )
         _check_source_current(parent, name, expected_identity, expected_digest)
         _verify_source_parent(parent, resource.source.parent)
         check_inputs()
-        os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+        replace_attempted = True
+        try:
+            os.replace(temporary_name, name, src_dir_fd=parent, dst_dir_fd=parent)
+        except (OSError, NotImplementedError) as exc:
+            state, temporary_present = _classify_replace_failure(
+                parent,
+                resource.source.parent,
+                name,
+                temporary_name,
+                old_identity,
+                staged_identity,
+            )
+            if temporary_present is False:
+                temporary = None
+            if state == "replaced":
+                committed = True
+                raise MutationError(
+                    "source replacement occurred but its outcome is not fully confirmed",
+                    code="source_state_unknown",
+                    committed=True,
+                    outcome="committed_state_unknown",
+                ) from exc
+            if state == "indeterminate":
+                raise MutationError(
+                    "source replacement state could not be determined",
+                    code="source_state_unknown",
+                    committed=False,
+                    outcome="indeterminate",
+                ) from exc
+            raise MutationError(
+                "source replacement did not occur",
+                code="source_write_failed",
+                committed=False,
+                outcome="not_committed",
+            ) from exc
         committed = True
         temporary = None
         try:
@@ -447,22 +494,30 @@ def _write_source(
                 outcome="committed_state_unknown",
             ) from exc
         sync_directory(parent)
-    except MutationError:
-        raise
+    except MutationError as exc:
+        pending_error = exc
     except (OSError, NotImplementedError) as exc:
-        error = MutationError(
+        pending_error = MutationError(
             "source write could not be confirmed",
-            code=("source_state_unknown" if committed else "source_write_failed"),
+            code=(
+                "source_state_unknown"
+                if replace_attempted and committed
+                else "source_write_failed"
+            ),
             committed=committed,
-            outcome="committed_state_unknown" if committed else "not_committed",
+            outcome=(
+                "committed_state_unknown"
+                if replace_attempted and committed
+                else "not_committed"
+            ),
         )
-        raise error from exc
+        pending_error.__cause__ = exc
+    except Exception as exc:  # noqa: BLE001 - retain the original write failure
+        pending_error = exc
     finally:
         if temporary is not None:
             try:
-                os.unlink(temporary, dir_fd=parent)
-            except FileNotFoundError:
-                pass
+                _remove_source_temporary(parent, temporary)
             except OSError as exc:
                 cleanup_error = MutationError(
                     "source temporary entry could not be cleaned up",
@@ -477,17 +532,43 @@ def _write_source(
             try:
                 unlock_directory(parent)
             except OSError as exc:
-                if committed:
-                    error = MutationError(
-                        "source write state could not be confirmed",
-                        code="source_state_unknown",
-                        committed=True,
-                        outcome="committed_state_unknown",
+                if cleanup_error is None:
+                    cleanup_error = MutationError(
+                        "source directory unlock could not be confirmed",
+                        code="cleanup_failed",
+                        committed=committed,
+                        outcome=(
+                            "committed_state_unknown" if committed else "not_committed"
+                        ),
                     )
-                    raise error from exc
-        os.close(parent)
-        if cleanup_error is not None:
-            raise cleanup_error
+                    cleanup_error.__cause__ = exc
+        try:
+            os.close(parent)
+        except OSError as exc:
+            if cleanup_error is None:
+                cleanup_error = MutationError(
+                    "source parent close could not be confirmed",
+                    code="cleanup_failed",
+                    committed=committed,
+                    outcome=(
+                        "committed_state_unknown" if committed else "not_committed"
+                    ),
+                )
+                cleanup_error.__cause__ = exc
+
+    if cleanup_error is not None:
+        if replace_attempted:
+            pending_error = MutationError(
+                "source write state could not be fully confirmed",
+                code="source_state_unknown",
+                committed=committed,
+                outcome=("committed_state_unknown" if committed else "indeterminate"),
+            )
+            pending_error.__cause__ = cleanup_error
+        else:
+            pending_error = cleanup_error
+    if pending_error is not None:
+        raise pending_error
 
 
 def _check_accept_inputs(
@@ -540,6 +621,47 @@ def _check_source_current(
         or hashlib.sha256(current).hexdigest() != expected_digest
     ):
         raise MutationError("source changed; run the mutation again", code="stale_plan")
+
+
+def _entry_identity(info: os.stat_result) -> tuple[int, int, int]:
+    return info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)
+
+
+def _remove_source_temporary(parent: int, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=parent)
+    except FileNotFoundError:
+        pass
+
+
+def _entry_identity_at(parent: int, name: str) -> tuple[int, int, int] | None:
+    try:
+        return _entry_identity(os.stat(name, dir_fd=parent, follow_symlinks=False))
+    except FileNotFoundError:
+        return None
+
+
+def _classify_replace_failure(
+    parent: int,
+    parent_path: Path,
+    target_name: str,
+    temporary_name: str,
+    old_identity: tuple[int, int, int],
+    staged_identity: tuple[int, int, int],
+) -> tuple[str, bool | None]:
+    """Classify a failed replace without inferring from bytes alone."""
+
+    try:
+        _verify_source_parent(parent, parent_path)
+        target_identity = _entry_identity_at(parent, target_name)
+        temporary_identity = _entry_identity_at(parent, temporary_name)
+    except (MutationError, OSError, NotImplementedError):
+        return "indeterminate", None
+    if target_identity == staged_identity and temporary_identity is None:
+        return "replaced", False
+    if target_identity == old_identity and temporary_identity == staged_identity:
+        return "not_replaced", True
+    return "indeterminate", temporary_identity is not None
 
 
 def _check_live_snapshot(

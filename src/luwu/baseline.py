@@ -173,11 +173,14 @@ def write_baseline(
     temporary: str | None = None
     locked = False
     committed = False
+    replace_attempted = False
     cleanup_error: MutationError | None = None
+    pending_error: BaseException | None = None
     try:
         lock_directory(parent)
         locked = True
         _verify_parent(parent, resource.baseline.parent)
+        old_identity: tuple[int, int, int] | None = None
         try:
             info = os.stat(name, dir_fd=parent, follow_symlinks=False)
             if not stat.S_ISREG(info.st_mode):
@@ -185,6 +188,7 @@ def write_baseline(
                     "baseline is not a regular file", code="baseline_invalid"
                 )
             mode = info.st_mode & 0o777
+            old_identity = _entry_identity(info)
         except FileNotFoundError:
             mode = 0o644
             current = None
@@ -219,11 +223,56 @@ def write_baseline(
                         outcome="not_committed",
                     ) from exc
             raise
+        temporary_name = temporary
+        if temporary_name is None:
+            raise MutationError(
+                "baseline temporary entry was not created",
+                code="baseline_write_failed",
+            )
+        staged_identity = _entry_identity_at(parent, temporary_name)
+        if staged_identity is None:
+            raise MutationError(
+                "baseline temporary entry disappeared", code="baseline_write_failed"
+            )
         if check_inputs is not None:
             check_inputs()
         _check_current_baseline(parent, name, expected_data)
         _verify_parent(parent, resource.baseline.parent)
-        os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+        replace_attempted = True
+        try:
+            os.replace(temporary_name, name, src_dir_fd=parent, dst_dir_fd=parent)
+        except (OSError, NotImplementedError) as exc:
+            state, temporary_present = _classify_replace_failure(
+                parent,
+                resource.baseline.parent,
+                name,
+                temporary_name,
+                old_identity,
+                staged_identity,
+            )
+            if temporary_present is False:
+                temporary = None
+            if state == "replaced":
+                committed = True
+                raise MutationError(
+                    "baseline replacement occurred but its outcome is not fully confirmed",
+                    code="baseline_state_unknown",
+                    committed=True,
+                    outcome="committed_state_unknown",
+                ) from exc
+            if state == "indeterminate":
+                raise MutationError(
+                    "baseline replacement state could not be determined",
+                    code="baseline_state_unknown",
+                    committed=False,
+                    outcome="indeterminate",
+                ) from exc
+            raise MutationError(
+                "baseline replacement did not occur",
+                code="baseline_write_failed",
+                committed=False,
+                outcome="not_committed",
+            ) from exc
         committed = True
         temporary = None
         try:
@@ -256,16 +305,26 @@ def write_baseline(
                     committed=True,
                     outcome="committed_state_unknown",
                 ) from exc
-    except MutationError:
-        raise
+    except MutationError as exc:
+        pending_error = exc
     except (OSError, NotImplementedError) as exc:
-        error = MutationError(
+        pending_error = MutationError(
             "baseline write could not be confirmed",
-            code=("baseline_state_unknown" if committed else "baseline_write_failed"),
+            code=(
+                "baseline_state_unknown"
+                if replace_attempted and committed
+                else "baseline_write_failed"
+            ),
             committed=committed,
-            outcome="committed_state_unknown" if committed else "not_committed",
+            outcome=(
+                "committed_state_unknown"
+                if replace_attempted and committed
+                else "not_committed"
+            ),
         )
-        raise error from exc
+        pending_error.__cause__ = exc
+    except Exception as exc:  # noqa: BLE001 - retain the original write failure
+        pending_error = exc
     finally:
         if temporary is not None:
             try:
@@ -284,17 +343,43 @@ def write_baseline(
             try:
                 unlock_directory(parent)
             except OSError as exc:
-                if committed:
-                    error = MutationError(
-                        "baseline write state could not be confirmed",
-                        code="baseline_state_unknown",
-                        committed=True,
-                        outcome="committed_state_unknown",
+                if cleanup_error is None:
+                    cleanup_error = MutationError(
+                        "baseline directory unlock could not be confirmed",
+                        code="cleanup_failed",
+                        committed=committed,
+                        outcome=(
+                            "committed_state_unknown" if committed else "not_committed"
+                        ),
                     )
-                    raise error from exc
-        os.close(parent)
-        if cleanup_error is not None:
-            raise cleanup_error
+                    cleanup_error.__cause__ = exc
+        try:
+            os.close(parent)
+        except OSError as exc:
+            if cleanup_error is None:
+                cleanup_error = MutationError(
+                    "baseline parent close could not be confirmed",
+                    code="cleanup_failed",
+                    committed=committed,
+                    outcome=(
+                        "committed_state_unknown" if committed else "not_committed"
+                    ),
+                )
+                cleanup_error.__cause__ = exc
+
+    if cleanup_error is not None:
+        if replace_attempted:
+            pending_error = MutationError(
+                "baseline write state could not be fully confirmed",
+                code="baseline_state_unknown",
+                committed=committed,
+                outcome=("committed_state_unknown" if committed else "indeterminate"),
+            )
+            pending_error.__cause__ = cleanup_error
+        else:
+            pending_error = cleanup_error
+    if pending_error is not None:
+        raise pending_error
 
 
 def _verify_parent(parent: int, path: Path) -> None:
@@ -329,6 +414,40 @@ def _remove_temporary(parent: int, name: str) -> None:
         os.unlink(name, dir_fd=parent)
     except FileNotFoundError:
         pass
+
+
+def _entry_identity(info: os.stat_result) -> tuple[int, int, int]:
+    return info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)
+
+
+def _entry_identity_at(parent: int, name: str) -> tuple[int, int, int] | None:
+    try:
+        return _entry_identity(os.stat(name, dir_fd=parent, follow_symlinks=False))
+    except FileNotFoundError:
+        return None
+
+
+def _classify_replace_failure(
+    parent: int,
+    parent_path: Path,
+    target_name: str,
+    temporary_name: str,
+    old_identity: tuple[int, int, int] | None,
+    staged_identity: tuple[int, int, int],
+) -> tuple[str, bool | None]:
+    """Classify a failed replace without inferring from bytes alone."""
+
+    try:
+        _verify_parent(parent, parent_path)
+        target_identity = _entry_identity_at(parent, target_name)
+        temporary_identity = _entry_identity_at(parent, temporary_name)
+    except (MutationError, OSError, NotImplementedError):
+        return "indeterminate", None
+    if target_identity == staged_identity and temporary_identity is None:
+        return "replaced", False
+    if target_identity == old_identity and temporary_identity == staged_identity:
+        return "not_replaced", True
+    return "indeterminate", temporary_identity is not None
 
 
 def _encode_value(value: Any) -> str:
