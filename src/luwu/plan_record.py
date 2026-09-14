@@ -37,6 +37,7 @@ _PATH_KEYS = frozenset(
     {"role", "path", "operation", "precondition", "postcondition", "state"}
 )
 _CONDITION_KEYS = frozenset({"type", "mode", "size", "mtime_ns", "file_id"})
+_CONDITION_TYPES = frozenset({"missing", "unsafe", "regular", "symlink", "other"})
 _EVENT_KEYS = frozenset({"scope", "ordinal", "path", "from_state", "to_state"})
 _STATES = frozenset(
     {
@@ -114,6 +115,14 @@ class PlanRecord:
         manifest: Mapping[str, Any],
         resources: list[Mapping[str, Any]],
     ) -> PlanRecord:
+        if not isinstance(resources, list) or not resources:
+            raise PlanRecordError(
+                "plan record resources are invalid", code="plan_record_resource"
+            )
+        if not all(isinstance(resource, Mapping) for resource in resources):
+            raise PlanRecordError(
+                "plan record resources are invalid", code="plan_record_resource"
+            )
         document = {
             "record_schema_version": 1,
             "plan_id": plan_id,
@@ -123,10 +132,7 @@ class PlanRecord:
             "policy": {"on_failure": "stop", "rollback": "never"},
             "resources": [dict(resource) for resource in resources],
             "state": "planned",
-            "next_ordinal": max(
-                (resource["ordinal"] for resource in resources), default=-1
-            )
-            + 1,
+            "next_ordinal": len(resources),
             "events": [],
         }
         return cls._validated(document)
@@ -442,7 +448,7 @@ def _validate_document(document: Mapping[str, Any]) -> None:
             "plan record policy is unsupported", code="plan_record_policy"
         )
     resources = document["resources"]
-    if not isinstance(resources, list):
+    if not isinstance(resources, list) or not resources:
         raise PlanRecordError(
             "plan record resources are invalid", code="plan_record_resource"
         )
@@ -451,13 +457,17 @@ def _validate_document(document: Mapping[str, Any]) -> None:
     paths: set[tuple[int, str]] = set()
     for resource in resources:
         _validate_resource(resource, ordinals, names, paths)
+    if ordinals != set(range(len(resources))):
+        raise PlanRecordError(
+            "resource ordinals must be contiguous", code="plan_record_resource"
+        )
     _state(document["state"], "plan record state is invalid")
     _int(
         document["next_ordinal"],
         "plan record ordinal is invalid",
         "plan_record_resource",
     )
-    if document["next_ordinal"] <= max(ordinals, default=-1):
+    if document["next_ordinal"] != len(resources):
         raise PlanRecordError(
             "plan record ordinal is invalid", code="plan_record_resource"
         )
@@ -555,9 +565,29 @@ def _validate_resource(
 
 def _validate_condition(value: Any) -> None:
     _closed_mapping(value, _CONDITION_KEYS, "plan_record_path")
-    _string(value["type"], "plan_record_path")
+    condition_type = value["type"]
+    if not isinstance(condition_type, str) or condition_type not in _CONDITION_TYPES:
+        raise PlanRecordError(
+            "plan record condition type is invalid", code="plan_record_path"
+        )
     for key in ("mode", "size", "mtime_ns", "file_id"):
         _int(value[key], "plan record condition is invalid", "plan_record_path")
+    if not 0 <= value["mode"] <= 0o777:
+        raise PlanRecordError(
+            "plan record condition mode is invalid", code="plan_record_path"
+        )
+    if value["size"] < 0 or value["file_id"] < 0:
+        raise PlanRecordError(
+            "plan record condition size or file id is invalid",
+            code="plan_record_path",
+        )
+    if condition_type in {"missing", "unsafe"} and any(
+        value[key] != 0 for key in ("mode", "size", "mtime_ns", "file_id")
+    ):
+        raise PlanRecordError(
+            "missing and unsafe conditions must be zeroed",
+            code="plan_record_path",
+        )
 
 
 def _validate_event_history(

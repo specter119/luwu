@@ -1022,9 +1022,12 @@ def execute_execution_plan(
                     )
             except ApplyError as exc:
                 target_name = observation.resource.target_name
+                indeterminate = exc.code == "recovery_required" and not exc.committed
                 if exc.committed:
                     if target_name not in changed_targets:
                         changed_targets.append(target_name)
+                    execution_resources[ordinal]["state"] = "unknown"
+                elif indeterminate:
                     execution_resources[ordinal]["state"] = "unknown"
                 else:
                     execution_resources[ordinal]["state"] = "failed"
@@ -1034,12 +1037,15 @@ def execute_execution_plan(
                     ordinal,
                     record_path,
                     committed=bool(changed_targets),
+                    recovery_required=indeterminate,
                 )
                 raise ApplyError(
                     f"execution stopped at resource {observation.resource.name!r}; "
                     "rollback=never",
                     code=(
-                        "recovery_required" if changed_targets else "execution_failed"
+                        "recovery_required"
+                        if changed_targets or indeterminate
+                        else "execution_failed"
                     ),
                     committed=bool(changed_targets),
                     target_name=target_name,
@@ -1603,7 +1609,13 @@ def _write_execution_record(
 
 
 def _mark_execution_failure(
-    record: PlanRecord, plan: Plan, ordinal: int, record_path: Path, *, committed: bool
+    record: PlanRecord,
+    plan: Plan,
+    ordinal: int,
+    record_path: Path,
+    *,
+    committed: bool,
+    recovery_required: bool = False,
 ) -> None:
     try:
         failed = record.transition_path(ordinal, "unknown")
@@ -1614,7 +1626,9 @@ def _mark_execution_failure(
             failed = failed.transition_path(later, "not-attempted")
             _write_execution_record(failed, record_path, expected=previous)
         previous = failed
-        failed = failed.transition("recovery_required" if committed else "unknown")
+        failed = failed.transition(
+            "recovery_required" if committed or recovery_required else "unknown"
+        )
         _write_execution_record(failed, record_path, expected=previous)
     except (ApplyError, PlanRecordError) as exc:
         raise ApplyError(
@@ -2262,6 +2276,10 @@ def _write_observation(
             cleanup_error = cleanup_error or exc
 
     if cleanup_error is not None:
+        if write_error is not None and (
+            write_error.committed or write_error.code == "recovery_required"
+        ):
+            raise write_error
         raise ApplyError(
             f"target directory cleanup for resource {observation.resource.name!r} "
             "could not be confirmed",
@@ -2383,8 +2401,9 @@ def _write_temporary_entry(
     committed = False
     apply_error: ApplyError | None = None
     cleanup_error: OSError | None = None
-    temporary_identity: tuple[int, int] | None = None
+    temporary_identity: tuple[int, int, int] | None = None
     temporary_is_symlink = False
+    old_target_identity: tuple[int, int, int] | None = None
     try:
         created_name = create_entry()
         temporary_name = created_name
@@ -2395,7 +2414,7 @@ def _write_temporary_entry(
             dir_fd=parent_descriptor,
             follow_symlinks=False,
         )
-        temporary_identity = _identity(temporary_info)
+        temporary_identity = _entry_identity(temporary_info)
         temporary_is_symlink = stat.S_ISLNK(temporary_info.st_mode)
         _preflight_manifest(plan, execution=execution)
         _preflight_source(plan, observation)
@@ -2406,15 +2425,13 @@ def _write_temporary_entry(
             parent_descriptor=parent_descriptor,
         )
         verify_directory_identity(parent_descriptor, observation.resource.target.parent)
+        old_target_identity = _entry_identity_at(parent_descriptor, target_name)
         current_temporary = os.stat(
             created_name,
             dir_fd=parent_descriptor,
             follow_symlinks=False,
         )
-        if (
-            _identity(current_temporary) != temporary_identity
-            or stat.S_ISLNK(current_temporary.st_mode) != temporary_is_symlink
-        ):
+        if _entry_identity(current_temporary) != temporary_identity:
             raise ApplyError(
                 f"temporary entry for resource {observation.resource.name!r} "
                 "changed during apply",
@@ -2439,12 +2456,48 @@ def _write_temporary_entry(
                     "changed during apply",
                     code="concurrent_change",
                 )
-        os.replace(
-            created_name,
-            target_name,
-            src_dir_fd=parent_descriptor,
-            dst_dir_fd=parent_descriptor,
-        )
+        try:
+            os.replace(
+                created_name,
+                target_name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+        except (OSError, NotImplementedError) as exc:
+            state, temporary_present = _classify_replace_failure(
+                parent_descriptor,
+                observation.resource.target.parent,
+                target_name,
+                created_name,
+                old_target_identity,
+                temporary_identity,
+            )
+            if temporary_present is False:
+                temporary_name = None
+            if state == "replaced":
+                committed = True
+                raise ApplyError(
+                    f"target replacement for resource {observation.resource.name!r} "
+                    "occurred but its outcome is not fully confirmed",
+                    code="durability_unconfirmed",
+                    committed=True,
+                    target_name=observation.resource.target_name,
+                ) from exc
+            if state == "indeterminate":
+                raise ApplyError(
+                    f"target replacement state for resource "
+                    f"{observation.resource.name!r} could not be determined",
+                    code="recovery_required",
+                    committed=False,
+                    target_name=observation.resource.target_name,
+                ) from exc
+            raise ApplyError(
+                f"target replacement for resource {observation.resource.name!r} "
+                "did not occur",
+                code="write_failed",
+                committed=False,
+                target_name=observation.resource.target_name,
+            ) from exc
         committed = True
         temporary_name = None
         sync_directory(parent_descriptor)
@@ -2472,6 +2525,10 @@ def _write_temporary_entry(
                 cleanup_error = exc
 
     if cleanup_error is not None:
+        if apply_error is not None and (
+            apply_error.committed or apply_error.code == "recovery_required"
+        ):
+            raise apply_error
         apply_error = ApplyError(
             f"temporary entry for resource {observation.resource.name!r} "
             "could not be cleaned up",
@@ -2490,6 +2547,42 @@ def _cleanup_temporary_entry(parent_descriptor: int, name: str) -> None:
 
 def _identity(info: os.stat_result) -> tuple[int, int]:
     return info.st_dev, info.st_ino
+
+
+def _entry_identity(info: os.stat_result) -> tuple[int, int, int]:
+    """Identify a no-follow directory entry, including its file type."""
+
+    return info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)
+
+
+def _entry_identity_at(parent: int, name: str) -> tuple[int, int, int] | None:
+    try:
+        return _entry_identity(os.stat(name, dir_fd=parent, follow_symlinks=False))
+    except FileNotFoundError:
+        return None
+
+
+def _classify_replace_failure(
+    parent: int,
+    parent_path: Path,
+    target_name: str,
+    temporary_name: str,
+    old_target_identity: tuple[int, int, int] | None,
+    staged_identity: tuple[int, int, int],
+) -> tuple[str, bool | None]:
+    """Classify an os.replace exception without inferring from content."""
+
+    try:
+        verify_directory_identity(parent, parent_path)
+        target_identity = _entry_identity_at(parent, target_name)
+        temporary_identity = _entry_identity_at(parent, temporary_name)
+    except (FileChangedError, OSError, NotImplementedError, RuntimeError):
+        return "indeterminate", None
+    if target_identity == staged_identity and temporary_identity is None:
+        return "replaced", False
+    if target_identity == old_target_identity and temporary_identity == staged_identity:
+        return "not_replaced", True
+    return "indeterminate", temporary_identity is not None
 
 
 def _digest(data: bytes) -> str:
