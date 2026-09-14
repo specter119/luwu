@@ -970,98 +970,144 @@ def execute_execution_plan(
     if not confirm:
         return ExecutionResult(preview=preview, record=None)
 
-    _preflight_execution_manifest(plan)
-    for observation in plan.observations:
-        _preflight_observation(plan, observation)
-    _check_execution_record_path(plan, record_path)
-
-    record = _execution_record(plan)
-    _write_execution_record(record, record_path)
-    previous = record
-    record = record.transition("preflighted")
-    _write_execution_record(record, record_path, expected=previous)
-    for ordinal in range(len(plan.observations)):
-        previous = record
-        record = record.transition_path(ordinal, "preflighted")
-        _write_execution_record(record, record_path, expected=previous)
-    previous = record
-    record = record.transition("commit_intent")
-    _write_execution_record(record, record_path, expected=previous)
-
+    execution_resources = [
+        {
+            "name": observation.resource.name,
+            "target": observation.resource.target_name,
+            "state": "not-attempted",
+        }
+        for observation in plan.observations
+    ]
+    plan_id: str | None = None
     changed_targets: list[str] = []
-    for ordinal, observation in enumerate(plan.observations):
-        if observation.action is Action.NOOP:
-            previous = record
-            record = record.transition_path(ordinal, "unchanged")
-            _write_execution_record(record, record_path, expected=previous)
-            continue
-        previous = record
-        record = record.transition_path(ordinal, "commit_intent")
-        _write_execution_record(record, record_path, expected=previous)
-        try:
-            _write_observation(plan, observation, execution=True)
-        except ApplyError as exc:
-            recovery_required = exc.committed or any(
-                resource["ordinal"] < ordinal and resource["state"] == "committed"
-                for resource in record.to_dict()["resources"]
-            )
-            _mark_execution_failure(
-                record, plan, ordinal, record_path, committed=recovery_required
-            )
-            raise ApplyError(
-                f"execution stopped at resource {observation.resource.name!r}; "
-                "rollback=never",
-                code=("recovery_required" if recovery_required else "execution_failed"),
-                committed=recovery_required,
-                target_name=observation.resource.target_name,
-            ) from exc
-        changed_targets.append(observation.resource.target_name)
-        try:
-            postcondition = _execution_condition(
-                observation.resource.target, plan.manifest.root
-            )
-            if not _condition_matches_expected(
-                postcondition,
-                _execution_postcondition(
-                    observation,
-                    _execution_condition(
-                        observation.resource.target, plan.manifest.root
-                    ),
-                ),
-            ):
-                raise ApplyError(
-                    f"postcondition for resource {observation.resource.name!r} "
-                    "could not be confirmed",
-                    code="durability_unconfirmed",
-                    committed=True,
-                    target_name=observation.resource.target_name,
-                )
-            committed_record = record.update_path_condition(
-                ordinal,
-                observation.resource.target_name,
-                postcondition=postcondition,
-            ).transition_path(ordinal, "committed")
-            _write_execution_record(committed_record, record_path, expected=record)
-        except ApplyError as exc:
-            recovery_required = True
-            _mark_execution_failure(
-                record, plan, ordinal, record_path, committed=recovery_required
-            )
-            raise ApplyError(
-                f"execution stopped at resource {observation.resource.name!r}; "
-                "rollback=never",
-                code="recovery_required",
-                committed=True,
-                target_name=observation.resource.target_name,
-            ) from exc
-        record = committed_record
+    try:
+        _preflight_execution_manifest(plan)
+        for observation in plan.observations:
+            _preflight_observation(plan, observation)
+        _check_execution_record_path(plan, record_path)
 
-    previous = record
-    record = record.transition("committed")
-    _write_execution_record(record, record_path, expected=previous)
-    return ExecutionResult(
-        preview=preview, record=record, changed_targets=tuple(changed_targets)
-    )
+        record = _execution_record(plan)
+        plan_id = str(record.to_dict()["plan_id"])
+        _write_execution_record(record, record_path)
+        previous = record
+        record = record.transition("preflighted")
+        _write_execution_record(record, record_path, expected=previous)
+        for ordinal in range(len(plan.observations)):
+            previous = record
+            record = record.transition_path(ordinal, "preflighted")
+            _write_execution_record(record, record_path, expected=previous)
+        previous = record
+        record = record.transition("commit_intent")
+        _write_execution_record(record, record_path, expected=previous)
+
+        for ordinal, observation in enumerate(plan.observations):
+            if observation.action is Action.NOOP:
+                previous = record
+                record = record.transition_path(ordinal, "unchanged")
+                execution_resources[ordinal]["state"] = "unchanged"
+                _write_execution_record(record, record_path, expected=previous)
+                continue
+
+            previous = record
+            record = record.transition_path(ordinal, "commit_intent")
+            _write_execution_record(record, record_path, expected=previous)
+            try:
+                writer_committed = _write_observation(plan, observation, execution=True)
+                if not writer_committed:
+                    raise ApplyError(
+                        f"writer for resource {observation.resource.name!r} "
+                        "did not commit the target",
+                        code="write_failed",
+                        target_name=observation.resource.target_name,
+                    )
+            except ApplyError as exc:
+                target_name = observation.resource.target_name
+                if exc.committed:
+                    if target_name not in changed_targets:
+                        changed_targets.append(target_name)
+                    execution_resources[ordinal]["state"] = "unknown"
+                else:
+                    execution_resources[ordinal]["state"] = "failed"
+                _mark_execution_failure(
+                    record,
+                    plan,
+                    ordinal,
+                    record_path,
+                    committed=bool(changed_targets),
+                )
+                raise ApplyError(
+                    f"execution stopped at resource {observation.resource.name!r}; "
+                    "rollback=never",
+                    code=(
+                        "recovery_required" if changed_targets else "execution_failed"
+                    ),
+                    committed=bool(changed_targets),
+                    target_name=target_name,
+                ) from exc
+
+            if observation.resource.target_name not in changed_targets:
+                changed_targets.append(observation.resource.target_name)
+            execution_resources[ordinal]["state"] = "unknown"
+            try:
+                postcondition = _execution_condition(
+                    observation.resource.target, plan.manifest.root
+                )
+                if not _condition_matches_expected(
+                    postcondition,
+                    _execution_postcondition(
+                        observation,
+                        _execution_condition(
+                            observation.resource.target, plan.manifest.root
+                        ),
+                    ),
+                ):
+                    raise ApplyError(
+                        f"postcondition for resource {observation.resource.name!r} "
+                        "could not be confirmed",
+                        code="durability_unconfirmed",
+                        committed=True,
+                        target_name=observation.resource.target_name,
+                    )
+                committed_record = record.update_path_condition(
+                    ordinal,
+                    observation.resource.target_name,
+                    postcondition=postcondition,
+                ).transition_path(ordinal, "committed")
+                execution_resources[ordinal]["state"] = "committed"
+                _write_execution_record(committed_record, record_path, expected=record)
+            except ApplyError as exc:
+                _mark_execution_failure(
+                    record,
+                    plan,
+                    ordinal,
+                    record_path,
+                    committed=bool(changed_targets),
+                )
+                if execution_resources[ordinal]["state"] == "committed":
+                    raise
+                raise ApplyError(
+                    f"execution stopped at resource {observation.resource.name!r}; "
+                    "rollback=never",
+                    code="recovery_required",
+                    committed=bool(changed_targets),
+                    target_name=observation.resource.target_name,
+                ) from exc
+            record = committed_record
+
+        previous = record
+        record = record.transition("committed")
+        _write_execution_record(record, record_path, expected=previous)
+        return ExecutionResult(
+            preview=preview,
+            record=record,
+            changed_targets=tuple(changed_targets),
+        )
+    except ApplyError as exc:
+        exc.committed = bool(changed_targets)
+        exc.execution = _execution_error_metadata(
+            plan_id, changed_targets, execution_resources
+        )
+        raise
 
 
 def inspect_execution_record(record_path: Path) -> dict[str, object]:
@@ -1256,12 +1302,11 @@ def reobserve_execution_record(record_path: Path) -> dict[str, object]:
                 "paths": path_results,
             }
         )
-    overall = "confirmed"
-    if any(
-        item["reobserved_state"] in {"changed_or_unknown", "matches_postcondition"}
-        for item in resources
-    ):
-        overall = "recovery_required"
+    overall = (
+        "confirmed"
+        if all(item["reobserved_state"] == "confirmed" for item in resources)
+        else "recovery_required"
+    )
     return {
         "schema_version": EXECUTION_MANIFEST_VERSION,
         "command": "recover",
@@ -1341,6 +1386,28 @@ def _execution_preview(plan: Plan) -> dict[str, object]:
                 "reason": observation.reason,
             }
             for ordinal, observation in enumerate(plan.observations)
+        ],
+    }
+
+
+def _execution_error_metadata(
+    plan_id: str | None,
+    changed_targets: list[str],
+    resources: list[dict[str, str]],
+) -> dict[str, object]:
+    """Build the fixed, metadata-only context attached to execution failures."""
+
+    return {
+        "plan_id": plan_id,
+        "committed": bool(changed_targets),
+        "changed_targets": list(changed_targets),
+        "resources": [
+            {
+                "name": resource["name"],
+                "target": resource["target"],
+                "state": resource["state"],
+            }
+            for resource in resources
         ],
     }
 
@@ -1528,11 +1595,10 @@ def _write_execution_record(
 ) -> None:
     try:
         record.write(record_path, expected=expected)
-    except PlanRecordError as exc:
+    except (PlanRecordError, OSError) as exc:
         raise ApplyError(
             "execution journal durability is unknown; recovery is required",
             code="recovery_required",
-            committed=exc.committed,
         ) from exc
 
 

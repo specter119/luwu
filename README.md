@@ -22,7 +22,7 @@ uv run luwu apply --manifest "$demo_dir/luwu.toml" --yes
 uv run luwu inspect --manifest "$demo_dir/luwu.toml"
 ```
 
-Read [the current reference](docs/reference.md) for the manifest, CLI, JSON, and safety contract. The current M3b slice additionally supports explicit single-resource public baseline acceptance and literal-JSON reverse-sync; it does not persist plans, execute multi-resource mutations, use providers, or automatically adopt existing files.
+Read [the current reference](docs/reference.md) for the manifest, CLI, JSON, and safety contract, and [implementation status](docs/status.md) for verified scope. M3b adds explicit single-resource public baseline acceptance and literal-JSON reverse-sync. M3c adds journaled execution of public whole-file resources and read-only recovery observation. Provider integration remains future work.
 
 Run the deterministic test suite with:
 

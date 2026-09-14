@@ -118,6 +118,15 @@ combines existing non-content condition checks with the fresh plan's resource
 status when classifying confirmed resources; it adds no persistent content
 evidence or recovery engine.
 
+The executor also retains target progress in memory independently of journal
+publication. A single execution error boundary attaches that progress to
+`ApplyError`, so a later record or failure-marking error cannot erase known
+target replacements. The CLI serializes only the allowed metadata fields and
+keeps the readable journal separate from this invocation's target evidence.
+This uses the existing writer outcomes and journal, without another durable
+ledger or recovery mechanism. The exact error states and recovery aggregation
+are defined in [reference.md](reference.md).
+
 ## Safety boundaries
 
 The normative manifest, CLI, error, and write contract is owned by

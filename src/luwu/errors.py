@@ -88,7 +88,9 @@ class ApplyError(LuwuError):
         code: str | None = None,
         committed: bool = False,
         target_name: str | None = None,
+        execution: dict[str, object] | None = None,
     ) -> None:
         super().__init__(message, code=code)
         self.committed = committed
         self.target_name = target_name
+        self.execution = execution

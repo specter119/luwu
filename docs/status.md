@@ -1,6 +1,6 @@
 # Luwu Implementation Status
 
-Status: M3 complete within the frozen public v3/v4/v5 contracts, including the 2026-09-13 follow-up; automatic replay and rollback remain explicitly out of scope
+Status: M3 complete within the frozen public v3/v4/v5 contracts, including the 2026-09-14 execution and conflict closure
 
 This document records what the repository actually implements. The fixed M1 scope and closure checklist are maintained in [milestones/m1.md](milestones/m1.md); the M2 observation scope and closure checklist are maintained in [milestones/m2.md](milestones/m2.md); the M3a implementation boundary and closure evidence are maintained in [milestones/m3.md](milestones/m3.md). This document does not expand the product scope in [product.md](product.md), and it does not replace the contracts in [reference.md](reference.md).
 
@@ -77,9 +77,9 @@ execution contract. Automatic replay, rollback, and guarantees against
 unrelated writers that ignore advisory locks remain explicitly outside scope;
 the implemented M3c contract is complete without those behaviors.
 
-## Verification
+## Verification of the 2026-09-13 follow-up
 
-The implementation and isolated fixture were re-verified on the current POSIX development environment:
+The earlier follow-up recorded these results on the POSIX development environment. They are historical evidence; the subsequent closure review is recorded below.
 
 ```text
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -v  # 213 tests passed
@@ -137,3 +137,40 @@ pre/post-commit input changes, lock collisions with declared paths, metadata-
 preserving content drift, unknown-state recovery, and CLI redaction/outcomes.
 M3a, M3b, and M3c are implemented within their frozen scopes. M4 provider,
 secret, portability, and operational work remains unstarted.
+
+## 2026-09-14 execution and conflict closure
+
+The next audit started from freshly fetched `origin/master` at `d9d7092`.
+Its 213 passing tests did not cover three additional cases: a final journal
+failure losing known target commits, standalone unattempted recovery being
+reported as confirmed, and reverse-sync proceeding past an unselected field
+conflict. The reviewed plan, ablation and completion audit are maintained in
+[milestones/m3-execution-closure.md](milestones/m3-execution-closure.md).
+
+The implementation now separates target outcomes from journal publication,
+retains execution metadata even if journal diagnostics fail, requires every
+resource to be confirmed for successful recovery, and blocks reverse-sync on
+resource-level review. The existing public manifest versions and persistent
+journal schema are unchanged. Independent logic, consent and confidentiality
+reviews found no remaining implementation blocker. The additional preflight
+journal fault cases requested by final review are covered, along with
+failure-marking after a known replacement and failure of journal diagnostics.
+
+Current verification: 243 unittest tests pass (30 added to the fetched
+baseline), all three M3 ablation scripts pass, and Ruff check/format, ty,
+compileall, lockfile validation, wheel/sdist build and `git diff --check` pass.
+The isolated M1 CLI loop again finishes in sync with a regular mode-0644
+target. Test operations use temporary projects, not user configuration.
+
+The complete hook gate passes in `/tmp/luwu-m3-closure-gate-MJnGeL`, containing
+every current tracked and untracked repository file. File-by-file byte
+comparison verifies that the checked copy matches the working tree. This
+allows formatting hooks to run without opening the original protected
+`.agents` files or changing the original Git index. Hooks with no applicable
+files report skipped, not test coverage. Initial dependency resolution was
+blocked by sandbox DNS; authorized retries succeeded. Build artifacts are in
+`/tmp/luwu-m3-execution-closure-dist/`.
+
+M3a, M3b and M3c are complete within their frozen contracts. M4 remains
+unstarted; automatic replay, rollback and strong consistency against unrelated
+writers remain outside the M3 closure.
