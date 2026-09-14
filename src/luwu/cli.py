@@ -27,6 +27,10 @@ from .reconcile import (
     reobserve_execution_record,
 )
 
+_EXECUTION_RESOURCE_STATES = frozenset(
+    {"unchanged", "committed", "failed", "unknown", "not-attempted"}
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -445,29 +449,110 @@ def _emit_execution_error(
 ) -> None:
     journal: dict[str, object] = {
         "path": str(record_path),
-        "created": False,
+        "created": None,
     }
-    if record_path.exists():
-        journal["created"] = True
-        try:
+    try:
+        record_exists = record_path.exists()
+        journal["created"] = record_exists
+        if record_exists:
             record = inspect_execution_record(record_path)
-        except LuwuError:
-            journal["state"] = "unreadable"
-        else:
             journal.update(_execution_journal_metadata(record, record_path=record_path))
+    except Exception:  # noqa: BLE001 - diagnostics must not mask execution facts
+        journal["state"] = "unreadable"
+    execution = _execution_error_metadata(error)
     if as_json:
-        _print_json(
-            {
-                "error": {"code": error.code, "message": str(error)},
-                "journal": journal,
-            }
-        )
+        payload: dict[str, object] = {
+            "error": {"code": error.code, "message": str(error)},
+            "journal": journal,
+        }
+        if execution is not None:
+            payload["execution"] = execution
+        _print_json(payload)
         return
     print(f"error[{error.code}]: {error}", file=sys.stderr)
-    if journal["created"]:
+    if journal["created"] or journal.get("state") == "unreadable":
         print(
             f"Journal: {_display(record_path)}; "
             f"state: {_display(journal.get('state', 'unreadable'))}",
+            file=sys.stderr,
+        )
+    if execution is not None:
+        _emit_human_execution_error(execution)
+
+
+def _execution_error_metadata(error: LuwuError) -> dict[str, object] | None:
+    """Serialize a complete fixed execution context without guessing values."""
+
+    raw_execution = getattr(error, "execution", None)
+    if not isinstance(raw_execution, dict):
+        return None
+
+    plan_id = raw_execution.get("plan_id")
+    changed_targets = raw_execution.get("changed_targets")
+    raw_resources = raw_execution.get("resources")
+    committed = raw_execution.get("committed")
+    if not (
+        (isinstance(plan_id, str) or plan_id is None)
+        and type(committed) is bool
+        and isinstance(changed_targets, list)
+        and all(isinstance(target, str) for target in changed_targets)
+        and isinstance(raw_resources, list)
+        and all(_is_execution_resource(item) for item in raw_resources)
+        and committed == bool(changed_targets)
+        and getattr(error, "committed", None) == committed
+    ):
+        return None
+
+    normalized_targets = cast(list[str], changed_targets)
+    normalized_resources = [
+        {
+            "name": cast(str, resource["name"]),
+            "target": cast(str, resource["target"]),
+            "state": cast(str, resource["state"]),
+        }
+        for resource in cast(list[dict[str, object]], raw_resources)
+    ]
+    return {
+        "plan_id": plan_id if isinstance(plan_id, str) else None,
+        "committed": committed,
+        "changed_targets": normalized_targets,
+        "resources": normalized_resources,
+    }
+
+
+def _is_execution_resource(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    name = value.get("name")
+    target = value.get("target")
+    state = value.get("state")
+    return (
+        isinstance(name, str)
+        and isinstance(target, str)
+        and isinstance(state, str)
+        and state in _EXECUTION_RESOURCE_STATES
+    )
+
+
+def _emit_human_execution_error(execution: dict[str, object]) -> None:
+    """Make cumulative target facts and per-resource states visible to a user."""
+
+    print(
+        f"Execution: plan_id={_display(execution['plan_id'])}; "
+        f"committed={str(execution['committed']).lower()}",
+        file=sys.stderr,
+    )
+    changed_targets = cast(list[str], execution["changed_targets"])
+    print(f"Changed targets: {len(changed_targets)}", file=sys.stderr)
+    for target in changed_targets:
+        print(f"- {_display(target)}", file=sys.stderr)
+    resources = cast(list[dict[str, str]], execution["resources"])
+    print(f"Resource states: {len(resources)}", file=sys.stderr)
+    for resource in resources:
+        print(
+            f"- {_display(resource['name'])}: "
+            f"target={_display(resource['target'])}; "
+            f"state={_display(resource['state'])}",
             file=sys.stderr,
         )
 

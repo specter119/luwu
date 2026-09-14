@@ -196,6 +196,11 @@ def reverse_sync(
     _validate_selected_fields(resource, fields)
     plan = _checked_plan(manifest, resource)
     observation = plan.observations[0]
+    if observation.status is Status.CONFLICT:
+        raise MutationError(
+            "resource changes require review before reverse sync",
+            code="review_required",
+        )
     if observation.ownership is None:
         raise MutationError("field ownership was not observed", code="review_required")
     if observation.ownership.undeclared_changed:
