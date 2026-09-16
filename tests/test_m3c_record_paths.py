@@ -66,6 +66,18 @@ class M3cRecordPathTests(unittest.TestCase):
 
             self._assert_conflict(project, real_source)
 
+    def test_hardlinked_record_or_lock_alias_is_a_conflict(self) -> None:
+        with _Project() as project:
+            record_path = project.root / "journal.json"
+            record_lock_path(record_path).hardlink_to(project.target)
+            before = _snapshot(project.root)
+
+            with self.assertRaises(ApplyError) as context:
+                execute_execution_plan(project.plan(), record_path, confirm=True)
+
+            self.assertEqual(context.exception.code, "record_path_conflict")
+            self.assertEqual(_snapshot(project.root), before)
+
     def test_ancestor_and_descendant_record_paths_are_conflicts(self) -> None:
         for record_path in (self._ancestor_path, self._descendant_path):
             with self.subTest(record_path=record_path.__name__), _Project() as project:

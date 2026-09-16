@@ -433,6 +433,41 @@ class CliTests(unittest.TestCase):
                     )
                     self.assertEqual(project.target.read_text(), project.target_value)
 
+    def test_v4_human_apply_identifies_m3b_not_m3a(self) -> None:
+        with _LegacyCliProject(4) as project:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "apply",
+                        "--manifest",
+                        str(project.manifest_path),
+                        "--yes",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 2)
+            output = stdout.getvalue() + stderr.getvalue()
+            self.assertIn("manifest version 4", output)
+            self.assertIn("M3b", output)
+            self.assertNotIn("manifest version 3", output)
+            self.assertNotIn("M3a", output)
+
+    def test_human_manifest_errors_escape_control_characters(self) -> None:
+        with _CliProject() as project:
+            missing = project.root / "missing\n\x1b[31mmanifest"
+            stderr = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+                exit_code = main(["inspect", "--manifest", str(missing)])
+
+            output = stderr.getvalue()
+            self.assertEqual(exit_code, 2)
+            self.assertNotIn("\x1b", output)
+            self.assertIn("\\x0a", output)
+            self.assertIn("\\x1b", output)
+            self.assertEqual(output.count("\n"), 1)
+
     def test_confirmed_accept_verification_failure_is_cli_failure_without_values(
         self,
     ) -> None:

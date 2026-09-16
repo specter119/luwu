@@ -6,13 +6,13 @@ import hashlib
 import os
 import stat
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
 
-from .errors import ApplyError, ManifestError, RenderError
+from .errors import ApplyError, ManifestError, ProviderError, RenderError
 from .filesystem import (
     FileChangedError,
     NotRegularFileError,
@@ -29,13 +29,25 @@ from .filesystem import (
 from .manifest import (
     _LOADER_PROVENANCE,
     EXECUTION_MANIFEST_VERSION,
+    PROVIDER_MANIFEST_VERSION,
     Manifest,
     Resource,
     load_manifest,
 )
 from .ownership import OwnershipResult, classify_fields
-from .plan_record import PlanRecord, PlanRecordError, record_lock_path
+from .plan_record import (
+    PlanRecord,
+    PlanRecordError,
+    SecretPlanRecord,
+    record_lock_path,
+)
+from .providers import (
+    ProviderAuthority,
+    ProviderResolver,
+    resolve_provider,
+)
 from .rendering import read_source, render_template
+from .secrets import SecretRenderContext
 from .semantic import (
     ComparisonResult,
     ComparisonStatus,
@@ -79,6 +91,8 @@ class ApplyOutcome(StrEnum):
 _PLAN_PROVENANCE = object()
 _PLAN_CAPABILITY_TOKEN = object()
 _EXECUTION_RECORD_CONTRACT = "public-source-whole-file-v5"
+_PROVIDER_EXECUTION_RECORD_CONTRACT = "provider-secret-whole-file-v6"
+_PROVIDER_EXECUTION_CAPABILITY = "provider-secret-whole-file"
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +104,16 @@ class _PlanCapability:
     manifest_digest: str
     manifest_version: int
     token: object = field(repr=False, compare=False)
+    authority: ProviderAuthority | None = field(default=None, repr=False, compare=False)
+    resolver: ProviderResolver | Callable[..., object] | None = field(
+        default=None, repr=False, compare=False
+    )
+    secret_contexts: tuple[SecretRenderContext | None, ...] = field(
+        default=(), repr=False, compare=False
+    )
+    observation_fingerprints: tuple[tuple[object, ...], ...] = field(
+        default=(), repr=False, compare=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +191,10 @@ class Plan:
     def apply_block_reason(self) -> str | None:
         if self.blocked:
             return "plan_blocked"
-        if self.contract_version == EXECUTION_MANIFEST_VERSION:
+        if self.contract_version in {
+            EXECUTION_MANIFEST_VERSION,
+            PROVIDER_MANIFEST_VERSION,
+        }:
             return "execution_required"
         if self.contract_version >= 3:
             return "m3_read_only"
@@ -221,7 +248,7 @@ class ExecutionResult:
     """Metadata-only result of the v5 multi-resource execution boundary."""
 
     preview: dict[str, object]
-    record: PlanRecord | None
+    record: PlanRecord | SecretPlanRecord | None
     changed_targets: tuple[str, ...] = ()
 
     @property
@@ -270,8 +297,18 @@ class _TargetState:
     parent_identity: tuple[int, int] | None = None
 
 
-def build_plan(manifest: Manifest) -> Plan:
-    """Render and inspect the declared resource without writing any path."""
+def build_plan(
+    manifest: Manifest,
+    *,
+    authority: ProviderAuthority | None = None,
+    resolver: ProviderResolver | Callable[..., object] | None = None,
+) -> Plan:
+    """Render and inspect the declared resource without writing any path.
+
+    Version 6 provider values are resolved once while building the plan.  The
+    resulting secret render context stays private to the in-process plan
+    capability and is never part of a public projection or durable record.
+    """
 
     if manifest.version == 1:
         resource = _require_single_resource(manifest)
@@ -280,7 +317,14 @@ def build_plan(manifest: Manifest) -> Plan:
             "manifest must be loaded by load_manifest before planning",
             code="invalid_manifest_provenance",
         )
-    if manifest.version == 1:
+    secret_contexts: tuple[SecretRenderContext | None, ...] = ()
+    if manifest.version == PROVIDER_MANIFEST_VERSION:
+        observations, secret_contexts = _build_provider_plan(
+            manifest,
+            authority=authority,
+            resolver=resolver,
+        )
+    elif manifest.version == 1:
         observations = (_plan_resource(manifest, resource),)
     else:
         observations = tuple(
@@ -298,12 +342,191 @@ def build_plan(manifest: Manifest) -> Plan:
         _PlanCapability(
             manifest_path=manifest.path,
             manifest_root=manifest.root,
-            manifest_digest=manifest.content_digest,
+            manifest_digest=(
+                ""
+                if manifest.version == PROVIDER_MANIFEST_VERSION
+                else manifest.content_digest
+            ),
             manifest_version=manifest.version,
             token=_PLAN_CAPABILITY_TOKEN,
+            authority=authority,
+            resolver=resolver,
+            secret_contexts=secret_contexts,
+            observation_fingerprints=tuple(
+                _observation_fingerprint(observation) for observation in observations
+            ),
         ),
     )
     return plan
+
+
+def _build_provider_plan(
+    manifest: Manifest,
+    *,
+    authority: ProviderAuthority | None,
+    resolver: ProviderResolver | Callable[..., object] | None,
+) -> tuple[tuple[ResourceObservation, ...], tuple[SecretRenderContext | None, ...]]:
+    observations: list[ResourceObservation] = []
+    contexts: list[SecretRenderContext | None] = []
+    for resource in manifest.resources:
+        observation, context = _plan_provider_resource(
+            manifest,
+            resource,
+            authority=authority,
+            resolver=resolver,
+        )
+        observations.append(observation)
+        contexts.append(context)
+    return tuple(observations), tuple(contexts)
+
+
+def _plan_provider_resource(
+    manifest: Manifest,
+    resource: Resource,
+    *,
+    authority: ProviderAuthority | None,
+    resolver: ProviderResolver | Callable[..., object] | None,
+) -> tuple[ResourceObservation, SecretRenderContext | None]:
+    """Resolve each declared provider exactly once and render one v6 resource."""
+
+    parent_issue = _target_parent_issue_for_resource(manifest, resource)
+    if parent_issue is not None:
+        return (
+            _blocked_observation(
+                resource,
+                reason=parent_issue,
+                comparison=not_compared(
+                    resource.comparison,
+                    code="unsafe_target",
+                    reason="secret target boundary is unsafe; comparison was not run",
+                ),
+            ),
+            None,
+        )
+
+    values: dict[str, str] = {}
+    try:
+        for alias, reference in resource.providers.items():
+            values[alias] = resolve_provider(
+                reference,
+                authority=authority,
+                resolver=resolver,
+            )
+        context = SecretRenderContext(values)
+        rendered = render_template(resource, root=manifest.root, secrets=context)
+    except ProviderError:
+        return (
+            _blocked_observation(
+                resource,
+                reason="provider value is unavailable; execution is blocked",
+                comparison=not_compared(
+                    resource.comparison,
+                    code="provider_unavailable",
+                    reason="provider value was not available; comparison was not run",
+                ),
+            ),
+            None,
+        )
+    except RenderError:
+        return (
+            _blocked_observation(
+                resource,
+                reason="secret-backed template could not be rendered safely",
+                comparison=not_compared(
+                    resource.comparison,
+                    code="secret_render_failed",
+                    reason="secret-backed rendering failed; comparison was not run",
+                ),
+            ),
+            None,
+        )
+
+    live = _read_target(
+        resource.target,
+        root=_target_root_for_resource(manifest, resource),
+        secret_target=True,
+    )
+    if live.issue is not None or live.link_target is not None:
+        return (
+            _blocked_observation(
+                resource,
+                desired_bytes=rendered.data,
+                source_digest=rendered.source_digest,
+                source_path=rendered.source_path,
+                source_identity=rendered.source_identity,
+                reason=live.issue or "secret target is a symlink",
+                live_digest=live.digest,
+                live_mode=live.mode,
+                live_link_target=live.link_target,
+                live_identity=live.identity,
+                target_parent_identity=live.parent_identity,
+                comparison=not_compared(
+                    resource.comparison,
+                    code="unsafe_target",
+                    reason="secret target is unsafe; comparison was not run",
+                ),
+            ),
+            context,
+        )
+
+    desired = rendered.data
+    if live.data is None:
+        observation = ResourceObservation(
+            resource=resource,
+            status=Status.MISSING,
+            action=Action.CREATE,
+            reason="secret target does not exist",
+            desired_bytes=desired,
+            desired_link=None,
+            source_digest=rendered.source_digest,
+            source_path=rendered.source_path,
+            live_digest=None,
+            live_mode=None,
+            live_link_target=None,
+            source_identity=rendered.source_identity,
+            live_identity=None,
+            target_parent_identity=live.parent_identity,
+            comparison=not_compared(
+                resource.comparison,
+                code="target_missing",
+                reason="secret target does not exist; comparison was not run",
+            ),
+        )
+        return observation, context
+
+    comparison = compare(desired, live.data, strategy="exact-bytes")
+    if comparison.status is ComparisonStatus.EXACT:
+        status, action, reason = (
+            Status.IN_SYNC,
+            Action.NOOP,
+            "secret template matches target",
+        )
+    else:
+        status, action, reason = (
+            Status.DRIFTED,
+            Action.REPLACE,
+            "secret template differs from target",
+        )
+    return (
+        ResourceObservation(
+            resource=resource,
+            status=status,
+            action=action,
+            reason=reason,
+            desired_bytes=desired,
+            desired_link=None,
+            source_digest=rendered.source_digest,
+            source_path=rendered.source_path,
+            live_digest=live.digest,
+            live_mode=live.mode,
+            live_link_target=None,
+            source_identity=rendered.source_identity,
+            live_identity=live.identity,
+            target_parent_identity=live.parent_identity,
+            comparison=comparison,
+        ),
+        context,
+    )
 
 
 def _plan_resource(
@@ -956,28 +1179,46 @@ def apply_plan(plan: Plan) -> ApplyResult:
 
 
 def execute_execution_plan(
-    plan: Plan, record_path: Path, *, confirm: bool
+    plan: Plan,
+    record_path: Path,
+    *,
+    confirm: bool,
+    authority: ProviderAuthority | None = None,
+    resolver: ProviderResolver | Callable[..., object] | None = None,
 ) -> ExecutionResult:
-    """Execute a loader/planner-issued v5 plan with a durable journal.
+    """Execute a loader/planner-issued v5 or v6 plan with a durable journal.
 
     Preview is completely side-effect free. Confirmed execution preflights all
     resources before creating the journal and processes them in stable order.
     A failure is never rolled back; the journal records the recovery boundary.
     """
 
+    if (
+        plan.contract_version == PROVIDER_MANIFEST_VERSION
+        and plan.blocked
+        and authority is not None
+    ):
+        plan = build_plan(plan.manifest, authority=authority, resolver=resolver)
     _require_execution_plan(plan)
     preview = _execution_preview(plan)
     if not confirm:
         return ExecutionResult(preview=preview, record=None)
 
-    execution_resources = [
-        {
-            "name": observation.resource.name,
-            "target": observation.resource.target_name,
-            "state": "not-attempted",
-        }
-        for observation in plan.observations
-    ]
+    execution_resources: list[dict[str, object]]
+    if plan.contract_version == PROVIDER_MANIFEST_VERSION:
+        execution_resources: list[dict[str, object]] = [
+            {"ordinal": ordinal, "state": "not-attempted"}
+            for ordinal, _observation in enumerate(plan.observations)
+        ]
+    else:
+        execution_resources = [
+            {
+                "name": observation.resource.name,
+                "target": observation.resource.target_name,
+                "state": "not-attempted",
+            }
+            for observation in plan.observations
+        ]
     plan_id: str | None = None
     changed_targets: list[str] = []
     try:
@@ -1018,14 +1259,15 @@ def execute_execution_plan(
                         f"writer for resource {observation.resource.name!r} "
                         "did not commit the target",
                         code="write_failed",
-                        target_name=observation.resource.target_name,
+                        target_name=_execution_target_key(plan, ordinal),
                     )
             except ApplyError as exc:
-                target_name = observation.resource.target_name
+                target_name = _execution_target_key(plan, ordinal)
+                changed_key = _execution_target_key(plan, ordinal)
                 indeterminate = exc.code == "recovery_required" and not exc.committed
                 if exc.committed:
-                    if target_name not in changed_targets:
-                        changed_targets.append(target_name)
+                    if changed_key not in changed_targets:
+                        changed_targets.append(changed_key)
                     execution_resources[ordinal]["state"] = "unknown"
                 elif indeterminate:
                     execution_resources[ordinal]["state"] = "unknown"
@@ -1051,28 +1293,29 @@ def execute_execution_plan(
                     target_name=target_name,
                 ) from exc
 
-            if observation.resource.target_name not in changed_targets:
-                changed_targets.append(observation.resource.target_name)
+            changed_key = _execution_target_key(plan, ordinal)
+            if changed_key not in changed_targets:
+                changed_targets.append(changed_key)
             execution_resources[ordinal]["state"] = "unknown"
             try:
-                postcondition = _execution_condition(
-                    observation.resource.target, plan.manifest.root
-                )
-                if not _condition_matches_expected(
-                    postcondition,
-                    _execution_postcondition(
-                        observation,
-                        _execution_condition(
-                            observation.resource.target, plan.manifest.root
-                        ),
-                    ),
-                ):
+                if plan.contract_version == PROVIDER_MANIFEST_VERSION:
+                    confirmed = _secret_target_matches(plan, observation)
+                    postcondition = None
+                else:
+                    postcondition = _execution_condition(
+                        observation.resource.target, plan.manifest.root
+                    )
+                    confirmed = _condition_matches_expected(
+                        postcondition,
+                        _execution_postcondition(observation, postcondition),
+                    )
+                if not confirmed:
                     raise ApplyError(
                         f"postcondition for resource {observation.resource.name!r} "
                         "could not be confirmed",
                         code="durability_unconfirmed",
                         committed=True,
-                        target_name=observation.resource.target_name,
+                        target_name=_execution_target_key(plan, ordinal),
                     )
                 committed_record = record.update_path_condition(
                     ordinal,
@@ -1096,7 +1339,7 @@ def execute_execution_plan(
                     "rollback=never",
                     code="recovery_required",
                     committed=bool(changed_targets),
-                    target_name=observation.resource.target_name,
+                    target_name=_execution_target_key(plan, ordinal),
                 ) from exc
             record = committed_record
 
@@ -1119,8 +1362,23 @@ def execute_execution_plan(
 def inspect_execution_record(record_path: Path) -> dict[str, object]:
     """Read a journal for recovery decisions without replaying or writing."""
 
-    record = PlanRecord.read(record_path).to_dict()
+    try:
+        record = PlanRecord.read(record_path).to_dict()
+    except PlanRecordError:
+        try:
+            record = SecretPlanRecord.read(record_path).to_dict()
+        except PlanRecordError:
+            raise PlanRecordError(
+                "record is not a supported execution journal",
+                code="execution_record_contract",
+            ) from None
     manifest = record["manifest"]
+    if (
+        isinstance(manifest, dict)
+        and manifest.get("version") == PROVIDER_MANIFEST_VERSION
+    ):
+        _validate_provider_execution_record(record)
+        return record
     if (
         not isinstance(manifest, dict)
         or manifest["version"] != EXECUTION_MANIFEST_VERSION
@@ -1132,6 +1390,46 @@ def inspect_execution_record(record_path: Path) -> dict[str, object]:
         )
     _validate_execution_record(record)
     return record
+
+
+def _validate_provider_execution_record(record: dict[str, object]) -> None:
+    """Validate the v6 journal meaning without inspecting provider inputs."""
+
+    if record.get("execution_contract") != _PROVIDER_EXECUTION_RECORD_CONTRACT:
+        raise PlanRecordError(
+            "record is not a version-6 provider execution journal",
+            code="execution_record_contract",
+        )
+    if record.get("mutation_contract") != "atomic-single-secret-target":
+        raise PlanRecordError(
+            "provider execution journal mutation contract is unsupported",
+            code="execution_record_contract",
+        )
+    manifest = record.get("manifest")
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("version") != PROVIDER_MANIFEST_VERSION
+    ):
+        raise PlanRecordError(
+            "provider execution journal manifest is invalid",
+            code="execution_record_contract",
+        )
+    resources = record.get("resources")
+    if not isinstance(resources, list) or not resources:
+        raise PlanRecordError(
+            "provider execution journal resources are invalid",
+            code="execution_record_contract",
+        )
+    for resource in resources:
+        if not isinstance(resource, dict) or resource.get("operation") not in {
+            Action.NOOP.value,
+            Action.CREATE.value,
+            Action.REPLACE.value,
+        }:
+            raise PlanRecordError(
+                "provider execution journal resource operation is invalid",
+                code="execution_record_contract",
+            )
 
 
 def _validate_execution_record(record: dict[str, object]) -> None:
@@ -1202,10 +1500,21 @@ def _validate_execution_record(record: dict[str, object]) -> None:
                 )
 
 
-def reobserve_execution_record(record_path: Path) -> dict[str, object]:
-    """Re-observe a v5 journal without replaying inputs or writing state."""
+def reobserve_execution_record(
+    record_path: Path,
+    *,
+    authority: ProviderAuthority | None = None,
+    resolver: ProviderResolver | Callable[..., object] | None = None,
+) -> dict[str, object]:
+    """Re-observe a v5 or v6 journal without replaying inputs or writing state."""
 
     record = inspect_execution_record(record_path)
+    if record.get("execution_contract") == _PROVIDER_EXECUTION_RECORD_CONTRACT:
+        return _reobserve_provider_record(
+            record,
+            authority=authority,
+            resolver=resolver,
+        )
     manifest_info = record["manifest"]
     if not isinstance(manifest_info, dict):
         raise PlanRecordError(
@@ -1220,7 +1529,7 @@ def reobserve_execution_record(record_path: Path) -> dict[str, object]:
         return _reobserve_blocked(record, "manifest_unavailable")
     try:
         manifest = load_manifest(manifest_path)
-        current_digest = _digest(manifest_path.read_bytes())
+        current_digest = manifest.content_digest
     except (ManifestError, OSError, RuntimeError):
         return _reobserve_blocked(record, "manifest_unavailable")
     expected_digest = str(manifest_info["digest"])[len("sha256:") :]
@@ -1324,6 +1633,134 @@ def reobserve_execution_record(record_path: Path) -> dict[str, object]:
     }
 
 
+def _reobserve_provider_record(
+    record: dict[str, object],
+    *,
+    authority: ProviderAuthority | None,
+    resolver: ProviderResolver | Callable[..., object] | None,
+) -> dict[str, object]:
+    """Observe current v6 state; never claim historical secret-content proof."""
+
+    manifest_info = record.get("manifest")
+    if not isinstance(manifest_info, dict):
+        return _reobserve_provider_blocked(record, "manifest_unavailable")
+    try:
+        manifest_path = Path(str(manifest_info["path"]))
+        expected_root = Path(str(manifest_info["root"]))
+        expected_version = int(manifest_info["version"])
+    except (KeyError, TypeError, ValueError):
+        return _reobserve_provider_blocked(record, "manifest_unavailable")
+    try:
+        if (
+            not manifest_path.is_absolute()
+            or manifest_path.resolve(strict=True) != manifest_path
+        ):
+            return _reobserve_provider_blocked(record, "manifest_unavailable")
+    except (OSError, RuntimeError):
+        return _reobserve_provider_blocked(record, "manifest_unavailable")
+    try:
+        manifest = load_manifest(manifest_path)
+    except (ManifestError, OSError, RuntimeError):
+        return _reobserve_provider_blocked(record, "manifest_unavailable")
+    if (
+        expected_version != PROVIDER_MANIFEST_VERSION
+        or manifest.version != PROVIDER_MANIFEST_VERSION
+        or manifest.root != expected_root
+    ):
+        return _reobserve_provider_blocked(record, "manifest_changed")
+
+    persisted_resources = record.get("resources")
+    if not isinstance(persisted_resources, list) or len(persisted_resources) != len(
+        manifest.resources
+    ):
+        return _reobserve_provider_blocked(record, "record_manifest_mismatch")
+    for ordinal, persisted in enumerate(persisted_resources):
+        if not isinstance(persisted, dict) or (
+            persisted.get("ordinal") != ordinal
+            or persisted.get("label") != f"resource-{ordinal}"
+        ):
+            return _reobserve_provider_blocked(record, "record_manifest_mismatch")
+
+    if authority is None:
+        return _reobserve_provider_blocked(record, "capability_required")
+
+    try:
+        plan = build_plan(manifest, authority=authority, resolver=resolver)
+    except (ManifestError, RenderError, ProviderError, OSError, RuntimeError):
+        return _reobserve_provider_blocked(record, "observation_failed")
+    if plan.blocked:
+        return _reobserve_provider_blocked(record, "provider_unavailable")
+
+    resources: list[dict[str, object]] = []
+    for ordinal, persisted in enumerate(persisted_resources):
+        assert isinstance(persisted, dict)
+        observation = plan.observations[ordinal]
+        record_state = str(persisted["state"])
+        fresh_in_sync = observation.status is Status.IN_SYNC
+        if record_state == "not-attempted":
+            reobserved = "not-attempted"
+        elif fresh_in_sync:
+            reobserved = "currently_converged"
+        else:
+            reobserved = "changed_or_unknown"
+        resources.append(
+            {
+                "ordinal": ordinal,
+                "label": f"resource-{ordinal}",
+                "record_state": record_state,
+                "reobserved_state": reobserved,
+                "plan_status": observation.status.value,
+            }
+        )
+    outcome = (
+        "currently_converged"
+        if resources
+        and all(
+            item["reobserved_state"] in {"currently_converged", "not-attempted"}
+            for item in resources
+        )
+        and any(item["reobserved_state"] == "currently_converged" for item in resources)
+        else "recovery_required"
+    )
+    return {
+        "schema_version": PROVIDER_MANIFEST_VERSION,
+        "command": "recover",
+        "mode": "reobserve-only",
+        "plan_id": record["plan_id"],
+        "record_state": record["state"],
+        "outcome": outcome,
+        "resources": resources,
+    }
+
+
+def _reobserve_provider_blocked(
+    record: dict[str, object], reason: str
+) -> dict[str, object]:
+    resources: list[dict[str, object]] = []
+    raw_resources = record.get("resources")
+    if isinstance(raw_resources, list):
+        for resource in raw_resources:
+            if isinstance(resource, dict):
+                resources.append(
+                    {
+                        "ordinal": resource.get("ordinal"),
+                        "label": resource.get("label"),
+                        "record_state": resource.get("state"),
+                        "reobserved_state": "unavailable",
+                    }
+                )
+    return {
+        "schema_version": PROVIDER_MANIFEST_VERSION,
+        "command": "recover",
+        "mode": "reobserve-only",
+        "plan_id": record.get("plan_id"),
+        "record_state": record.get("state"),
+        "outcome": "recovery_required",
+        "reason": reason,
+        "resources": resources,
+    }
+
+
 def _reobserve_blocked(record: dict[str, object], reason: str) -> dict[str, object]:
     return {
         "schema_version": EXECUTION_MANIFEST_VERSION,
@@ -1346,15 +1783,32 @@ def _require_execution_plan(plan: Plan) -> None:
         or plan.manifest._provenance is not _LOADER_PROVENANCE
     ):
         raise ApplyError("plan lacks a valid execution capability", code="invalid_plan")
-    if capability.manifest_version != 5 or plan.manifest.execution_capability != (
-        "public-source-whole-file"
-    ):
-        raise ApplyError("plan is not a version-5 execution plan", code="invalid_plan")
+    if plan.blocked:
+        raise ApplyError("plan contains blocked resources", code="plan_blocked")
+    if capability.manifest_version == EXECUTION_MANIFEST_VERSION:
+        valid_contract = plan.manifest.execution_capability == (
+            "public-source-whole-file"
+        )
+    elif capability.manifest_version == PROVIDER_MANIFEST_VERSION:
+        valid_contract = (
+            plan.manifest.version == PROVIDER_MANIFEST_VERSION
+            and plan.manifest.capabilities == ("subprocess",)
+            and capability.authority is not None
+            and capability.authority.allows("subprocess")
+            and len(capability.secret_contexts) == len(plan.observations)
+        )
+    else:
+        valid_contract = False
+    if not valid_contract:
+        raise ApplyError("plan is not a supported execution plan", code="invalid_plan")
     if (
         plan.manifest.path != capability.manifest_path
         or plan.manifest.root != capability.manifest_root
-        or plan.manifest.content_digest != capability.manifest_digest
         or plan.manifest.version != capability.manifest_version
+        or (
+            capability.manifest_version != PROVIDER_MANIFEST_VERSION
+            and plan.manifest.content_digest != capability.manifest_digest
+        )
     ):
         raise ApplyError("plan manifest identity is invalid", code="invalid_plan")
     if (
@@ -1365,9 +1819,28 @@ def _require_execution_plan(plan: Plan) -> None:
         raise ApplyError(
             "plan observations must match manifest resources", code="invalid_plan"
         )
+    if (
+        tuple(
+            _observation_fingerprint(observation) for observation in plan.observations
+        )
+        != capability.observation_fingerprints
+    ):
+        raise ApplyError(
+            "plan observations were changed after planning", code="invalid_plan"
+        )
     for observation in plan.observations:
-        if observation.resource.capability != "public-source-whole-file":
+        if capability.manifest_version == EXECUTION_MANIFEST_VERSION and (
+            observation.resource.capability != "public-source-whole-file"
+        ):
             raise ApplyError("resource capability is invalid", code="invalid_plan")
+        if capability.manifest_version == PROVIDER_MANIFEST_VERSION and (
+            observation.resource.content_sensitivity != "secret"
+            or not observation.resource.providers
+            or observation.resource.kind != "template"
+        ):
+            raise ApplyError(
+                "provider resource contract is invalid", code="invalid_plan"
+            )
         if observation.status is Status.BLOCKED or observation.action is Action.BLOCK:
             raise ApplyError("plan contains blocked resources", code="plan_blocked")
         if observation.action not in (Action.NOOP, Action.CREATE, Action.REPLACE):
@@ -1377,6 +1850,23 @@ def _require_execution_plan(plan: Plan) -> None:
 
 
 def _execution_preview(plan: Plan) -> dict[str, object]:
+    if plan.contract_version == PROVIDER_MANIFEST_VERSION:
+        return {
+            "schema_version": PROVIDER_MANIFEST_VERSION,
+            "execution_capability": _PROVIDER_EXECUTION_CAPABILITY,
+            "rollback": "never",
+            "resources": [
+                {
+                    "ordinal": ordinal,
+                    "label": f"resource-{ordinal}",
+                    "kind": observation.resource.kind,
+                    "status": observation.status.value,
+                    "action": observation.action.value,
+                    "reason": observation.reason,
+                }
+                for ordinal, observation in enumerate(plan.observations)
+            ],
+        }
     return {
         "schema_version": 5,
         "execution_capability": "public-source-whole-file",
@@ -1399,33 +1889,62 @@ def _execution_preview(plan: Plan) -> dict[str, object]:
 def _execution_error_metadata(
     plan_id: str | None,
     changed_targets: list[str],
-    resources: list[dict[str, str]],
+    resources: list[dict[str, object]],
 ) -> dict[str, object]:
     """Build the fixed, metadata-only context attached to execution failures."""
 
-    return {
-        "plan_id": plan_id,
-        "committed": bool(changed_targets),
-        "changed_targets": list(changed_targets),
-        "resources": [
+    if resources and "ordinal" in resources[0]:
+        public_resources = [
+            {
+                "ordinal": resource.get("ordinal"),
+                "state": resource.get("state"),
+            }
+            for resource in resources
+        ]
+    else:
+        public_resources = [
             {
                 "name": resource["name"],
                 "target": resource["target"],
                 "state": resource["state"],
             }
             for resource in resources
-        ],
+        ]
+    return {
+        "plan_id": plan_id,
+        "committed": bool(changed_targets),
+        "changed_targets": list(changed_targets),
+        "resources": public_resources,
     }
 
 
+def _execution_target_key(plan: Plan, ordinal: int) -> str:
+    if plan.contract_version == PROVIDER_MANIFEST_VERSION:
+        return f"resource-{ordinal}"
+    return plan.observations[ordinal].resource.target_name
+
+
+def _secret_target_matches(plan: Plan, observation: ResourceObservation) -> bool:
+    current = _read_target(
+        observation.resource.target,
+        root=_target_root_for_resource(plan.manifest, observation.resource),
+        secret_target=True,
+    )
+    return (
+        current.issue is None
+        and current.link_target is None
+        and current.data is not None
+        and current.data == observation.desired_bytes
+        and current.mode is not None
+        and not (current.mode & 0o077)
+    )
+
+
 def _check_execution_record_path(plan: Plan, record_path: Path) -> None:
-    record_candidates: set[Path] = set()
-    for path in (record_path, record_lock_path(record_path)):
-        record_candidates.add(_absolute_path(path))
-        try:
-            record_candidates.add(path.expanduser().resolve(strict=False))
-        except (OSError, RuntimeError):
-            pass
+    record_paths = (record_path, record_lock_path(record_path))
+    record_candidates = {
+        candidate for path in record_paths for candidate in _path_variants(path)
+    }
     declared = [plan.manifest.path]
     declared.extend(
         path
@@ -1433,11 +1952,7 @@ def _check_execution_record_path(plan: Plan, record_path: Path) -> None:
         for path in (observation.resource.source, observation.resource.target)
     )
     for candidate in declared:
-        candidate_paths = {_absolute_path(candidate)}
-        try:
-            candidate_paths.add(candidate.resolve(strict=False))
-        except (OSError, RuntimeError):
-            pass
+        candidate_paths = _path_variants(candidate)
         if any(
             _paths_overlap(record_candidate, declared_candidate)
             for record_candidate in record_candidates
@@ -1448,14 +1963,114 @@ def _check_execution_record_path(plan: Plan, record_path: Path) -> None:
                 "no files were changed",
                 code="record_path_conflict",
             )
+    record_identities = {
+        identity
+        for path in record_candidates
+        if (identity := _existing_path_identity(path)) is not None
+    }
+    declared_identities = {
+        identity
+        for candidate in declared
+        for path in _path_variants(candidate)
+        if (identity := _existing_path_identity(path)) is not None
+    }
+    if record_identities & declared_identities:
+        raise ApplyError(
+            "execution journal or lock path aliases a declared inode; "
+            "no files were changed",
+            code="record_path_conflict",
+        )
 
 
 def _absolute_path(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path)))
 
 
+def _path_variants(path: Path) -> set[Path]:
+    variants = {_absolute_path(path)}
+    try:
+        variants.add(path.expanduser().resolve(strict=False))
+    except (OSError, RuntimeError):
+        pass
+    return variants
+
+
+def _existing_path_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        info = path.lstat()
+    except (OSError, RuntimeError):
+        return None
+    if stat.S_ISLNK(info.st_mode):
+        return None
+    return info.st_dev, info.st_ino
+
+
 def _paths_overlap(left: Path, right: Path) -> bool:
     return left == right or left in right.parents or right in left.parents
+
+
+def _observation_fingerprint(observation: ResourceObservation) -> tuple[object, ...]:
+    resource = observation.resource
+    providers = tuple(
+        sorted(
+            (
+                alias,
+                reference.type,
+                reference.item,
+                reference.field,
+                reference.alias,
+            )
+            for alias, reference in resource.providers.items()
+        )
+    )
+    return (
+        (
+            resource.name,
+            resource.kind,
+            resource.source,
+            resource.target,
+            resource.source_name,
+            resource.target_name,
+            resource.owner,
+            resource.scope,
+            _fingerprint_value(resource.variables),
+            resource.variables_sensitivity,
+            resource.comparison,
+            _fingerprint_value(resource.fields),
+            resource.baseline,
+            resource.baseline_name,
+            resource.content_sensitivity,
+            _fingerprint_value(resource.reverse_sync),
+            resource.capability,
+            providers,
+        ),
+        observation.status.value,
+        observation.action.value,
+        observation.reason,
+        observation.desired_bytes,
+        observation.desired_link,
+        observation.source_digest,
+        observation.source_path,
+        observation.live_digest,
+        observation.live_mode,
+        observation.live_link_target,
+        observation.source_identity,
+        observation.live_identity,
+        observation.target_parent_identity,
+        observation.comparison.to_dict() if observation.comparison else None,
+        observation.ownership.to_dict() if observation.ownership else None,
+        observation.baseline_digest,
+    )
+
+
+def _fingerprint_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return tuple(
+            sorted((key, _fingerprint_value(item)) for key, item in value.items())
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_fingerprint_value(item) for item in value)
+    return value
 
 
 def _execution_condition(path: Path, root: Path) -> dict[str, int | str]:
@@ -1538,7 +2153,30 @@ def _condition_matches_expected(
     return True
 
 
-def _execution_record(plan: Plan) -> PlanRecord:
+def _execution_record(plan: Plan) -> PlanRecord | SecretPlanRecord:
+    if plan.contract_version == PROVIDER_MANIFEST_VERSION:
+        return SecretPlanRecord.create(
+            plan_id=str(uuid4()),
+            execution_contract=_PROVIDER_EXECUTION_RECORD_CONTRACT,
+            mutation_contract="atomic-single-secret-target",
+            manifest={
+                "path": str(plan.manifest.path),
+                "root": str(plan.manifest.root),
+                "version": PROVIDER_MANIFEST_VERSION,
+            },
+            resources=[
+                {
+                    "ordinal": ordinal,
+                    "label": f"resource-{ordinal}",
+                    "operation": observation.action.value,
+                    "target_state": (
+                        "missing" if observation.live_digest is None else "regular"
+                    ),
+                    "state": "planned",
+                }
+                for ordinal, observation in enumerate(plan.observations)
+            ],
+        )
     resources = []
     for ordinal, observation in enumerate(plan.observations):
         resource = observation.resource
@@ -1594,13 +2232,26 @@ def _execution_path(
 
 
 def _write_execution_record(
-    record: PlanRecord,
+    record: PlanRecord | SecretPlanRecord,
     record_path: Path,
     *,
-    expected: PlanRecord | None = None,
+    expected: PlanRecord | SecretPlanRecord | None = None,
 ) -> None:
     try:
-        record.write(record_path, expected=expected)
+        if isinstance(record, SecretPlanRecord):
+            if expected is not None and not isinstance(expected, SecretPlanRecord):
+                raise PlanRecordError(
+                    "secret execution record expected value is invalid",
+                    code="plan_record_cas",
+                )
+            record.write(record_path, expected=expected)
+        else:
+            if expected is not None and not isinstance(expected, PlanRecord):
+                raise PlanRecordError(
+                    "execution record expected value is invalid",
+                    code="plan_record_cas",
+                )
+            record.write(record_path, expected=expected)
     except (PlanRecordError, OSError) as exc:
         raise ApplyError(
             "execution journal durability is unknown; recovery is required",
@@ -1609,7 +2260,7 @@ def _write_execution_record(
 
 
 def _mark_execution_failure(
-    record: PlanRecord,
+    record: PlanRecord | SecretPlanRecord,
     plan: Plan,
     ordinal: int,
     record_path: Path,
@@ -1683,8 +2334,10 @@ def _require_single_plan(plan: Plan) -> None:
                 code="plan_blocked",
             )
         if capability.manifest_version >= 3:
+            milestone = "M3a" if capability.manifest_version == 3 else "M3b"
             raise ApplyError(
-                "manifest version 3 plans are read-only in M3a; no files were changed",
+                f"manifest version {capability.manifest_version} plans are read-only "
+                f"in {milestone}; no files were changed",
                 code="m3_read_only",
             )
         raise ApplyError(
@@ -1705,6 +2358,43 @@ def _require_single_plan(plan: Plan) -> None:
 
 def plan_to_dict(plan: Plan, *, command: str) -> dict[str, object]:
     """Serialize only metadata and explanations; never rendered content."""
+
+    if plan.contract_version == PROVIDER_MANIFEST_VERSION:
+        resources = []
+        for ordinal, observation in enumerate(plan.observations):
+            label = f"resource-{ordinal}"
+            resources.append(
+                {
+                    "ordinal": ordinal,
+                    "label": label,
+                    "kind": observation.resource.kind,
+                    "owner": observation.resource.owner,
+                    "scope": observation.resource.scope,
+                    "status": observation.status.value,
+                    "action": observation.action.value,
+                    "reason": observation.reason,
+                    "impact": {
+                        "writes": [label]
+                        if observation.action in (Action.CREATE, Action.REPLACE)
+                        else [],
+                        "overwrites": [label]
+                        if observation.action is Action.REPLACE
+                        else [],
+                        "scope": observation.resource.scope,
+                    },
+                }
+            )
+        return {
+            "schema_version": PROVIDER_MANIFEST_VERSION,
+            "command": command,
+            "manifest": str(plan.manifest.path),
+            "manifest_version": PROVIDER_MANIFEST_VERSION,
+            "applyable": plan.can_apply,
+            "apply_block_reason": plan.apply_block_reason,
+            "execution_capability": _PROVIDER_EXECUTION_CAPABILITY,
+            "resources": resources,
+            "summary": plan.summary(),
+        }
 
     payload: dict[str, object] = {
         "schema_version": plan.contract_version,
@@ -1855,6 +2545,54 @@ def _is_within(path: Path, root: Path) -> bool:
     return True
 
 
+def _target_root_for_resource(manifest: Manifest, resource: Resource) -> Path:
+    """Return the descriptor root used for a resource target."""
+
+    if manifest.version == PROVIDER_MANIFEST_VERSION:
+        return Path(resource.target.anchor)
+    return manifest.root
+
+
+def _target_parent_issue_for_resource(
+    manifest: Manifest, resource: Resource
+) -> str | None:
+    if manifest.version != PROVIDER_MANIFEST_VERSION:
+        return _target_parent_issue(resource.target, root=manifest.root)
+    if not resource.target.is_absolute() or resource.target.parent == resource.target:
+        return "secret target must name a file below an existing parent"
+    issue = _target_parent_issue(
+        resource.target,
+        root=_target_root_for_resource(manifest, resource),
+    )
+    if issue is not None:
+        return f"secret target parent is unsafe: {issue}"
+    try:
+        info = resource.target.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "secret target cannot be inspected safely"
+    if stat.S_ISLNK(info.st_mode):
+        return "secret target is a symlink"
+    if stat.S_ISDIR(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        return "secret target is not a regular file"
+    return _secret_target_issue_from_stat(info)
+
+
+def _secret_target_issue_from_stat(info: os.stat_result) -> str | None:
+    try:
+        current_uid = os.getuid()
+    except AttributeError:
+        return "secret target owner cannot be verified"
+    if info.st_uid != current_uid:
+        return "secret target owner cannot be verified"
+    if stat.S_IMODE(info.st_mode) & 0o077 or info.st_mode & 0o7000:
+        return "secret target permissions are not owner-only"
+    if info.st_nlink != 1:
+        return "secret target has multiple hard links"
+    return None
+
+
 def _target_parent_issue(target: Path, *, root: Path) -> str | None:
     try:
         parts = target.parent.relative_to(root).parts
@@ -1877,7 +2615,12 @@ def _target_parent_issue(target: Path, *, root: Path) -> str | None:
     return None
 
 
-def _read_target(target: Path, *, root: Path) -> _TargetState:
+def _read_target(
+    target: Path,
+    *,
+    root: Path,
+    secret_target: bool = False,
+) -> _TargetState:
     try:
         parent_descriptor, name = open_parent_directory(root, target)
     except FileNotFoundError:
@@ -1900,6 +2643,7 @@ def _read_target(target: Path, *, root: Path) -> _TargetState:
             target,
             parent_descriptor=parent_descriptor,
             name=name,
+            secret_target=secret_target,
         )
     finally:
         os.close(parent_descriptor)
@@ -1910,6 +2654,7 @@ def _read_target_at(
     *,
     parent_descriptor: int,
     name: str,
+    secret_target: bool = False,
 ) -> _TargetState:
     try:
         parent_identity = _identity(os.fstat(parent_descriptor))
@@ -1943,8 +2688,30 @@ def _read_target_at(
                 identity=_identity(info),
                 parent_identity=parent_identity,
             )
+        if secret_target:
+            issue = _secret_target_issue_from_stat(info)
+            if issue is not None:
+                return _TargetState(
+                    data=None,
+                    digest=None,
+                    mode=stat.S_IMODE(info.st_mode),
+                    issue=issue,
+                    identity=_identity(info),
+                    parent_identity=parent_identity,
+                )
 
         data, current = read_regular_file_at(parent_descriptor, name)
+        if secret_target:
+            issue = _secret_target_issue_from_stat(current)
+            if issue is not None:
+                return _TargetState(
+                    data=None,
+                    digest=None,
+                    mode=stat.S_IMODE(current.st_mode),
+                    issue=issue,
+                    identity=_identity(current),
+                    parent_identity=parent_identity,
+                )
         return _TargetState(
             data=data,
             digest=_digest(data),
@@ -2001,9 +2768,8 @@ def _check_target_parent(
     *,
     phase: str,
 ) -> None:
-    parent_issue = _target_parent_issue(
-        observation.resource.target,
-        root=plan.manifest.root,
+    parent_issue = _target_parent_issue_for_resource(
+        plan.manifest, observation.resource
     )
     if parent_issue is not None:
         raise ApplyError(
@@ -2016,8 +2782,13 @@ def _check_target_parent(
 def _preflight_source(plan: Plan, observation: ResourceObservation) -> None:
     resource = observation.resource
     if resource.kind == "template":
+        secrets = _secret_context_for(plan, observation)
         try:
-            current_rendered = render_template(resource, root=plan.manifest.root)
+            current_rendered = render_template(
+                resource,
+                root=plan.manifest.root,
+                secrets=secrets,
+            )
         except RenderError:
             raise ApplyError(
                 f"source for resource {resource.name!r} changed after planning; "
@@ -2053,6 +2824,27 @@ def _preflight_source(plan: Plan, observation: ResourceObservation) -> None:
         )
 
 
+def _secret_context_for(
+    plan: Plan, observation: ResourceObservation
+) -> SecretRenderContext | None:
+    if plan.contract_version != PROVIDER_MANIFEST_VERSION:
+        return None
+    capability = _capability_for(plan)
+    if capability is None:
+        raise ApplyError(
+            "plan lacks a valid provider capability; no files were changed",
+            code="invalid_plan",
+        )
+    try:
+        ordinal = plan.observations.index(observation)
+        return capability.secret_contexts[ordinal]
+    except (ValueError, IndexError):
+        raise ApplyError(
+            "plan provider context is invalid; no files were changed",
+            code="invalid_plan",
+        ) from None
+
+
 def _preflight_manifest(plan: Plan, *, execution: bool = False) -> None:
     capability = _capability_for(plan)
     if capability is None or capability.token is not _PLAN_CAPABILITY_TOKEN:
@@ -2063,17 +2855,24 @@ def _preflight_manifest(plan: Plan, *, execution: bool = False) -> None:
     try:
         if capability.manifest_path.resolve(strict=True) != capability.manifest_path:
             raise OSError("manifest path is no longer stable")
-        current_digest = _digest(capability.manifest_path.read_bytes())
     except (OSError, RuntimeError):
         raise ApplyError(
             "manifest changed or became unreadable after planning; run plan again",
             code="stale_plan",
         ) from None
-    if current_digest != capability.manifest_digest:
-        raise ApplyError(
-            "manifest changed after planning; run plan again",
-            code="stale_plan",
-        )
+    if capability.manifest_version != PROVIDER_MANIFEST_VERSION:
+        try:
+            current_digest = _digest(capability.manifest_path.read_bytes())
+        except (OSError, RuntimeError):
+            raise ApplyError(
+                "manifest changed or became unreadable after planning; run plan again",
+                code="stale_plan",
+            ) from None
+        if current_digest != capability.manifest_digest:
+            raise ApplyError(
+                "manifest changed after planning; run plan again",
+                code="stale_plan",
+            )
     try:
         current_manifest = load_manifest(capability.manifest_path)
     except ManifestError:
@@ -2081,9 +2880,12 @@ def _preflight_manifest(plan: Plan, *, execution: bool = False) -> None:
             "manifest changed or became unreadable after planning; run plan again",
             code="stale_plan",
         ) from None
-    if execution and current_manifest.version != 5:
+    if execution and current_manifest.version not in {
+        EXECUTION_MANIFEST_VERSION,
+        PROVIDER_MANIFEST_VERSION,
+    }:
         raise ApplyError(
-            "manifest is no longer a version-5 execution manifest; no files were changed",
+            "manifest is no longer an execution manifest; no files were changed",
             code="stale_plan",
         )
     if not execution and current_manifest.version >= 3:
@@ -2102,9 +2904,20 @@ def _preflight_manifest(plan: Plan, *, execution: bool = False) -> None:
             code="stale_plan",
         )
     if (
+        capability.manifest_version == PROVIDER_MANIFEST_VERSION
+        and not _provider_manifest_matches(plan.manifest, current_manifest)
+    ):
+        raise ApplyError(
+            "manifest changed after planning; run plan again",
+            code="stale_plan",
+        )
+    if (
         plan.manifest.path != current_manifest.path
         or plan.manifest.root != current_manifest.root
-        or plan.manifest.content_digest != current_manifest.content_digest
+        or (
+            capability.manifest_version != PROVIDER_MANIFEST_VERSION
+            and plan.manifest.content_digest != current_manifest.content_digest
+        )
         or plan.manifest.version != current_manifest.version
         or plan.manifest.resources != current_manifest.resources
         or tuple(observation.resource for observation in plan.observations)
@@ -2114,6 +2927,35 @@ def _preflight_manifest(plan: Plan, *, execution: bool = False) -> None:
             "plan does not match its manifest; no files were changed",
             code="invalid_plan",
         )
+
+
+def _provider_manifest_matches(left: Manifest, right: Manifest) -> bool:
+    """Compare v6 declarations without relying on a persisted provider digest."""
+
+    if (
+        left.version != PROVIDER_MANIFEST_VERSION
+        or right.version != PROVIDER_MANIFEST_VERSION
+        or left.path != right.path
+        or left.root != right.root
+        or left.capabilities != right.capabilities
+        or len(left.resources) != len(right.resources)
+    ):
+        return False
+    for left_resource, right_resource in zip(left.resources, right.resources):
+        if (
+            left_resource.name != right_resource.name
+            or left_resource.kind != right_resource.kind
+            or left_resource.source != right_resource.source
+            or left_resource.target != right_resource.target
+            or left_resource.source_name != right_resource.source_name
+            or left_resource.target_name != right_resource.target_name
+            or left_resource.owner != right_resource.owner
+            or left_resource.scope != right_resource.scope
+            or left_resource.content_sensitivity != right_resource.content_sensitivity
+            or dict(left_resource.providers) != dict(right_resource.providers)
+        ):
+            return False
+    return True
 
 
 def _load_current_manifest(plan: Plan) -> Manifest:
@@ -2129,8 +2971,15 @@ def _load_current_manifest(plan: Plan) -> Manifest:
     if (
         current.path != capability.manifest_path
         or current.root != capability.manifest_root
-        or current.content_digest != capability.manifest_digest
         or current.version != capability.manifest_version
+        or (
+            capability.manifest_version != PROVIDER_MANIFEST_VERSION
+            and current.content_digest != capability.manifest_digest
+        )
+        or (
+            capability.manifest_version == PROVIDER_MANIFEST_VERSION
+            and not _provider_manifest_matches(plan.manifest, current)
+        )
     ):
         raise ApplyError(
             "manifest changed during apply; run plan again",
@@ -2151,9 +3000,14 @@ def _check_target_state(
             observation.resource.target,
             parent_descriptor=parent_descriptor,
             name=observation.resource.target.name,
+            secret_target=plan.contract_version == PROVIDER_MANIFEST_VERSION,
         )
         if parent_descriptor is not None
-        else _read_target(observation.resource.target, root=plan.manifest.root)
+        else _read_target(
+            observation.resource.target,
+            root=_target_root_for_resource(plan.manifest, observation.resource),
+            secret_target=plan.contract_version == PROVIDER_MANIFEST_VERSION,
+        )
     )
     if current.issue is not None:
         raise ApplyError(
@@ -2200,7 +3054,7 @@ def _write_observation(
 ) -> bool:
     try:
         parent_descriptor, target_name = open_parent_directory(
-            plan.manifest.root,
+            _target_root_for_resource(plan.manifest, observation.resource),
             observation.resource.target,
         )
     except (OSError, NotImplementedError, ValueError):
@@ -2307,7 +3161,11 @@ def _write_template_observation(
             code="apply_failed",
         )
 
-    mode = observation.live_mode if observation.live_mode is not None else 0o644
+    mode = (
+        observation.live_mode
+        if observation.live_mode is not None
+        else (0o600 if plan.contract_version == PROVIDER_MANIFEST_VERSION else 0o644)
+    )
 
     def create_entry() -> str:
         descriptor, created_name = create_temporary_file(
