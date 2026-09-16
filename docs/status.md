@@ -1,8 +1,13 @@
 # Luwu Implementation Status
 
-Status: M3 complete within the frozen public v3/v4/v5 contracts, including the 2026-09-14 execution and conflict closure
+Status: M3 complete within the frozen public v3/v4/v5 contracts; M4 remains `unstarted`
 
 This document records what the repository actually implements. The fixed M1 scope and closure checklist are maintained in [milestones/m1.md](milestones/m1.md); the M2 observation scope and closure checklist are maintained in [milestones/m2.md](milestones/m2.md); the M3a implementation boundary and closure evidence are maintained in [milestones/m3.md](milestones/m3.md). This document does not expand the product scope in [product.md](product.md), and it does not replace the contracts in [reference.md](reference.md).
+
+The earlier M3 execution/conflict closure below is historical evidence for
+then-current revisions. The current checkout completed the frozen-contract
+repair recorded in [milestones/m3-repair-plan.md](milestones/m3-repair-plan.md);
+the current closure evidence is recorded below.
 
 ## Current implementation
 
@@ -77,6 +82,49 @@ execution contract. Automatic replay, rollback, and guarantees against
 unrelated writers that ignore advisory locks remain explicitly outside scope;
 the implemented M3c contract is complete without those behaviors.
 
+## 2026-09-14 frozen-contract repair closure
+
+The current checkout started from `83ca72e` after a direct remote `master` ref
+check returned the same commit. The M3 repair closes the three independently
+reviewed gaps: literal-JSON reverse-sync now patches only selected value spans
+and required local separators; baseline, M3b source, and M3c target writers
+classify the replace boundary from staged no-follow identity; and v5
+`PlanRecord` conditions use a closed value domain with non-empty contiguous
+resources. Equal bytes from an independent target are not treated as a known
+Luwu commit.
+
+The repair adds 31 focused regression tests, bringing the full suite to 274
+passing tests. The final verification was run against the current worktree
+before submission:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -v  # 274 passed
+uv run experiments/m3_ablation.py
+uv run experiments/m3_followup_ablation.py
+uv run experiments/m3_execution_closure_ablation.py
+uv run experiments/m3_final_closure_ablation.py
+ruff check src tests experiments
+ruff format --check src tests experiments
+UV_TOOL_DIR=/tmp/luwu-uv-tools-m3-final uvx ty check src tests
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m compileall -q src tests
+UV_CACHE_DIR=/tmp/luwu-uv-cache-m3-final uv lock --check
+UV_CACHE_DIR=/tmp/luwu-uv-cache-m3-final uv build --out-dir /tmp/luwu-m3-dist.fHihxw  # wheel + sdist
+git diff --check
+temporary M1 CLI: plan -> apply --yes -> inspect; content/mode/symlink/temp-entry checks passed
+isolated prek: all hooks passed; exact tracked and unignored-file byte check passed
+```
+
+The isolated hook copy was `/tmp/luwu-m3-gate-submit.7jHFAv`; it contained every
+tracked and unignored current file and passed the full fixed hook set, including
+`ty` and `mdformat`. Build artifacts are in `/tmp/luwu-m3-dist.fHihxw/`.
+Network-dependent dependency setup required an authorized external retry; no
+user configuration or repository fixture target was modified by verification.
+
+M3a, M3b, and M3c are complete within the repaired frozen contracts. This does
+not add exact reviewed-plan consent, automatic replay/rollback, or strong
+consistency against unrelated writers. M4 provider, secret, portability, and
+operational work remains `unstarted`.
+
 ## Verification of the 2026-09-13 follow-up
 
 The earlier follow-up recorded these results on the POSIX development environment. They are historical evidence; the subsequent closure review is recorded below.
@@ -138,7 +186,7 @@ preserving content drift, unknown-state recovery, and CLI redaction/outcomes.
 M3a, M3b, and M3c are implemented within their frozen scopes. M4 provider,
 secret, portability, and operational work remains unstarted.
 
-## 2026-09-14 execution and conflict closure
+## Historical 2026-09-14 execution and conflict closure
 
 The next audit started from freshly fetched `origin/master` at `d9d7092`.
 Its 213 passing tests did not cover three additional cases: a final journal
