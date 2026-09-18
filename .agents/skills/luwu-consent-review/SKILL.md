@@ -1,6 +1,11 @@
-______________________________________________________________________
-
-## name: luwu-consent-review description: > Use when reviewing Luwu inspect, plan, apply, confirmation, dry-run, stale-state, verification, or any operation that can mutate configuration. Test whether explicit authorization remains separate from observation. Do not use for read-only architecture review without an action boundary.
+---
+name: luwu-consent-review
+description: >-
+  Use when reviewing Luwu inspect, plan, apply, confirmation, dry-run,
+  stale-state, verification, or any operation that can mutate configuration.
+  Test whether explicit authorization remains separate from observation. Do not
+  use for read-only architecture review without an action boundary.
+---
 
 # Luwu consent review
 
