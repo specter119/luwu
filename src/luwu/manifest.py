@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import re
 import tomllib
+import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -19,6 +21,8 @@ _MANIFEST_VERSION_V3 = 3
 _MANIFEST_VERSION_V4 = 4
 EXECUTION_MANIFEST_VERSION = 5
 EXECUTION_RESOURCE_CAPABILITY = "public-source-whole-file"
+PROVIDER_MANIFEST_VERSION = 6
+SUBPROCESS_CAPABILITY = "subprocess"
 _SUPPORTED_MANIFEST_VERSIONS = frozenset(
     {
         MANIFEST_VERSION,
@@ -26,9 +30,11 @@ _SUPPORTED_MANIFEST_VERSIONS = frozenset(
         _MANIFEST_VERSION_V3,
         _MANIFEST_VERSION_V4,
         EXECUTION_MANIFEST_VERSION,
+        PROVIDER_MANIFEST_VERSION,
     }
 )
 _MANIFEST_FIELDS = {"version", "resources"}
+_PROVIDER_MANIFEST_FIELDS = {"version", "capabilities", "resources"}
 _RESOURCE_FIELDS = {
     "comparison",
     "kind",
@@ -64,6 +70,15 @@ _EXECUTION_RESOURCE_FIELDS = {
     "variables",
     "variables_sensitivity",
 }
+_PROVIDER_RESOURCE_FIELDS = {
+    "kind",
+    "source",
+    "target",
+    "owner",
+    "scope",
+    "content_sensitivity",
+    "providers",
+}
 _LOADER_PROVENANCE = object()
 _PUBLIC_VARIABLES_TOKEN = object()
 _SENSITIVE_VARIABLE_KEYS = {
@@ -81,6 +96,8 @@ _SENSITIVE_VARIABLE_KEYS = {
     "refresh_token",
     "session_token",
 }
+_PROVIDER_ALIAS_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
+_RESERVED_PROVIDER_ALIASES = frozenset({"secrets"})
 
 
 class _PublicVariables(Mapping[str, object]):
@@ -106,6 +123,19 @@ class _PublicVariables(Mapping[str, object]):
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderReference:
+    """One closed provider reference declared by a version-6 resource."""
+
+    type: str
+    item: str = dataclass_field(repr=False)
+    field: str = dataclass_field(repr=False)
+    alias: str | None = dataclass_field(default=None, repr=False, compare=False)
+
+
+ProviderSpec = ProviderReference
+
+
+@dataclass(frozen=True, slots=True)
 class Resource:
     """One fully declared template, symbolic, or M2 copy resource."""
 
@@ -117,19 +147,22 @@ class Resource:
     target_name: str
     owner: str
     scope: str
-    variables: Mapping[str, object] = field(repr=False)
+    variables: Mapping[str, object] = dataclass_field(repr=False)
     variables_sensitivity: str | None = None
     comparison: str = "exact-bytes"
-    fields: Mapping[str, str] = field(
+    fields: Mapping[str, str] = dataclass_field(
         default_factory=lambda: MappingProxyType({}), repr=False
     )
     baseline: Path | None = None
     baseline_name: str | None = None
     content_sensitivity: str | None = None
-    reverse_sync: Mapping[str, str] = field(
+    reverse_sync: Mapping[str, str] = dataclass_field(
         default_factory=lambda: MappingProxyType({}), repr=False
     )
     capability: str | None = None
+    providers: Mapping[str, ProviderReference] = dataclass_field(
+        default_factory=lambda: MappingProxyType({}), repr=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,9 +174,10 @@ class Manifest:
     root: Path
     resources: tuple[Resource, ...]
     content_digest: str
-    _provenance: object | None = field(
+    _provenance: object | None = dataclass_field(
         default=None, init=False, repr=False, compare=False
     )
+    capabilities: tuple[str, ...] = ()
 
     @property
     def execution_capability(self) -> str | None:
@@ -158,6 +192,12 @@ def is_execution_manifest(manifest: Manifest) -> bool:
     """Whether *manifest* uses the explicit M3c execution contract."""
 
     return manifest.version == EXECUTION_MANIFEST_VERSION
+
+
+def is_provider_manifest(manifest: Manifest) -> bool:
+    """Whether *manifest* uses the closed version-6 provider contract."""
+
+    return manifest.version == PROVIDER_MANIFEST_VERSION
 
 
 def load_manifest(path: Path) -> Manifest:
@@ -199,19 +239,34 @@ def load_manifest(path: Path) -> Manifest:
     if not isinstance(document, dict):
         raise ManifestError("manifest root must be a table", code="manifest_shape")
 
-    unknown_fields = set(document) - _MANIFEST_FIELDS
+    version = document.get("version")
+    if type(version) is not int or version not in _SUPPORTED_MANIFEST_VERSIONS:
+        raise ManifestError(
+            "manifest version must be 1, 2, 3, 4, 5, or 6",
+            code="manifest_version",
+        )
+
+    allowed_manifest_fields = (
+        _PROVIDER_MANIFEST_FIELDS
+        if version == PROVIDER_MANIFEST_VERSION
+        else _MANIFEST_FIELDS
+    )
+    unknown_fields = set(document) - allowed_manifest_fields
     if unknown_fields:
         raise ManifestError(
             f"manifest has unsupported field(s): {', '.join(sorted(unknown_fields))}",
             code="manifest_unknown_field",
         )
 
-    version = document.get("version")
-    if type(version) is not int or version not in _SUPPORTED_MANIFEST_VERSIONS:
-        raise ManifestError(
-            "manifest version must be 1, 2, 3, 4, or 5",
-            code="manifest_version",
-        )
+    capabilities: tuple[str, ...] = ()
+    if version == PROVIDER_MANIFEST_VERSION:
+        raw_capabilities = document.get("capabilities")
+        if raw_capabilities != [SUBPROCESS_CAPABILITY]:
+            raise ManifestError(
+                "version 6 manifest capabilities must be exactly ['subprocess']",
+                code="manifest_capabilities",
+            )
+        capabilities = (SUBPROCESS_CAPABILITY,)
 
     raw_resources = document.get("resources")
     if not isinstance(raw_resources, dict) or not raw_resources:
@@ -254,6 +309,8 @@ def load_manifest(path: Path) -> Manifest:
             allowed_resource_fields = _V4_RESOURCE_FIELDS
         elif version == EXECUTION_MANIFEST_VERSION:
             allowed_resource_fields = _EXECUTION_RESOURCE_FIELDS
+        elif version == PROVIDER_MANIFEST_VERSION:
+            allowed_resource_fields = _PROVIDER_RESOURCE_FIELDS
         else:
             allowed_resource_fields = _RESOURCE_FIELDS - {
                 "fields",
@@ -283,6 +340,11 @@ def load_manifest(path: Path) -> Manifest:
                 f"resource {name!r} kind must be explicitly 'template' or 'symbolic' in manifest version {version}",
                 code="resource_kind",
             )
+        if version == PROVIDER_MANIFEST_VERSION and raw_kind is None:
+            raise ManifestError(
+                f"resource {name!r} kind must be explicitly 'template' in manifest version {version}",
+                code="resource_kind",
+            )
         if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4} and raw_kind is None:
             raise ManifestError(
                 f"resource {name!r} kind must be explicitly 'template' in manifest version {version}",
@@ -301,6 +363,8 @@ def load_manifest(path: Path) -> Manifest:
             supported_kinds = {"template"}
         if version == EXECUTION_MANIFEST_VERSION:
             supported_kinds = {"template", "symbolic"}
+        if version == PROVIDER_MANIFEST_VERSION:
+            supported_kinds = {"template"}
         if kind not in supported_kinds:
             raise ManifestError(
                 f"resource {name!r} kind is not supported by manifest version {version}",
@@ -343,10 +407,18 @@ def load_manifest(path: Path) -> Manifest:
             )
 
         target_name = _required_string(raw_resource, "target", resource_name=name)
-        target_relative = _declared_relative_path(
-            target_name,
-            field=f"resource {name!r} target",
-        )
+        if version == PROVIDER_MANIFEST_VERSION:
+            target = _declared_external_absolute_path(
+                target_name,
+                root=root,
+                field=f"resource {name!r} target",
+            )
+        else:
+            target_relative = _declared_relative_path(
+                target_name,
+                field=f"resource {name!r} target",
+            )
+            target = root / target_relative
 
         owner = _required_string(raw_resource, "owner", resource_name=name)
         if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}:
@@ -431,6 +503,13 @@ def load_manifest(path: Path) -> Manifest:
             )
         if version == EXECUTION_MANIFEST_VERSION:
             content_sensitivity = "public"
+        if version == PROVIDER_MANIFEST_VERSION and raw_content_sensitivity != "secret":
+            raise ManifestError(
+                f"resource {name!r} content_sensitivity must be 'secret'",
+                code="resource_content_sensitivity",
+            )
+        if version == PROVIDER_MANIFEST_VERSION:
+            content_sensitivity = "secret"
         baseline_name: str | None = None
         baseline: Path | None = None
         if (
@@ -456,6 +535,15 @@ def load_manifest(path: Path) -> Manifest:
             else MappingProxyType({})
         )
 
+        providers = (
+            _parse_providers(
+                raw_resource.get("providers"),
+                resource_name=name,
+            )
+            if version == PROVIDER_MANIFEST_VERSION
+            else MappingProxyType({})
+        )
+
         source = root / source_relative
         try:
             resolved_source = source.resolve(strict=False)
@@ -466,7 +554,6 @@ def load_manifest(path: Path) -> Manifest:
                 code="resource_source_boundary",
             ) from None
 
-        target = root / target_relative
         if target == manifest_path:
             raise ManifestError(
                 f"resource {name!r} target must not replace the manifest",
@@ -505,6 +592,7 @@ def load_manifest(path: Path) -> Manifest:
                     if version == EXECUTION_MANIFEST_VERSION
                     else None
                 ),
+                providers=providers,
             )
         )
         resolved_sources.append(resolved_source)
@@ -520,6 +608,7 @@ def load_manifest(path: Path) -> Manifest:
         root=root,
         resources=tuple(resources),
         content_digest=hashlib.sha256(raw).hexdigest(),
+        capabilities=capabilities,
     )
     object.__setattr__(manifest, "_provenance", _LOADER_PROVENANCE)
     return manifest
@@ -714,6 +803,72 @@ def _parse_reverse_sync(
     return MappingProxyType(parsed)
 
 
+def _parse_providers(
+    raw_providers: object,
+    *,
+    resource_name: str,
+) -> Mapping[str, ProviderReference]:
+    """Parse version-6 provider references without retaining mutable TOML data."""
+
+    if not isinstance(raw_providers, dict) or not raw_providers:
+        raise ManifestError(
+            f"resource {resource_name!r} providers must be a non-empty table",
+            code="resource_providers",
+        )
+
+    parsed: dict[str, ProviderReference] = {}
+    for alias, raw_provider in sorted(raw_providers.items()):
+        if not isinstance(alias, str) or not _PROVIDER_ALIAS_RE.fullmatch(alias):
+            raise ManifestError(
+                f"resource {resource_name!r} provider alias is invalid",
+                code="provider_alias",
+            )
+        if alias.casefold() in _RESERVED_PROVIDER_ALIASES:
+            raise ManifestError(
+                f"resource {resource_name!r} provider alias is reserved",
+                code="provider_alias",
+            )
+        if not isinstance(raw_provider, dict):
+            raise ManifestError(
+                f"resource {resource_name!r} provider declaration is not a table",
+                code="provider_shape",
+            )
+        unknown = set(raw_provider) - {"type", "item", "field"}
+        if unknown:
+            raise ManifestError(
+                f"resource {resource_name!r} provider has unsupported field(s)",
+                code="provider_unknown_field",
+            )
+
+        provider_type = _provider_string(
+            raw_provider.get("type"),
+            resource_name=resource_name,
+            field_name="type",
+        )
+        if provider_type != "rbw":
+            raise ManifestError(
+                f"resource {resource_name!r} provider type is unsupported",
+                code="provider_type",
+            )
+        item = _provider_argv_value(
+            raw_provider.get("item"),
+            resource_name=resource_name,
+            field_name="item",
+        )
+        provider_field = _provider_argv_value(
+            raw_provider.get("field"),
+            resource_name=resource_name,
+            field_name="field",
+        )
+        parsed[alias] = ProviderReference(
+            type=provider_type,
+            item=item,
+            field=provider_field,
+            alias=alias,
+        )
+    return MappingProxyType(parsed)
+
+
 def _required_string(
     resource: Mapping[str, Any],
     field: str,
@@ -744,6 +899,83 @@ def _declared_relative_path(value: str, *, field: str) -> Path:
     if not parts:
         raise ManifestError(f"{field} must not be empty", code="path_invalid")
     return Path(*parts)
+
+
+def _declared_external_absolute_path(value: str, *, root: Path, field: str) -> Path:
+    """Validate the version-6 absolute target boundary without touching it."""
+
+    if "\x00" in value:
+        raise ManifestError(f"{field} contains a NUL byte", code="path_invalid")
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        raise ManifestError(
+            f"{field} must be an absolute path outside the manifest root",
+            code="target_boundary",
+        )
+    if candidate == root or root in candidate.parents:
+        raise ManifestError(
+            f"{field} must be outside the manifest root",
+            code="target_boundary",
+        )
+    try:
+        resolved = candidate.resolve(strict=False)
+        inside_root = resolved == root or root in resolved.parents
+    except (OSError, RuntimeError):
+        raise ManifestError(
+            f"{field} must be an absolute path outside the manifest root",
+            code="target_boundary",
+        ) from None
+    if inside_root:
+        raise ManifestError(
+            f"{field} must be outside the manifest root",
+            code="target_boundary",
+        )
+    return candidate
+
+
+def _provider_string(
+    value: object,
+    *,
+    resource_name: str,
+    field_name: str,
+) -> str:
+    if not isinstance(value, str) or not value:
+        raise ManifestError(
+            f"resource {resource_name!r} provider {field_name!r} must be non-empty",
+            code="provider_field",
+        )
+    return value
+
+
+def _provider_argv_value(
+    value: object,
+    *,
+    resource_name: str,
+    field_name: str,
+) -> str:
+    value = _provider_string(
+        value,
+        resource_name=resource_name,
+        field_name=field_name,
+    )
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ManifestError(
+            f"resource {resource_name!r} provider {field_name!r} is invalid",
+            code="provider_field",
+        ) from None
+    if len(encoded) > 256 or value.startswith("-"):
+        raise ManifestError(
+            f"resource {resource_name!r} provider {field_name!r} is invalid",
+            code="provider_field",
+        )
+    if any(unicodedata.category(character).startswith("C") for character in value):
+        raise ManifestError(
+            f"resource {resource_name!r} provider {field_name!r} is invalid",
+            code="provider_field",
+        )
+    return value
 
 
 def _copy_supported_value(value: Any, *, field: str) -> object:

@@ -1,8 +1,9 @@
 # Luwu Implementation Status
 
-Status: M3 complete within the frozen public v3/v4/v5 contracts; M4 remains `unstarted`
+Status: M4 complete within the frozen public v1-v6 contracts; automatic replay,
+rollback, and strong consistency against unrelated writers remain outside scope.
 
-This document records what the repository actually implements. The fixed M1 scope and closure checklist are maintained in [milestones/m1.md](milestones/m1.md); the M2 observation scope and closure checklist are maintained in [milestones/m2.md](milestones/m2.md); the M3a implementation boundary and closure evidence are maintained in [milestones/m3.md](milestones/m3.md). This document does not expand the product scope in [product.md](product.md), and it does not replace the contracts in [reference.md](reference.md).
+This document records what the repository actually implements. The fixed M1 scope and closure checklist are maintained in [milestones/m1.md](milestones/m1.md); the M2 observation scope and closure checklist are maintained in [milestones/m2.md](milestones/m2.md); the M3a implementation boundary and closure evidence are maintained in [milestones/m3.md](milestones/m3.md); the M4 closure record is maintained in [milestones/m4.md](milestones/m4.md). This document does not expand the product scope in [product.md](product.md), and it does not replace the contracts in [reference.md](reference.md).
 
 The earlier M3 execution/conflict closure below is historical evidence for
 then-current revisions. The current checkout completed the frozen-contract
@@ -82,6 +83,56 @@ execution contract. Automatic replay, rollback, and guarantees against
 unrelated writers that ignore advisory locks remain explicitly outside scope;
 the implemented M3c contract is complete without those behaviors.
 
+M4 now implements an independent version 6 provider execution capability.
+Version 6 has a closed manifest shape, explicit runtime subprocess authority,
+one bounded `rbw get --field FIELD ITEM` lookup per provider per calculation,
+fixed provider error boundaries, executable identity checks, and platform
+fail-closed behavior. Secret values enter only the private renderer context and
+the in-process write path; the v6 journal, cache, diagnostics, errors, and
+machine-readable projections exclude secret values, provider references,
+rendered content, content hashes, and secret-derived metadata. Secret targets
+are external owner-only 0600 files with no automatic parent creation.
+
+M4 also provides a separate closed `SecretPlanRecord`, read-only current
+re-observation, explicit metadata-only provider cache inspection/refresh, and
+the `platform-check` diagnostic. Existing v1-v5 paths remain provider-free
+and retain their prior read-only, single-resource mutation, and multi-resource
+execution boundaries. The CI workflow declares the Linux x86_64 Python
+3.12-3.14 matrix and clean wheel/sdist package checks; automatic replay,
+rollback, network providers, and strong protection from non-cooperating
+writers are not implemented.
+
+## 2026-09-16 M4 closure
+
+After fetching `origin`, it already pointed at the current HEAD
+`2307f32945c8cbf64adac54526425a314a061232`; no rebase or fast-forward was
+needed. The implementation and documentation changes remain uncommitted and
+unpushed in this worktree.
+
+The final local evidence is:
+
+```text
+343 unittest tests: passed
+M3 ablation, follow-up ablation, execution-closure ablation, final-closure ablation: passed
+M4 plan ablation and secret sentinel experiment: passed
+ruff check/format, ty check src tests, compileall, uv lock --check, git diff --check: passed
+isolated prek run --all-files and post-hook byte check: passed
+platform-check --json: supported Linux/x86_64, Python 3.14.7
+wheel and sdist build: passed
+fresh wheel install and full 343-test suite: passed on Python 3.12.9, 3.13.15, and 3.14.7
+fresh sdist install and full 343-test suite: passed on Python 3.12.9 and 3.14.7
+```
+
+The isolated hook copy was
+`/tmp/luwu-m4-prek-final2.NR0USH`; the final package gate and venvs were
+`/tmp/luwu-m4-package-final3-escalated.7q3PQS`. The hook and package directories are
+temporary and outside the checkout. Network-dependent dependency setup
+required authorized retries after sandbox DNS failures. The remote GitHub
+Actions workflow was not dispatched from this session; its declared
+3.12-3.14 Linux matrix and unsupported-platform unit tests are present in
+`.github/workflows/ci.yml` and were locally exercised with the same three
+Python versions.
+
 ## 2026-09-14 frozen-contract repair closure
 
 The current checkout started from `83ca72e` after a direct remote `master` ref
@@ -122,8 +173,8 @@ user configuration or repository fixture target was modified by verification.
 
 M3a, M3b, and M3c are complete within the repaired frozen contracts. This does
 not add exact reviewed-plan consent, automatic replay/rollback, or strong
-consistency against unrelated writers. M4 provider, secret, portability, and
-operational work remains `unstarted`.
+consistency against unrelated writers. M4 is closed within the version-6
+provider, secret, portability, and operational contract described above.
 
 ## Verification of the 2026-09-13 follow-up
 
@@ -183,8 +234,9 @@ the final independent code review found no remaining blocking issue in the
 frozen contracts. The follow-up adds 23 tests, including baseline ABA binding,
 pre/post-commit input changes, lock collisions with declared paths, metadata-
 preserving content drift, unknown-state recovery, and CLI redaction/outcomes.
-M3a, M3b, and M3c are implemented within their frozen scopes. M4 provider,
-secret, portability, and operational work remains unstarted.
+M3a, M3b, and M3c are implemented within their frozen scopes. At that
+historical point, M4 provider, secret, portability, and operational work
+remained unstarted; the current M4 closure is recorded above.
 
 ## Historical 2026-09-14 execution and conflict closure
 
@@ -219,6 +271,6 @@ files report skipped, not test coverage. Initial dependency resolution was
 blocked by sandbox DNS; authorized retries succeeded. Build artifacts are in
 `/tmp/luwu-m3-execution-closure-dist/`.
 
-M3a, M3b and M3c are complete within their frozen contracts. M4 remains
-unstarted; automatic replay, rollback and strong consistency against unrelated
-writers remain outside the M3 closure.
+M3a, M3b and M3c are complete within their frozen contracts. At that historical
+point, M4 remained unstarted; automatic replay, rollback and strong consistency
+against unrelated writers remain outside the M3 closure.

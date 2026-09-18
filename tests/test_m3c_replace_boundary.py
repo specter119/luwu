@@ -89,16 +89,9 @@ class M3cReplaceBoundaryTests(unittest.TestCase):
                         dst_dir_fd=dst_dir_fd,
                     )
                     return
-                data = _read_at(src_dir_fd, source_name)
-                os.unlink(target_name, dir_fd=dst_dir_fd)
-                descriptor = os.open(
-                    target_name,
-                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-                    0o644,
-                    dir_fd=dst_dir_fd,
+                self._write_independent_target(
+                    source_name, target_name, src_dir_fd, dst_dir_fd
                 )
-                with os.fdopen(descriptor, "wb") as handle:
-                    handle.write(data)
                 raise OSError("independent equal target")
 
             with (
@@ -181,16 +174,9 @@ class M3cReplaceBoundaryTests(unittest.TestCase):
                     )
                     return
                 if calls == 2:
-                    data = _read_at(src_dir_fd, source_name)
-                    os.unlink(target_name, dir_fd=dst_dir_fd)
-                    descriptor = os.open(
-                        target_name,
-                        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-                        0o644,
-                        dir_fd=dst_dir_fd,
+                    self._write_independent_target(
+                        source_name, target_name, src_dir_fd, dst_dir_fd
                     )
-                    with os.fdopen(descriptor, "wb") as handle:
-                        handle.write(data)
                     raise OSError("beta publication is indeterminate")
                 real_replace(
                     source_name,
@@ -275,8 +261,7 @@ class M3cReplaceBoundaryTests(unittest.TestCase):
             self.assertIn("state=unknown", stderr)
             self.assertNotIn(project.source_values["alpha"], stderr)
 
-    @staticmethod
-    def _indeterminate_side_effect():
+    def _indeterminate_side_effect(self):
         real_replace = os.replace
 
         def replace_with_equal_external_target(
@@ -294,19 +279,42 @@ class M3cReplaceBoundaryTests(unittest.TestCase):
                     dst_dir_fd=dst_dir_fd,
                 )
                 return
-            data = _read_at(src_dir_fd, source_name)
+            self._write_independent_target(
+                source_name, target_name, src_dir_fd, dst_dir_fd
+            )
+            raise OSError("indeterminate publication")
+
+        return replace_with_equal_external_target
+
+    def _write_independent_target(
+        self,
+        source_name: str,
+        target_name: str,
+        src_dir_fd: int,
+        dst_dir_fd: int,
+    ) -> None:
+        data = _read_at(src_dir_fd, source_name)
+        descriptor = os.open(target_name, os.O_RDONLY, dir_fd=dst_dir_fd)
+        # Keep the old inode alive so unlink/recreate cannot reuse its identity.
+        with os.fdopen(descriptor, "rb") as old_target:
             os.unlink(target_name, dir_fd=dst_dir_fd)
             descriptor = os.open(
                 target_name,
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                 0o644,
                 dir_fd=dst_dir_fd,
             )
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(data)
-            raise OSError("indeterminate publication")
-
-        return replace_with_equal_external_target
+                target_info = os.fstat(handle.fileno())
+                for info in (
+                    os.fstat(old_target.fileno()),
+                    os.stat(source_name, dir_fd=src_dir_fd, follow_symlinks=False),
+                ):
+                    self.assertNotEqual(
+                        (target_info.st_dev, target_info.st_ino),
+                        (info.st_dev, info.st_ino),
+                    )
 
     @staticmethod
     def _temporary_entries(path: Path) -> list[Path]:

@@ -1,12 +1,12 @@
-# Luwu M1/M2/M3a/M3b/M3c Reference
+# Luwu M1/M2/M3a/M3b/M3c/M4 Reference
 
 Status: current preview contract
 
-This document owns the stable manifest, CLI, JSON, error, and compatibility contract for the developer-confidence preview and its M2, M3a, narrow single-resource M3b, and explicit M3c execution extensions. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
+This document owns the stable manifest, CLI, JSON, error, and compatibility contract for the developer-confidence preview and its M2, M3a, narrow single-resource M3b, explicit M3c execution, and M4 provider extensions. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
 
 ## Manifest
 
-The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source, target, and baseline. M1 uses manifest version `1`; M2 supports versions `1` and `2`; M3a adds version `3`; M3b adds version `4`; the current M3c execution slice adds version `5`.
+The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source, target, and baseline. M1 uses manifest version `1`; M2 supports versions `1` and `2`; M3a adds version `3`; M3b adds version `4`; the M3c execution slice adds version `5`; M4 adds the independent provider execution version `6`.
 
 ```toml
 version = 1
@@ -75,17 +75,66 @@ For a recorded `committed` or `unchanged` resource, recovery confirmation requir
 
 The overall recovery outcome is `confirmed` only when every resource is confirmed. A journal containing only `not-attempted` resources still returns `recovery_required`, including when their current configurations happen to be in sync.
 
+### M4 manifest version 6 provider execution
+
+Version `6` is an independent provider execution capability. Its root allows
+only `version = 6`, `capabilities = ["subprocess"]`, and `resources`. Each
+resource explicitly declares `kind = "template"`, `owner = "source"`,
+`scope = "whole-file"`, `content_sensitivity = "secret"`, and a non-empty
+`providers` table. The only provider type is `rbw`; provider item and field
+values are opaque, bounded argv values. Targets are absolute paths outside the
+manifest root and source tree, below an existing non-symlink parent.
+
+The manifest capability is declarative. Provider execution also requires a
+per-invocation runtime authority constructed from `--allow-subprocess` and an
+absolute `--rbw-executable PATH`; without it, version-6 `inspect`, `plan`, and
+`apply` are blocked without starting a provider, and `recover` reports
+`capability_required` without starting one. The adapter invokes
+`[executable, "get", "--field", field, item]` with bounded output,
+`shell=False`, `stdin=DEVNULL`, a minimal environment, fixed cwd, strict UTF-8,
+and fixed provider error codes. It removes at most one terminal LF/CRLF and
+rejects empty, NUL-containing, malformed, non-zero, oversized, timed-out, or
+executable-identity-changing results.
+
+Each provider is resolved at most once per calculation. A confirmed
+`apply --yes` obtains a fresh value once, completes preflight, and writes only
+the bytes captured by that calculation; its write preflight does not fetch
+again. Provider values are short-lived in memory. They never enter output,
+logs, errors, diffs, hashes, baselines, cache, backups, or journals. The only
+durable content containing a secret is the explicitly declared secret target,
+which must be owner-only (`0600` for a new target), regular, single-linked, and
+owned by the current user; each read and write boundary rechecks this state.
+
+Version-6 execution records use a separate closed, metadata-only schema. They
+retain only the contract, opaque execution id, resource ordinal/public label,
+target non-content state, and execution events, plus the manifest locator needed
+for read-only re-observation. They contain no provider reference, resource or
+target path, size, digest, or content evidence. `record-inspect` reads this
+record without a provider. `recover` is re-observation only: without authority
+it returns a recovery-required capability result; with authority it may report
+`currently_converged`, never historical secret-content confirmation. The
+metadata-only provider cache is opt-in and written only by `cache-refresh`;
+cache status cannot authorize or alter reconciliation. `platform-check` is
+diagnostic only, and unsupported filesystem/provider primitives fail closed
+with `platform_unsupported`.
+
 ## Commands
 
-All manifest commands accept `--manifest PATH` (default `luwu.toml`) and `--json`. `inspect` and `plan` never write the manifest, source, target, or any state file. `record-inspect --record PATH` and `recover --record PATH` read only the named execution journal; neither requires a manifest argument or writes state.
+All manifest commands accept `--manifest PATH` (default `luwu.toml`) and `--json`. Version-6 manifest commands additionally accept `--allow-subprocess` and `--rbw-executable ABSOLUTE_PATH`; both are required to run the provider. `inspect` and `plan` never write the manifest, source, target, or any state file. `record-inspect --record PATH` and `recover --record PATH` read only the named execution journal; neither requires a manifest argument or writes state. `cache-inspect`, `cache-refresh`, and `platform-check` are separate diagnostic commands; only `cache-refresh` writes, and it writes a metadata-only owner-only cache.
 
 `inspect` reports the current state. `plan` reports the same observation together with the action an explicit apply could take. Both commands return exit code `0` after successfully calculating a plan, including when a resource is reported as `blocked`.
 
-`apply` always calculates a plan first. In human output, a confirmed version 1 apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. Version 1 with `--yes` rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. Version 5 uses the execution journal contract described above and requires `--record PATH` for a confirmed apply. JSON mode keeps stdout as one result document; version 1 includes the initial and verification plans when verification can recalculate one, while version 5 includes only preview/journal metadata, target names, states, outcomes, and changed target names. A blocked, stale, or version 2/3/4 read-only plan returns exit code `2` and does not begin a write. A version 2 `apply` preview reports `m2_read_only`; a version 3 or 4 preview reports `m3_read_only`; a plan containing an unsafe resource reports `plan_blocked`.
+`apply` always calculates a plan first. In human output, a confirmed version 1 apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. Version 1 with `--yes` rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. Versions 5 and 6 use their independent execution journal contracts and require `--record PATH` for a confirmed apply. Version 6 additionally requires explicit subprocess authority and writes only the external secret target after owner-only preflight. JSON mode keeps stdout as one result document; version 1 includes the initial and verification plans when verification can recalculate one, while versions 5 and 6 include only preview/journal metadata, target labels, states, outcomes, and changed target labels. A blocked, stale, or version 2/3/4 read-only plan returns exit code `2` and does not begin a write. A version 2 `apply` preview reports `m2_read_only`; a version 3 or 4 preview reports `m3_read_only`; a plan containing an unsafe resource reports `plan_blocked`.
 
 `accept` and `reverse-sync` require `--resource`, one or more `--field` values, and explicit `--yes` confirmation for mutation. Without `--yes`, both return exit code `2` and emit a metadata-only preview. The preview is explanatory and is not a persisted plan token; `--yes` recalculates the current inputs and then performs the documented stale checks. Successful mutation returns exit code `0`, records the selected fields and write path, and includes a fresh verification plan. The result never contains accepted values, rendered content, diffs, or hashes.
 
 Writes use a temporary file or temporary symlink in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved for template targets; a new regular template target starts with mode `0644`. A template target symlink is refused rather than followed or replaced. A symbolic target symlink is accepted only when it resolves to the declared source; a different existing symlink is blocked. The current implementation uses descriptor-relative no-follow operations, records source/target identities, and takes a non-blocking advisory lock for cooperating Luwu writers on POSIX. It fails closed when those filesystem primitives are unavailable. An advisory lock does not control unrelated writers that ignore it, so M1 does not claim protection against those races; a stronger kernel compare-and-swap boundary is future work. M1 does not create parent directories, keep a baseline, or make a backup containing configuration content.
+
+Version 6 uses the same recoverable atomic replacement boundary only after
+stricter secret-target checks. It never creates a parent directory, follows a
+target symlink, or accepts a target with group/other/special permissions,
+multiple hard links, or an unverified owner. Its journal is owner-only and
+separate from the version-5 path-condition record.
 
 ## States and actions
 
@@ -155,6 +204,14 @@ Version 2 successful observation output uses `schema_version = 2`, includes `man
 
 Version 5 apply output has `preview`, `journal`, `target_names`, `state`, `outcome`, and `changed_targets`; a preview has `journal.created = false`, and a failed confirmed execution includes the readable journal state so partial success is not hidden. `record-inspect` emits the same journal metadata without path conditions or transition history. `recover --record PATH --json` emits `schema_version`, `command = "recover"`, `mode = "reobserve-only"`, `plan_id`, `record_state`, `outcome`, and metadata-only per-resource/path observations; human output reports the same state and outcome without configuration values. The version-5 journal condition domain is closed: condition types are `missing`, `unsafe`, `regular`, `symlink`, or `other`; `mode` is `0..0o777`, sizes and file identities are non-negative integers, and timestamps may be signed integers. Empty resources, ordinal gaps, and a non-contiguous `next_ordinal` are invalid.
 
+Version 6 plan and apply output uses `schema_version = 6`, public resource
+labels such as `resource-0`, safe status/action/reason/impact metadata, and no
+source, target, provider item/field, provider reference, or secret-derived
+content metadata. Confirmed execution reports the v6 journal contract and
+resource states using labels. `record-inspect` and `recover` retain the same
+safe projection; a v6 recovery with authority can report current convergence
+but never `confirmed` historical content.
+
 Once version 5 execution has started tracking a validated plan, errors also include an `execution` object with exactly `plan_id`, `committed`, `changed_targets`, and ordered `resources`. Each resource contains only `name`, `target`, and `state`. These are this invocation's in-memory target observations; `journal` separately describes the record actually readable from disk. A missing or unreadable journal does not discard known target outcomes. Human output exposes the same target paths and states.
 
 If journal diagnostics cannot even determine whether the record exists, `journal.created` is `null` and its state is `unreadable`; the error does not claim the record is absent. Successful existence checks retain the usual boolean value even if reading the record subsequently fails.
@@ -176,4 +233,4 @@ Error messages identify the failing boundary but never print rendered content or
 
 ## Compatibility
 
-The manifest `version` and JSON `schema_version` are independent explicit contracts. M1 uses version `1` for both; M2 uses version `2`; M3a uses version `3`; M3b uses manifest and mutation result version `4`; M3c execution and re-observation use version `5`. A future incompatible change must introduce a new version or a deliberate migration. There is no migration or automatic recovery mutation command.
+The manifest `version` and JSON `schema_version` are independent explicit contracts. M1 uses version `1` for both; M2 uses version `2`; M3a uses version `3`; M3b uses manifest and mutation result version `4`; M3c execution and re-observation use version `5`; M4 provider execution and re-observation use version `6`. A future incompatible change must introduce a new version or a deliberate migration. There is no migration or automatic recovery mutation command.

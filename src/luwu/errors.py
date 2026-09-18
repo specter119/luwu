@@ -1,5 +1,7 @@
 """Errors that form the boundary between Luwu and its CLI."""
 
+from typing import ClassVar
+
 
 class LuwuError(Exception):
     """An expected, user-actionable Luwu failure."""
@@ -21,6 +23,50 @@ class RenderError(LuwuError):
     """A declared template cannot be rendered safely."""
 
     default_code = "template_error"
+
+
+class ProviderError(LuwuError):
+    """A provider failure with a fixed, metadata-only public boundary."""
+
+    default_code = "provider_unavailable"
+    _MESSAGES: ClassVar[dict[str, str]] = {
+        "capability_required": "provider capability is not authorized",
+        "provider_invalid_reference": "provider reference is invalid",
+        "provider_type": "provider type is unsupported",
+        "provider_executable_invalid": "provider executable is not permitted",
+        "provider_executable_changed": "provider executable identity changed",
+        "provider_spawn_failed": "provider process could not be started",
+        "provider_timeout": "provider process timed out",
+        "provider_termination_failed": "provider process termination is unconfirmed",
+        "provider_output_oversize": "provider output exceeded the limit",
+        "provider_output_encoding": "provider output is not valid UTF-8",
+        "provider_output_nul": "provider output contains NUL",
+        "provider_output_invalid": "provider output is invalid",
+        "provider_empty": "provider returned an empty value",
+        "provider_command_failed": "provider command failed",
+        "provider_unavailable": "provider is unavailable",
+    }
+
+    def __init__(self, message: str | None = None, *, code: str | None = None) -> None:
+        del message
+        safe_code = code if code in self._MESSAGES else self.default_code
+        super().__init__(self._MESSAGES[safe_code], code=safe_code)
+
+
+class PlatformError(LuwuError):
+    """A required filesystem or process primitive is unavailable."""
+
+    default_code = "platform_unsupported"
+
+    def __init__(self, message: str | None = None, *, code: str | None = None) -> None:
+        del message
+        super().__init__(
+            "platform does not support the required operation",
+            code=self.default_code,
+        )
+
+
+PlatformUnsupportedError = PlatformError
 
 
 class MutationError(LuwuError):

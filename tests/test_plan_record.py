@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -138,6 +141,95 @@ class PlanRecordTests(unittest.TestCase):
             self.assertEqual(stale.exception.code, "plan_record_cas")
             self.assertEqual(PlanRecord.read(path).to_dict(), updated.to_dict())
 
+    def test_create_does_not_retain_mutable_input_objects(self) -> None:
+        manifest = {
+            "path": "luwu.toml",
+            "root": ".",
+            "version": 4,
+            "digest": "sha256:" + "0" * 64,
+        }
+        resources: list[dict[str, Any]] = [
+            {
+                "ordinal": 0,
+                "name": "settings",
+                "operation": "reverse-sync",
+                "paths": [
+                    {
+                        "role": "source",
+                        "path": "templates/settings.json.j2",
+                        "operation": "write_source_input",
+                        "precondition": {
+                            "type": "regular",
+                            "mode": 420,
+                            "size": 0,
+                            "mtime_ns": 0,
+                            "file_id": 0,
+                        },
+                        "postcondition": {
+                            "type": "regular",
+                            "mode": 420,
+                            "size": 0,
+                            "mtime_ns": 0,
+                            "file_id": 0,
+                        },
+                        "state": "planned",
+                    }
+                ],
+                "state": "planned",
+            }
+        ]
+        record = PlanRecord.create(
+            plan_id=str(uuid4()),
+            execution_contract="execution-contract-1",
+            mutation_contract="mutation-contract-1",
+            manifest=manifest,
+            resources=cast(list[Mapping[str, Any]], resources),
+        )
+
+        manifest["digest"] = "sha256:" + "1" * 64
+        resources[0]["paths"][0]["precondition"]["size"] = 99
+
+        document = record.to_dict()
+        self.assertEqual(document["manifest"]["digest"], "sha256:" + "0" * 64)
+        self.assertEqual(
+            document["resources"][0]["paths"][0]["precondition"]["size"], 0
+        )
+
+    def test_replace_then_raise_reports_journal_publication_uncertainty(self) -> None:
+        record = _record()
+        updated = record.transition("preflighted")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plan.json"
+            record.write(path)
+            real_replace = os.replace
+
+            def replace_then_raise(
+                source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+                destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+                *,
+                src_dir_fd: int | None = None,
+                dst_dir_fd: int | None = None,
+            ) -> None:
+                real_replace(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+                raise OSError("publication boundary")
+
+            with (
+                patch("luwu.plan_record.os.replace", side_effect=replace_then_raise),
+                patch("luwu.plan_record.ensure_supported"),
+                self.assertRaises(PlanRecordError) as raised,
+            ):
+                updated.write(path, expected=record)
+
+            self.assertEqual(raised.exception.code, "plan_record_durability_unknown")
+            self.assertTrue(raised.exception.committed)
+            self.assertFalse(raised.exception.durability_confirmed)
+            self.assertEqual(PlanRecord.read(path).to_dict(), updated.to_dict())
+
     def test_parent_rebind_after_replace_is_durability_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "plan.json"
@@ -157,6 +249,7 @@ class PlanRecordTests(unittest.TestCase):
             path = Path(directory) / "plan.json"
             with (
                 patch("luwu.plan_record.os.unlink", side_effect=OSError("cleanup")),
+                patch("luwu.plan_record.ensure_supported"),
                 self.assertRaises(PlanRecordError) as raised,
             ):
                 _record().write(path)

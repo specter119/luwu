@@ -1,4 +1,4 @@
-# Luwu M1/M2/M3a/M3b/M3c Design
+# Luwu M1/M2/M3a/M3b/M3c/M4 Design
 
 Status: current implementation design
 
@@ -127,15 +127,65 @@ This uses the existing writer outcomes and journal, without another durable
 ledger or recovery mechanism. The exact error states and recovery aggregation
 are defined in [reference.md](reference.md).
 
+## M4 provider execution
+
+Version 6 is a separate path from the public version-5 executor:
+
+```text
+version 6 manifest
+  -> closed schema and external-target boundary
+  -> explicit runtime authority
+  -> one bounded rbw lookup per provider declaration
+  -> short-lived secret render context
+  -> metadata-only observation
+  -> complete preflight with the captured bytes
+  -> owner-only atomic external-target replacement
+  -> independent secret-safe journal
+  -> read-only current re-observation
+```
+
+The manifest declares that subprocess capability is needed, but the CLI or
+direct library caller must supply a runtime `ProviderAuthority`. The provider
+resolver has one supported adapter, rbw, and one narrow command shape. Its
+subprocess runner does not inherit the caller environment, does not use a
+shell, does not connect to a network, bounds both pipes, and maps all provider
+failure details to fixed safe errors. Executable identity is checked before,
+around, and after the run; this is detection for a local TOCTOU threat model,
+not a claim of OS-level isolation.
+
+The renderer receives a sealed `SecretRenderContext`. Only its private
+renderer token can open a temporary alias mapping; public variables cannot
+occupy the `secrets` namespace. The opened values are cleared after rendering,
+and `RenderedTemplate`/error/projection boundaries do not serialize or print
+rendered bytes. Reconciliation keeps the captured rendered bytes only in the
+in-process plan so a confirmed apply cannot fetch a different value during
+its write preflight.
+
+Provider targets are absolute and outside the manifest/source and operational
+state trees. Descriptor-relative no-follow reads and writes reject symlinks,
+non-regular entries, unsafe owner/mode bits, and multiple hard links before a
+secret is read and again before replacement. A new target is `0600`; an
+existing target must remain current-user-owned and owner-only. The boundary
+detects, classifies, and fails closed on local races, but cannot prevent a
+privileged or otherwise authorized unrelated writer from changing a directory
+between checks.
+
+Version 6 deliberately does not reuse the version-5 persisted content/digest
+condition schema. `SecretPlanRecord` contains only public resource labels,
+non-content target state, state transitions, and fixed execution contracts.
+The cache is a separate explicit metadata diagnostic and has no reconciliation
+decision seam. Recovery never replays or writes: without authority it reports
+that current provider observation is unavailable; with authority it can report
+current convergence, which is not proof of historical secret content.
+
 ## Safety boundaries
 
 The normative manifest, CLI, error, and write contract is owned by
 [reference.md](reference.md); this section does not repeat its field and state
 tables. The design consequences are deliberately narrow: M1 remains
 single-resource and forward-only, v2–v4 remain observation or explicit
-single-resource mutation contracts, and version 5 is the only current
-multi-resource execution capability. Providers, secret persistence, automatic
-recovery mutation, rollback, and unrelated-writer race guarantees remain
-outside the verified closure. The descriptor-relative, no-follow implementation is the
-mechanism that preserves the target boundary described by the reference
-contract.
+single-resource mutation contracts, and versions 5 and 6 are separate
+multi-resource execution capabilities. Automatic recovery mutation, rollback,
+and unrelated-writer race guarantees remain outside the verified closure. The
+descriptor-relative, no-follow implementation is the mechanism that preserves
+both target boundaries described by the reference contract.
