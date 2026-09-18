@@ -99,8 +99,9 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
             ) -> None:
                 data = self._read_at(source_name, src_dir_fd)
                 staged["identity"] = self._identity_at(src_dir_fd, source_name)
-                os.unlink(source_name, dir_fd=src_dir_fd)
+                # Create the independent inode before releasing the staged one.
                 project.baseline.write_bytes(data)
+                os.unlink(source_name, dir_fd=src_dir_fd)
                 parent = os.open(project.baseline.parent, os.O_RDONLY)
                 try:
                     staged["target_identity"] = self._identity_at(
