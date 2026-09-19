@@ -1,78 +1,123 @@
 # Luwu Agent Instructions
 
-## Document role
+## Role and authority
 
-Luwu is still at the seed stage. This file is the root entry point for agents and maintainers. It defines cross-cutting boundaries, documentation ownership, and a lightweight working method.
+Luwu is still at the seed stage. This file is the entry point for agents and
+maintainers. It owns agent working method, cross-cutting handling boundaries,
+and documentation routing. It is not the product brief, public contract,
+implementation design, status report, release handbook, or milestone history.
 
-It is not the complete product brief, architecture, API reference, testing handbook, release guide, or roadmap. Do not turn a currently attractive implementation idea into a permanent rule here. Route each concrete topic to its owning document.
+The product seed is in [docs/product.md](docs/product.md). Planned behavior
+must never be presented as current behavior. When a statement could describe
+both a desired direction and an implementation fact, classify it before
+editing a document.
 
-The product seed is in docs/product.md. Any document must distinguish its intended design from the current implementation; planned behavior must never be presented as existing behavior.
+## Cross-cutting handling boundaries
 
-## Product summary
+These are rules for agent and maintainer work. Their product rationale belongs
+to `docs/product.md`; their public behavior belongs to `docs/reference.md`.
 
-Luwu is a configuration orchestrator for dotfiles, developer tools, and agent configuration. It should make meaningful drift explainable, make responsibility visible, and let people choose an auditable next action. The product problem, scope, non-goals, and value tests belong to [docs/product.md](docs/product.md), not to this summary.
+- Keep observation and mutation separate. Inspection, planning, and ordinary
+  reverse sync must not write implicitly. A mutation is explicit and follows
+  an explainable plan.
+- Keep scope and ownership explicit. Undeclared content is not implicitly
+  adoptable. Conflicts stop for review instead of being hidden by a generic
+  force or precedence rule.
+- Treat reverse sync as structured, auditable acceptance. Only declared
+  fields may be written back, and the result is recalculated after the write.
+- Minimize secrets and fail closed. Provider-managed secrets must not enter
+  repositories, persistent state, diffs, logs, caches, backups, or
+  machine-readable output.
+- Preserve existing targets and recoverable boundaries. A successful
+  deployment is not worth damaging undeclared content, permissions, or
+  symlinks.
+- Keep semantic responsibility ahead of implementation convenience. A
+  formatter, cache, or application side effect must not change who owns a
+  value.
+- Make external capabilities explicit. Dependencies, subprocesses, and
+  network access must not bootstrap themselves at runtime.
+- Label product goals, designs, implementation status, historical evidence,
+  and verification results honestly.
 
-## Non-negotiable boundaries
+## Documentation ownership
 
-- Observation and mutation are separate. Inspection, planning, and ordinary reverse sync must not write implicitly. A mutation must be explicit and preceded by an explainable plan.
-- Scope and ownership are explicit. Undeclared content is not implicitly adoptable; conflicts stop for review instead of being hidden behind a generic force or precedence rule.
-- Reverse sync is a structured, auditable acceptance process, not a file copy. Only declared fields may be written back, and the result must be recalculated after that write.
-- Secrets are minimized and fail closed. Provider-managed secrets must not enter the repository, persistent state, diffs, logs, caches, backups, or machine-readable output.
-- Writes must respect the existing target and retain a recoverable boundary. A successful deployment is not worth damaging undeclared content, permissions, or symlinks.
-- Semantic responsibility comes before implementation convenience. A formatter, cache, or application side effect must not change who owns a value.
-- External capabilities are explicit. Dependencies, subprocesses, and network access must not silently bootstrap themselves at runtime.
-- Product goals, designs, implementation status, and verification results must be labeled honestly.
+Ownership is by **fact type**, not by which file first mentioned a subject.
+Every normative fact has one owner. Other documents may summarize it with a
+short sentence and a link, or record it as historical evidence, but must not
+create a second definition.
 
-## Shared vocabulary
+| Fact type                                                                      | Sole owner                                             | Allowed elsewhere                                                                                                       |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Product problem, direction, scope, non-goals, and value tests                  | `docs/product.md`                                      | A short rationale or link; no CLI, schema, or current-status definition                                                 |
+| Stable manifest, CLI, JSON, error, compatibility, and public safety contracts  | `docs/reference.md`                                    | Design explains mechanism; status says whether it is implemented; milestones record the historical decision or evidence |
+| Current checkout implementation facts and latest verified state                | `docs/status.md`                                       | README gives a user summary; milestones preserve dated historical snapshots                                             |
+| Internal flow, module responsibilities, and implementation mechanisms          | `docs/design.md`                                       | Link to the public contract; do not redefine public fields or states                                                    |
+| Delivery sequence and milestone boundaries                                     | `docs/roadmap.md`                                      | Milestones may expand their own historical scope; neither roadmap nor milestones redefine unrelated contracts           |
+| Development, test, release, migration, and documentation workflow              | `docs/maintenance.md`                                  | Commands may be shown as examples; their behavior is owned by `reference.md`                                            |
+| Fixed milestone scope, review decisions, counterexamples, and closure evidence | `docs/milestones/*.md`                                 | Status links to the record; after closure, stable behavior is owned by `reference.md`                                   |
+| User overview and quick start                                                  | `README.md`                                            | Link to the owner for details; do not copy internal history or contract tables                                          |
+| Review stance and attack playbook                                              | `.agents/skills/*/SKILL.md`                            | Skills inspect the owner documents and implementation; they do not own product or API contracts                         |
+| Why a high-impact cross-cutting choice was made                                | `docs/decisions/<record>.md` when such a record exists | Link from the affected owner; do not create a decision record for routine implementation history                        |
 
-These terms form a shared mental model; they do not prescribe a class hierarchy or storage format:
+The map is a routing aid, not permission to duplicate content. A document may
+mention the same subject at a different fact type: product says why,
+reference says what, design says how, status says whether, a milestone says
+what was true at a date, and a skill says how to attack the claim. The wording
+must make that distinction visible.
 
-- global and local: shared inputs and machine-private inputs;
-- provider: a controlled external source of values, with its own provenance and sensitivity;
-- live: configuration currently used or changed by an application or user;
-- baseline: the last state explicitly accepted as a comparison point;
-- desired: the state calculated from the current declared inputs;
-- source, live, merge, provider, and ignore: ownership vocabulary for deciding how a field may change.
+Do not use a non-owner document to repair a conflict. First identify the fact
+type and owner, then update the owner and replace the other statement with a
+link or a clearly dated historical note. Do not average conflicting
+documents. For a closed milestone, do not rewrite history to match a later
+implementation; record the later fact in the current owner.
 
-Document ownership and configuration ownership are different. A document owner is an accountability pointer for maintaining and routing a document; it is not proof of authority or a source of truth. Configuration ownership must eventually affect allowed transitions and be enforced by the resource or field contract, planning, validation, and tests.
+## Scope and language rules
 
-Concrete reconciliation algorithms, field-path syntax, formatting rules, persistence layouts, and provider protocols belong in their owning documents.
-
-## Current starting point, not a permanent blueprint
-
-The seed implementation uses Python with uv, explicit `.j2` templates, and narrow provider boundaries; rbw is a first provider experiment. These are starting assumptions, not product invariants or a complete future architecture. Detailed contracts belong in the document that owns the subject and should be added when implementation and evidence make them useful.
-
-## Documentation map and single ownership
-
-Every normative fact has one owner. Other documents may summarize it briefly, but must link to the owner instead of copying a rule, field table, or competing explanation.
-
-| Document                       | Owns                                                              | Does not own                                                         |
-| ------------------------------ | ----------------------------------------------------------------- | -------------------------------------------------------------------- |
-| AGENTS.md                      | agent routing, global boundaries, and document governance         | full product narrative, internal algorithms, command reference       |
-| README.md                      | user-facing overview, use cases, and quick start                  | agent workflow, internal contracts, decision history                 |
-| docs/product.md                | product problem, scope, non-goals, and value tests                | implementation types, CLI fields, concrete algorithms                |
-| docs/roadmap.md                | coarse delivery sequence and milestone boundaries                 | detailed contracts, current status, milestone closure records        |
-| docs/decisions/<record>.md     | why one high-impact choice was made and its consequences          | the current contract or an interface inventory                       |
-| docs/milestones/<milestone>.md | fixed milestone scope, exit checklist, and closure record         | current implementation status, product direction, detailed contracts |
-| docs/design.md                 | how the current internal design works                             | product vision, user guide, complete public contract                 |
-| docs/reference.md              | stable manifest, CLI, JSON, error, and compatibility contracts    | rationale, speculative designs, maintenance process                  |
-| docs/maintenance.md            | development, testing, release, migration, and dependency workflow | product goals or complete algorithm definitions                      |
-| docs/status.md                 | what is implemented, exploratory, or not started                  | product scope or design authority                                    |
-
-The map is a route, not a demand to create empty files. Create a specialist document only when a topic has an independent audience, change rate, or review boundary. A specialist document may include a short status or scope note when it prevents a real ambiguity; do not add `Owner`, `Scope`, or `Does not define` metadata as a ritual. If a status is used, it must distinguish early direction from accepted and verified behavior.
-
-README.md is for users, AGENTS.md is for agents, and decision records explain history rather than silently defining current behavior. If two documents disagree, do not average them: identify the owner, record the conflict, and repair the documentation.
+- Repository documentation is maintained in English. There is no
+  `README_cn.md` mirror. Do not add a second-language normative copy without a
+  separately approved owner and synchronization policy.
+- A field list, state table, error meaning, or command promise belongs in
+  `docs/reference.md`, even when a milestone originally introduced it.
+- A test count, temporary artifact path, or dated gate result belongs in the
+  relevant milestone record when it is historical. `docs/status.md` links to
+  it instead of replaying the log.
+- A skill pattern is evidence for review, not a new product rule. Promote a
+  pattern to the relevant owner only when code, tests, or repeated maintenance
+  experience justify a stable rule.
+- This file does not define subagent mutual exclusion or scheduling. Multiple
+  reviewers may inspect the same scope. Document ownership is a content
+  boundary, not a runtime lock.
 
 ## Agent working method
 
-1. Read this file first, then read the owning document and the affected code, schema, fixtures, and tests required by the task.
-1. Inspect the actual state before proposing a change. Treat planned behavior as unverified until code, tests, or a status document provide evidence.
-1. Identify the owning layer and document. Update that owner when behavior changes; update this file only when a cross-cutting boundary or the documentation map changes.
-1. Keep behavior, verification, schema or migration, and documentation aligned without duplicating normative rules. Create a decision record only for a high-impact choice.
-1. Report actual changes and verification, including important checks not run and relevant security, migration, or documentation impact. Do not commit, push, or change branch policy unless asked.
+1. Read this file, then read the owner document for the requested change.
+1. Inspect the actual code, schema, fixtures, tests, and current status needed
+   to distinguish implemented behavior from intent or history.
+1. Classify each proposed statement as product intent, public contract,
+   current fact, design mechanism, workflow, historical evidence, or review
+   pattern. If two owners appear possible, stop and resolve the classification
+   before editing.
+1. Change the owner. In other documents, replace repeated definitions with a
+   concise summary and a relative link.
+1. Search the repository after editing for duplicate definitions, stale status
+   claims, broken owner links, and language-policy violations.
+1. Run the narrowest relevant tests, documentation checks, and repository
+   gates. Mark blocked or unrun checks explicitly.
+1. Report what changed, what remains outside scope, which evidence was used,
+   and how the next maintainer can continue.
 
-If docs/status.md does not exist, do not infer that planned capabilities are implemented; use evidence from code and tests, and establish that status document when implementation starts.
+If `docs/status.md` does not exist, do not infer that planned capabilities are
+implemented. Establish the status document when implementation starts.
 
-## Shan Hai Jing note
+## Shared vocabulary
 
-《山海经·西山经》中的陆吾，负责守护和管理昆仑一方，并“掌管天之九部及帝之囿时”。Luwu 借用的是这种“先守边界、再辨归属”的精神；形象和产品气质可以在后续设计中重新诠释，不把古籍中的形貌直接当作 UI 约束。
+Use the product vocabulary consistently: global and local inputs, provider,
+live state, baseline, desired state, source/live/merge/provider/ignore
+ownership, and declared scope. Product meaning belongs in
+`docs/product.md`; exact field and transition semantics belong in
+`docs/reference.md`.
+
+## Project note
+
+The name Luwu is inspired by the guardian role in the *Shan Hai Jing*. That
+image is a project character, not a UI constraint or a product contract.
