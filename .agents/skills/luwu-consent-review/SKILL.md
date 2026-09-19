@@ -44,3 +44,30 @@ Report a short state-transition timeline with path/line and test evidence,
 classify behavior as implemented, partial, design-only, or unstarted, and name
 the smallest corrective change plus its regression test. Use the owning CLI or
 reference contract for exact exit codes and output promises.
+
+## Scope boundary
+
+This stance owns authorization transitions: observation, planning,
+confirmation, stale revalidation, mutation, partial completion, and the next
+safe action. It does not own path safety, secret exposure, configuration
+authority, semantic equivalence, or document truth. Hand those findings to the
+boundary, confidentiality, ownership, semantic-drift, or verifiability stance.
+
+## Good patterns
+
+- Keep inspect and plan read-only, require explicit confirmation for mutation,
+  and recalculate after the write. Evidence: the command contract in
+  `docs/reference.md`.
+- Complete preflight before the first writer and keep recovery observation
+  read-only. Evidence: the M3 execution closure and v5 reference contract.
+
+## Bad patterns
+
+- Let inspection, planning, recovery, or cache status perform an implicit
+  write or refresh.
+- Allow a selected reverse-sync field to proceed while another field in the
+  same resource requires conflict review. Evidence:
+  [M3 execution closure](../../../docs/milestones/m3-execution-closure.md).
+
+Patterns do not define confirmation flags or exit codes. Those remain owned by
+the public CLI and reference contract.

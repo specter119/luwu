@@ -45,3 +45,32 @@ the protected authority, the convenience being sacrificed, path/line evidence,
 the failure scenario, the smallest corrective change, and the regression test.
 Use `docs/product.md` for the responsibility questions and the owning contract
 for the exact transition rules.
+
+## Scope boundary
+
+This stance owns responsibility and authority: declared owner, scope,
+provenance, adoption, baseline role, provider/live role, and reverse-sync
+eligibility. It does not own the filesystem mechanics, authorization prompt,
+secret exposure, semantic equivalence, or current-document status. Route those
+findings to the boundary, consent, confidentiality, semantic-drift, or
+verifiability stance.
+
+## Good patterns
+
+- Treat an absent baseline as `unbased` and a change outside declared fields
+  as a separate undeclared signal; neither silently grants a candidate.
+  Evidence: the M3 contract in `docs/reference.md`.
+- Permit reverse sync only through an explicit declared literal mapping and
+  preserve unselected or undeclared source content. Evidence:
+  [M3 repair record](../../../docs/milestones/m3-repair-plan.md).
+
+## Bad patterns
+
+- Use a generic force or precedence rule to adopt undeclared live content or
+  to erase a conflict.
+- Re-read a convenient baseline and use it as authorization when the planner
+  classified a different baseline. Evidence:
+  [M3 follow-up record](../../../docs/milestones/m3-followup.md).
+
+Patterns explain how to attack authority mistakes; the resource and field
+contract remains owned by `docs/product.md` and `docs/reference.md`.

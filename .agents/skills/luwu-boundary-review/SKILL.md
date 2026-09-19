@@ -44,3 +44,32 @@ concrete path/line and test evidence, failure impact, and minimum fix. Classify
 implemented, partial, design-only, or unstarted behavior and require a focused
 regression test for every changed shield. Use `docs/reference.md` for the
 stable write contract and `docs/design.md` for its mechanism.
+
+## Scope boundary
+
+This stance owns filesystem and resource-boundary questions: path roots,
+symlinks, descriptors, permissions, replacement, cleanup, and recoverability.
+It does not own who is authorized to change a value, whether an action had
+consent, what a representation means, or whether a claim is current. Hand
+those findings to the ownership, consent, semantic-drift, or verifiability
+stance instead of redefining their contracts here.
+
+## Good patterns
+
+- Re-observe staged no-follow identity at a replace boundary and classify an
+  uncertain result as unknown instead of inferring it from equal bytes.
+  Evidence: [M3 repair record](../../../docs/milestones/m3-repair-plan.md).
+- Check journal and lock paths together before either persistent entry is
+  created. Evidence: [M3 follow-up record](../../../docs/milestones/m3-followup.md).
+
+## Bad patterns
+
+- Treat equal target content as proof that this process performed the
+  replacement. This loses provenance at the exact boundary where the writer
+  may have raised.
+- Create a journal lock or temporary entry before checking its full path
+  relationship with declared resources. This can mutate a declared target
+  before the requested operation begins.
+
+Patterns are review evidence, not a replacement for the public write contract.
+Promote a repeated pattern only in the owning document and link back here.
