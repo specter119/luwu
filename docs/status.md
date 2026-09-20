@@ -25,6 +25,11 @@ The exact fields, states, error codes, output projections, compatibility
 behavior, and unsupported cases are owned only by [reference](reference.md).
 The rows above are status claims, not a second contract.
 
+M5-M9 are planned, not implemented; their delivery sequence is in
+[roadmap](roadmap.md#next-delivery-sequence). The motivating real-dotfiles
+pilot and its batch-performance limitation are recorded in
+[M5](milestones/m5.md#motivation-isolated-pilot-on-2026-09-20).
+
 ## Verified scope and limits
 
 The latest recorded M4 closure is in
