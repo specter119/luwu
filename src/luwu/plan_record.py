@@ -10,6 +10,7 @@ import secrets
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -109,6 +110,15 @@ _TRANSITIONS = {
 }
 
 
+def _encode_record(document: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
+
+
 class _DuplicateRecordKey(ValueError):
     """A persisted record contains a duplicate JSON object key."""
 
@@ -136,11 +146,13 @@ class PlanRecord:
     """An immutable, validated metadata record; transitions return a copy."""
 
     _document: dict[str, Any]
+    _serialized: bytes = dataclass_field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         document = copy.deepcopy(self._document)
         _validate_document(document)
         object.__setattr__(self, "_document", document)
+        object.__setattr__(self, "_serialized", _encode_record(document))
 
     @classmethod
     def create(
@@ -180,7 +192,7 @@ class PlanRecord:
             raise PlanRecordError(
                 "plan record must be an object", code="plan_record_schema"
             )
-        return cls._validated(copy.deepcopy(document))
+        return cls._validated(document)
 
     @classmethod
     def read(cls, path: Path) -> PlanRecord:
@@ -233,6 +245,91 @@ class PlanRecord:
     def to_dict(self) -> dict[str, Any]:
         return copy.deepcopy(self._document)
 
+    @classmethod
+    def _from_trusted_document(cls, document: dict[str, Any]) -> PlanRecord:
+        """Build a record from an internal transition already checked locally."""
+
+        record = object.__new__(cls)
+        object.__setattr__(record, "_document", document)
+        object.__setattr__(record, "_serialized", _encode_record(document))
+        return record
+
+    def _shallow_document(self) -> dict[str, Any]:
+        document = self._document.copy()
+        document["resources"] = list(self._document["resources"])
+        document["events"] = list(self._document["events"])
+        return document
+
+    @staticmethod
+    def _resource_index(resources: list[dict[str, Any]], ordinal: int) -> int:
+        if 0 <= ordinal < len(resources) and resources[ordinal]["ordinal"] == ordinal:
+            return ordinal
+        for index, resource in enumerate(resources):
+            if resource["ordinal"] == ordinal:
+                return index
+        raise PlanRecordError(
+            "resource ordinal is invalid", code="plan_record_resource"
+        )
+
+    def _transition_path_fast(self, ordinal: int, state: str) -> PlanRecord:
+        """Apply an executor-owned path transition without revalidating history."""
+
+        if state not in _STATES:
+            raise PlanRecordError(
+                "path state is invalid", code="plan_record_transition"
+            )
+        document = self._shallow_document()
+        resources = document["resources"]
+        index = self._resource_index(resources, ordinal)
+        resource = resources[index].copy()
+        paths = [path.copy() for path in resource["paths"]]
+        _check_transition(resource["state"], state)
+        resource["state"] = state
+        for path in paths:
+            previous = path["state"]
+            _check_transition(previous, state)
+            path["state"] = state
+            document["events"].append(
+                _event("path", ordinal, path["path"], previous, state)
+            )
+        resource["paths"] = paths
+        resources[index] = resource
+        return self._from_trusted_document(document)
+
+    def _commit_path_fast(
+        self,
+        ordinal: int,
+        path_name: str,
+        *,
+        postcondition: Mapping[str, Any] | None,
+    ) -> PlanRecord:
+        """Record a verified target condition and commit transition together."""
+
+        document = self._shallow_document()
+        resources = document["resources"]
+        index = self._resource_index(resources, ordinal)
+        resource = resources[index].copy()
+        paths = [path.copy() for path in resource["paths"]]
+        matches = [path for path in paths if path["path"] == path_name]
+        if len(matches) != 1:
+            raise PlanRecordError(
+                "plan record path is invalid", code="plan_record_path"
+            )
+        if postcondition is not None:
+            matches[0]["postcondition"] = dict(postcondition)
+        _check_transition(resource["state"], "committed")
+        resource["state"] = "committed"
+        for path in paths:
+            previous = path["state"]
+            _check_transition(previous, "committed")
+            path["state"] = "committed"
+            document["events"].append(
+                _event("path", ordinal, path["path"], previous, "committed")
+            )
+        resource["paths"] = paths
+        resources[index] = resource
+        return self._from_trusted_document(document)
+
     def transition(self, state: str) -> PlanRecord:
         current = self._document["state"]
         _check_transition(current, state)
@@ -266,6 +363,54 @@ class PlanRecord:
             document["events"].append(
                 _event("path", ordinal, path["path"], previous, state)
             )
+        return self._validated(document)
+
+    def transition_all_paths(self, state: str) -> PlanRecord:
+        """Transition every resource path in one validated record snapshot."""
+
+        if state not in _STATES:
+            raise PlanRecordError(
+                "path state is invalid", code="plan_record_transition"
+            )
+        document = self.to_dict()
+        for resource in document["resources"]:
+            _check_transition(resource["state"], state)
+            resource["state"] = state
+            for path in resource["paths"]:
+                previous = path["state"]
+                _check_transition(previous, state)
+                path["state"] = state
+                document["events"].append(
+                    _event("path", resource["ordinal"], path["path"], previous, state)
+                )
+        return self._validated(document)
+
+    def transition_paths(self, ordinals: tuple[int, ...], state: str) -> PlanRecord:
+        """Transition selected resource paths in one validated snapshot."""
+
+        if state not in _STATES or len(set(ordinals)) != len(ordinals):
+            raise PlanRecordError(
+                "path state is invalid", code="plan_record_transition"
+            )
+        document = self.to_dict()
+        resources = {
+            resource["ordinal"]: resource for resource in document["resources"]
+        }
+        for ordinal in ordinals:
+            resource = resources.get(ordinal)
+            if resource is None:
+                raise PlanRecordError(
+                    "resource ordinal is invalid", code="plan_record_resource"
+                )
+            _check_transition(resource["state"], state)
+            resource["state"] = state
+            for path in resource["paths"]:
+                previous = path["state"]
+                _check_transition(previous, state)
+                path["state"] = state
+                document["events"].append(
+                    _event("path", ordinal, path["path"], previous, state)
+                )
         return self._validated(document)
 
     def update_path_condition(
@@ -309,7 +454,6 @@ class PlanRecord:
         """
 
         ensure_supported(os_module=_PLATFORM_OS, fcntl_module=fcntl)
-        _validate_document(self._document)
         if expected is not None and not isinstance(expected, PlanRecord):
             raise PlanRecordError(
                 "expected plan record is invalid", code="plan_record_cas"
@@ -322,12 +466,7 @@ class PlanRecord:
                 "plan record identity does not match expected record",
                 code="plan_record_cas",
             )
-        data = (
-            json.dumps(
-                self._document, ensure_ascii=False, sort_keys=True, indent=2
-            ).encode("utf-8")
-            + b"\n"
-        )
+        data = self._serialized
         parent, leaf = _open_parent_directory(path)
         temporary: str | None = None
         lock: int | None = None
@@ -508,11 +647,13 @@ class SecretPlanRecord:
     """Independent v6 record with no resource paths, digests, sizes, or content facts."""
 
     _document: dict[str, Any]
+    _serialized: bytes = dataclass_field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         document = copy.deepcopy(self._document)
         _validate_secret_record(document)
         object.__setattr__(self, "_document", document)
+        object.__setattr__(self, "_serialized", _encode_record(document))
 
     @classmethod
     def create(
@@ -549,7 +690,7 @@ class SecretPlanRecord:
                 "secret execution record must be an object",
                 code="plan_record_schema",
             )
-        return cls._validated(copy.deepcopy(document))
+        return cls._validated(document)
 
     @classmethod
     def read(cls, path: Path) -> SecretPlanRecord:
@@ -611,6 +752,52 @@ class SecretPlanRecord:
     def to_dict(self) -> dict[str, Any]:
         return copy.deepcopy(self._document)
 
+    @classmethod
+    def _from_trusted_document(cls, document: dict[str, Any]) -> SecretPlanRecord:
+        """Build a record from an internal transition already checked locally."""
+
+        record = object.__new__(cls)
+        object.__setattr__(record, "_document", document)
+        object.__setattr__(record, "_serialized", _encode_record(document))
+        return record
+
+    def _shallow_document(self) -> dict[str, Any]:
+        document = self._document.copy()
+        document["resources"] = list(self._document["resources"])
+        document["events"] = list(self._document["events"])
+        return document
+
+    @staticmethod
+    def _resource_index(resources: list[dict[str, Any]], ordinal: int) -> int:
+        if 0 <= ordinal < len(resources) and resources[ordinal]["ordinal"] == ordinal:
+            return ordinal
+        for index, resource in enumerate(resources):
+            if resource["ordinal"] == ordinal:
+                return index
+        raise SecretPlanRecordError(
+            "secret execution resource ordinal is invalid",
+            code="plan_record_resource",
+        )
+
+    def _transition_path_fast(self, ordinal: int, state: str) -> SecretPlanRecord:
+        """Apply an executor-owned resource transition without revalidating history."""
+
+        if state not in _STATES:
+            raise SecretPlanRecordError(
+                "secret execution resource state is invalid",
+                code="plan_record_transition",
+            )
+        document = self._shallow_document()
+        resources = document["resources"]
+        index = self._resource_index(resources, ordinal)
+        resource = resources[index].copy()
+        previous = resource["state"]
+        _check_transition(previous, state)
+        resource["state"] = state
+        resources[index] = resource
+        document["events"].append(_secret_event(ordinal, previous, state))
+        return self._from_trusted_document(document)
+
     def transition(self, state: str) -> SecretPlanRecord:
         current = self._document["state"]
         _check_transition(current, state)
@@ -645,6 +832,51 @@ class SecretPlanRecord:
         document["events"].append(_secret_event(ordinal, previous, state))
         return self._validated(document)
 
+    def transition_all_paths(self, state: str) -> SecretPlanRecord:
+        """Transition every resource in one validated record snapshot."""
+
+        if state not in _STATES:
+            raise SecretPlanRecordError(
+                "secret execution resource state is invalid",
+                code="plan_record_transition",
+            )
+        document = self.to_dict()
+        for resource in document["resources"]:
+            previous = resource["state"]
+            _check_transition(previous, state)
+            resource["state"] = state
+            document["events"].append(
+                _secret_event(resource["ordinal"], previous, state)
+            )
+        return self._validated(document)
+
+    def transition_paths(
+        self, ordinals: tuple[int, ...], state: str
+    ) -> SecretPlanRecord:
+        """Transition selected resources in one validated snapshot."""
+
+        if state not in _STATES or len(set(ordinals)) != len(ordinals):
+            raise SecretPlanRecordError(
+                "secret execution resource state is invalid",
+                code="plan_record_transition",
+            )
+        document = self.to_dict()
+        resources = {
+            resource["ordinal"]: resource for resource in document["resources"]
+        }
+        for ordinal in ordinals:
+            resource = resources.get(ordinal)
+            if resource is None:
+                raise SecretPlanRecordError(
+                    "secret execution resource ordinal is invalid",
+                    code="plan_record_resource",
+                )
+            previous = resource["state"]
+            _check_transition(previous, state)
+            resource["state"] = state
+            document["events"].append(_secret_event(ordinal, previous, state))
+        return self._validated(document)
+
     def update_path_condition(
         self,
         ordinal: int,
@@ -674,7 +906,6 @@ class SecretPlanRecord:
         """Atomically create or compare-and-swap an owner-only v6 record."""
 
         ensure_supported(os_module=_PLATFORM_OS, fcntl_module=fcntl)
-        _validate_secret_record(self._document)
         if expected is not None and not isinstance(expected, SecretPlanRecord):
             raise SecretPlanRecordError(
                 "expected secret execution record is invalid",
@@ -688,12 +919,7 @@ class SecretPlanRecord:
                 "secret execution record identity does not match expected record",
                 code="plan_record_cas",
             )
-        data = (
-            json.dumps(
-                self._document, ensure_ascii=False, sort_keys=True, indent=2
-            ).encode("utf-8")
-            + b"\n"
-        )
+        data = self._serialized
         parent, leaf = _open_parent_directory(path)
         temporary: str | None = None
         lock: int | None = None
@@ -1149,6 +1375,11 @@ def _check_expected_secret_record(
             "existing secret execution record requires an expected record",
             code="plan_record_conflict",
         )
+    try:
+        if _record_bytes_at(parent, leaf) == expected._serialized:
+            return
+    except OSError:
+        pass
     current = SecretPlanRecord._read_at(parent, leaf)
     if current.to_dict() != expected.to_dict():
         raise SecretPlanRecordError(
@@ -1176,6 +1407,24 @@ def _record_entry_identity_at(parent: int, name: str) -> tuple[int, int, int] | 
     except FileNotFoundError:
         return None
     return info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)
+
+
+def _record_bytes_at(parent: int, name: str) -> bytes:
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | _required_flag("O_NOFOLLOW"),
+            dir_fd=parent,
+        )
+        if not _is_regular(os.fstat(descriptor).st_mode):
+            raise OSError(errno.ELOOP, "record is not a regular file")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            return handle.read()
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _classify_record_replace_failure(
@@ -1396,6 +1645,7 @@ def _validate_event_history(
         for resource in resources
         for path in resource["paths"]
     }
+    path_keys = set(path_states)
     for event in document["events"]:
         before = event["from_state"]
         after = event["to_state"]
@@ -1410,8 +1660,13 @@ def _validate_event_history(
             continue
 
         key = (event["ordinal"], event["path"])
-        current = path_states.get(key)
-        if current is None or before != current:
+        if key not in path_keys:
+            raise PlanRecordError(
+                "plan record event history is inconsistent",
+                code="plan_record_event",
+            )
+        current = path_states[key]
+        if before != current:
             raise PlanRecordError(
                 "plan record event history is inconsistent",
                 code="plan_record_event",
@@ -1633,6 +1888,11 @@ def _check_expected_record(parent: int, leaf: str, expected: PlanRecord | None) 
             "existing plan record requires an expected record",
             code="plan_record_conflict",
         )
+    try:
+        if _record_bytes_at(parent, leaf) == expected._serialized:
+            return
+    except OSError:
+        pass
     current = PlanRecord._read_at(parent, leaf)
     if current.to_dict() != expected.to_dict():
         raise PlanRecordError(

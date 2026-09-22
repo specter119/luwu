@@ -81,6 +81,17 @@ independently of journal publication. The journal writer and its lock use the
 same path-conflict checks. Recovery re-observes current state and never
 replays historical input or rolls back a previous write.
 
+Batch execution keeps manifest identity as a captured byte digest and indexes
+resource path relationships instead of repeating pairwise scans. Journal
+records remain closed and metadata-only: the executor batches the all-resource
+preflight transition, validates contiguous no-op transitions in one snapshot,
+and uses immutable validated record snapshots for per-resource intent and
+commit publications. Cached serialization and byte-level CAS comparison avoid
+rebuilding or reparsing an unchanged record, while the write boundary still
+uses the existing lock, temporary entry, fsync, and compare-and-swap checks.
+These are internal cost reductions; they do not change the v5 journal schema,
+resource states, or recovery write prohibition.
+
 The implementation deliberately avoids a general transaction engine, a
 second durable ledger, or a recovery mutation layer. The public partial
 success and recovery meanings are defined in [reference.md](reference.md).

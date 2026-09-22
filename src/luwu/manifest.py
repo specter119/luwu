@@ -622,40 +622,135 @@ def _validate_resource_relationships(
 ) -> None:
     """Reject ambiguous path relationships between declared resources."""
 
-    for left_index, left in enumerate(resources):
-        for right_index in range(left_index + 1, len(resources)):
-            right = resources[right_index]
-            if left.target == right.target:
-                raise ManifestError(
-                    f"resources {left.name!r} and {right.name!r} declare the "
-                    f"same target {left.target_name!r}",
-                    code="resource_target_conflict",
+    # The original pairwise implementation made each manifest load quadratic
+    # in the number of resources.  Build indexes for exact paths and their
+    # ancestors instead.  Candidates retain their resource-pair and
+    # relationship order so the public error precedence remains deterministic.
+    resource_paths = [
+        (resource.source, resource.target, resolved_sources[index])
+        for index, resource in enumerate(resources)
+    ]
+    paths_to_resources: dict[Path, list[int]] = {}
+    source_paths: dict[Path, list[int]] = {}
+    target_paths: dict[Path, list[int]] = {}
+    for index, (source, target, resolved_source) in enumerate(resource_paths):
+        for path in (source, resolved_source, target):
+            paths_to_resources.setdefault(path, []).append(index)
+        for path in (source, resolved_source):
+            source_paths.setdefault(path, []).append(index)
+        target_paths.setdefault(target, []).append(index)
+
+    candidates: dict[tuple[int, int], tuple[int, str]] = {}
+
+    def add_candidate(
+        left_index: int,
+        right_index: int,
+        kind: int,
+        message: str,
+    ) -> None:
+        if left_index == right_index:
+            return
+        pair = (
+            (left_index, right_index)
+            if left_index < right_index
+            else (right_index, left_index)
+        )
+        current = candidates.get(pair)
+        if current is None or kind < current[0]:
+            candidates[pair] = (kind, message)
+
+    for index, resource in enumerate(resources):
+        for other_index in target_paths.get(resource.target, ()):
+            if other_index < index:
+                other = resources[other_index]
+                add_candidate(
+                    other_index,
+                    index,
+                    0,
+                    f"resources {other.name!r} and {resource.name!r} declare "
+                    f"the same target {resource.target_name!r}",
                 )
-            if left.target in {right.source, resolved_sources[right_index]}:
-                raise ManifestError(
+
+        for other_index in source_paths.get(resource.target, ()):
+            if other_index == index:
+                continue
+            left_index, right_index = sorted((index, other_index))
+            left = resources[left_index]
+            right = resources[right_index]
+            if left_index == index:
+                message = (
                     f"resource {left.name!r} target {left.target_name!r} "
                     f"conflicts with resource {right.name!r} source "
-                    f"{right.source_name!r}",
-                    code="resource_path_conflict",
+                    f"{right.source_name!r}"
                 )
-            if right.target in {left.source, resolved_sources[left_index]}:
-                raise ManifestError(
+            else:
+                message = (
                     f"resource {right.name!r} target {right.target_name!r} "
                     f"conflicts with resource {left.name!r} source "
-                    f"{left.source_name!r}",
-                    code="resource_path_conflict",
+                    f"{left.source_name!r}"
                 )
-            if _resources_have_ancestor_overlap(
-                left,
-                right,
-                left_resolved_source=resolved_sources[left_index],
-                right_resolved_source=resolved_sources[right_index],
-            ):
-                raise ManifestError(
+            add_candidate(
+                left_index, right_index, 1 if left_index == index else 2, message
+            )
+
+        for ancestor in resource.source.parents:
+            for other_index in paths_to_resources.get(ancestor, ()):
+                if other_index == index:
+                    continue
+                left_index, right_index = sorted((index, other_index))
+                left = resources[left_index]
+                right = resources[right_index]
+                add_candidate(
+                    left_index,
+                    right_index,
+                    3,
                     f"resources {left.name!r} and {right.name!r} have "
                     "overlapping ancestor paths",
-                    code="resource_path_overlap",
                 )
+        for ancestor in resource.target.parents:
+            for other_index in paths_to_resources.get(ancestor, ()):
+                if other_index == index:
+                    continue
+                left_index, right_index = sorted((index, other_index))
+                left = resources[left_index]
+                right = resources[right_index]
+                add_candidate(
+                    left_index,
+                    right_index,
+                    3,
+                    f"resources {left.name!r} and {right.name!r} have "
+                    "overlapping ancestor paths",
+                )
+        for ancestor in resolved_sources[index].parents:
+            for other_index in paths_to_resources.get(ancestor, ()):
+                if other_index == index:
+                    continue
+                left_index, right_index = sorted((index, other_index))
+                left = resources[left_index]
+                right = resources[right_index]
+                add_candidate(
+                    left_index,
+                    right_index,
+                    3,
+                    f"resources {left.name!r} and {right.name!r} have "
+                    "overlapping ancestor paths",
+                )
+
+    if candidates:
+        _, (kind, message) = min(
+            candidates.items(),
+            key=lambda item: (item[0][0], item[0][1], item[1][0]),
+        )
+        raise ManifestError(
+            message,
+            code=(
+                "resource_target_conflict"
+                if kind == 0
+                else "resource_path_conflict"
+                if kind in {1, 2}
+                else "resource_path_overlap"
+            ),
+        )
 
     baselines = [(resource, resource.baseline) for resource in resources]
     for resource, baseline in baselines:

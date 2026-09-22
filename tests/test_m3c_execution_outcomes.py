@@ -190,14 +190,9 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
                 ["planned", "planned"],
             ),
             (
-                "resource-0",
+                "resource-batch",
                 0,
                 ["planned", "planned"],
-            ),
-            (
-                "resource-1",
-                1,
-                ["preflighted", "planned"],
             ),
         )
         for label, target_ordinal, expected_states in cases:
@@ -227,14 +222,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
                         failure_ordinal is None
                         and states == ["planned", "planned"]
                         or failure_ordinal is not None
-                        and states[failure_ordinal] == "preflighted"
-                        and all(
-                            state == "preflighted" for state in states[:failure_ordinal]
-                        )
-                        and all(
-                            state == "planned"
-                            for state in states[failure_ordinal + 1 :]
-                        )
+                        and all(state == "preflighted" for state in states)
                     )
                     if should_fail:
                         raise PlanRecordError(

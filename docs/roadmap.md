@@ -1,7 +1,7 @@
 # Luwu Delivery Roadmap
 
-Status: M1-M4 are closed within their recorded scopes. M5-M9 are planned;
-M5 is the next development priority. None of M5-M9 is implemented by this plan.
+Status: M1-M5 are closed within their recorded scopes. M6-M9 are planned;
+M6 is the next development priority.
 
 This document turns the product seed into a small number of delivery
 milestones. It defines sequence and boundaries, not detailed contracts or the
@@ -20,7 +20,7 @@ The roadmap is allowed to change when evidence changes the product direction. A 
 | M2        | Resource and semantic drift foundation       | Closed: declared resources and supported format experiments are compared without claiming unsupported equivalence.                      |
 | M3        | Ownership and auditable reconciliation       | Closed: baselines, ownership, conflicts, controlled reverse sync, and recoverable plans have explicit contracts.                        |
 | M4        | Providers, secrets, and operational maturity | Closed: external providers, secret boundaries, persistence, portability, and release behavior are verified without hidden capabilities. |
-| M5        | Batch performance and interruption safety    | Planned: everyday batch operations meet measured latency budgets without weakening validation or recovery.                              |
+| M5        | Batch performance and interruption safety    | Closed: everyday batch operations meet the recorded latency budgets without weakening validation or recovery.                           |
 | M6        | First usable bidirectional pilot             | Planned: real Pi and Codex public configuration round-trips safely; deliver for user trial.                                             |
 | M7        | Feedback-led dotfiles coverage               | Provisional: expand the proven workflow to more resources, profiles and formats after M6 user feedback.                                 |
 | M8        | Real provider and mixed-input integration    | Planned: public/local/provider inputs work together without persistent secret intermediates.                                            |
@@ -58,30 +58,30 @@ automatic recovery.
 
 ## Next delivery sequence
 
-The [2026-09-20 isolated pilot and M5 plan](milestones/m5.md) motivate five
-additional milestones: four capability deliveries and one migration
-qualification. This is a dependency sequence, not a calendar estimate or a
-promise of feature parity with every Dotter installation. Implement M5 first,
-then M6's complete bidirectional pilot. Deliver M6 for the user's first trial
-and wait for their feedback before starting M7-M9 implementation. M7-M9 are
-provisional directions: revise their scope and acceptance cases from that
-feedback before proceeding. M8 integrates with the resulting ownership rules;
-M9 qualifies the combined workflow. Do not advance automatically from passing
-M6 tests to later implementation or to live deployment.
+The [2026-09-20 isolated pilot and M5 record](milestones/m5.md) motivate the
+remaining four planned milestones. This is a dependency sequence, not a
+calendar estimate or a promise of feature parity with every Dotter
+installation. M5 is closed; implement M6's complete bidirectional pilot next.
+Deliver M6 for the user's first trial and wait for their feedback before
+starting M7-M9 implementation. M7-M9 are provisional directions: revise their
+scope and acceptance cases from that feedback before proceeding. M8 integrates
+with the resulting ownership rules; M9 qualifies the combined workflow. Do not
+advance automatically from passing M6 tests to later implementation or to live
+deployment.
 
 The milestone identifiers do not allocate manifest versions. Before changing
 public behavior, define the compatible extension or version transition in
 [reference](reference.md), explain mechanisms in [design](design.md), and
-update [status](status.md) only from implementation evidence. Closed M1-M4
+update [status](status.md) only from implementation evidence. Closed M1-M5
 records retain their historical meaning.
 
 ## M5: Batch performance and interruption safety
 
-Make the existing batch capability practical before adding more resources or
-formats. Deliver reproducible scaling measurements, remove repeated global
-validation and journal-processing costs, and retain the current stale-state,
-confidentiality, durable-write and partial-outcome guarantees. The bounded
-scope, initial latency budgets and safety gates are owned by the
+M5 made the existing batch capability practical before adding more resources
+or formats. It delivered reproducible scaling measurements, removed repeated
+global validation and journal-processing costs, and retained the current
+stale-state, confidentiality, durable-write and partial-outcome guarantees.
+The closure evidence and residual limits are owned by the
 [M5 delivery record](milestones/m5.md).
 
 M5 does not add roots, profiles, parsers, providers or automatic recovery.
