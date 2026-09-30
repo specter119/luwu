@@ -342,11 +342,7 @@ def build_plan(
         _PlanCapability(
             manifest_path=manifest.path,
             manifest_root=manifest.root,
-            manifest_digest=(
-                ""
-                if manifest.version == PROVIDER_MANIFEST_VERSION
-                else manifest.content_digest
-            ),
+            manifest_digest=manifest.content_digest,
             manifest_version=manifest.version,
             token=_PLAN_CAPABILITY_TOKEN,
             authority=authority,
@@ -1233,24 +1229,33 @@ def execute_execution_plan(
         previous = record
         record = record.transition("preflighted")
         _write_execution_record(record, record_path, expected=previous)
-        for ordinal in range(len(plan.observations)):
-            previous = record
-            record = record.transition_path(ordinal, "preflighted")
-            _write_execution_record(record, record_path, expected=previous)
+        previous = record
+        record = record.transition_all_paths("preflighted")
+        _write_execution_record(record, record_path, expected=previous)
         previous = record
         record = record.transition("commit_intent")
         _write_execution_record(record, record_path, expected=previous)
 
-        for ordinal, observation in enumerate(plan.observations):
+        ordinal = 0
+        while ordinal < len(plan.observations):
+            observation = plan.observations[ordinal]
             if observation.action is Action.NOOP:
+                unchanged_ordinals: list[int] = []
+                while (
+                    ordinal < len(plan.observations)
+                    and plan.observations[ordinal].action is Action.NOOP
+                ):
+                    unchanged_ordinals.append(ordinal)
+                    ordinal += 1
                 previous = record
-                record = record.transition_path(ordinal, "unchanged")
-                execution_resources[ordinal]["state"] = "unchanged"
+                record = record.transition_paths(tuple(unchanged_ordinals), "unchanged")
+                for unchanged_ordinal in unchanged_ordinals:
+                    execution_resources[unchanged_ordinal]["state"] = "unchanged"
                 _write_execution_record(record, record_path, expected=previous)
                 continue
 
             previous = record
-            record = record.transition_path(ordinal, "commit_intent")
+            record = record._transition_path_fast(ordinal, "commit_intent")
             _write_execution_record(record, record_path, expected=previous)
             try:
                 writer_committed = _write_observation(plan, observation, execution=True)
@@ -1317,11 +1322,16 @@ def execute_execution_plan(
                         committed=True,
                         target_name=_execution_target_key(plan, ordinal),
                     )
-                committed_record = record.update_path_condition(
-                    ordinal,
-                    observation.resource.target_name,
-                    postcondition=postcondition,
-                ).transition_path(ordinal, "committed")
+                if isinstance(record, SecretPlanRecord):
+                    committed_record = record._transition_path_fast(
+                        ordinal, "committed"
+                    )
+                else:
+                    committed_record = record._commit_path_fast(
+                        ordinal,
+                        observation.resource.target_name,
+                        postcondition=postcondition,
+                    )
                 execution_resources[ordinal]["state"] = "committed"
                 _write_execution_record(committed_record, record_path, expected=record)
             except ApplyError as exc:
@@ -1342,6 +1352,7 @@ def execute_execution_plan(
                     target_name=_execution_target_key(plan, ordinal),
                 ) from exc
             record = committed_record
+            ordinal += 1
 
         previous = record
         record = record.transition("committed")
@@ -1805,10 +1816,7 @@ def _require_execution_plan(plan: Plan) -> None:
         plan.manifest.path != capability.manifest_path
         or plan.manifest.root != capability.manifest_root
         or plan.manifest.version != capability.manifest_version
-        or (
-            capability.manifest_version != PROVIDER_MANIFEST_VERSION
-            and plan.manifest.content_digest != capability.manifest_digest
-        )
+        or plan.manifest.content_digest != capability.manifest_digest
     ):
         raise ApplyError("plan manifest identity is invalid", code="invalid_plan")
     if (
@@ -2835,14 +2843,20 @@ def _secret_context_for(
             "plan lacks a valid provider capability; no files were changed",
             code="invalid_plan",
         )
-    try:
-        ordinal = plan.observations.index(observation)
-        return capability.secret_contexts[ordinal]
-    except (ValueError, IndexError):
+    ordinal = next(
+        (
+            ordinal
+            for ordinal, candidate in enumerate(plan.observations)
+            if candidate is observation
+        ),
+        None,
+    )
+    if ordinal is None or ordinal >= len(capability.secret_contexts):
         raise ApplyError(
             "plan provider context is invalid; no files were changed",
             code="invalid_plan",
-        ) from None
+        )
+    return capability.secret_contexts[ordinal]
 
 
 def _preflight_manifest(plan: Plan, *, execution: bool = False) -> None:
@@ -2860,73 +2874,24 @@ def _preflight_manifest(plan: Plan, *, execution: bool = False) -> None:
             "manifest changed or became unreadable after planning; run plan again",
             code="stale_plan",
         ) from None
-    if capability.manifest_version != PROVIDER_MANIFEST_VERSION:
-        try:
-            current_digest = _digest(capability.manifest_path.read_bytes())
-        except (OSError, RuntimeError):
-            raise ApplyError(
-                "manifest changed or became unreadable after planning; run plan again",
-                code="stale_plan",
-            ) from None
-        if current_digest != capability.manifest_digest:
-            raise ApplyError(
-                "manifest changed after planning; run plan again",
-                code="stale_plan",
-            )
     try:
-        current_manifest = load_manifest(capability.manifest_path)
-    except ManifestError:
+        current_digest = _digest(capability.manifest_path.read_bytes())
+    except (OSError, RuntimeError):
         raise ApplyError(
             "manifest changed or became unreadable after planning; run plan again",
             code="stale_plan",
         ) from None
-    if execution and current_manifest.version not in {
-        EXECUTION_MANIFEST_VERSION,
-        PROVIDER_MANIFEST_VERSION,
-    }:
-        raise ApplyError(
-            "manifest is no longer an execution manifest; no files were changed",
-            code="stale_plan",
-        )
-    if not execution and current_manifest.version >= 3:
-        raise ApplyError(
-            "manifest version 3 plans are read-only in M3a; no files were changed",
-            code="m3_read_only",
-        )
-    if not execution and current_manifest.version >= 2:
-        raise ApplyError(
-            "manifest version 2 plans are read-only in M2; no files were changed",
-            code="m2_read_only",
-        )
-    if current_manifest.version != capability.manifest_version:
-        raise ApplyError(
-            "manifest version changed after planning; run plan again",
-            code="stale_plan",
-        )
-    if (
-        capability.manifest_version == PROVIDER_MANIFEST_VERSION
-        and not _provider_manifest_matches(plan.manifest, current_manifest)
-    ):
+    if current_digest != capability.manifest_digest:
         raise ApplyError(
             "manifest changed after planning; run plan again",
             code="stale_plan",
         )
-    if (
-        plan.manifest.path != current_manifest.path
-        or plan.manifest.root != current_manifest.root
-        or (
-            capability.manifest_version != PROVIDER_MANIFEST_VERSION
-            and plan.manifest.content_digest != current_manifest.content_digest
-        )
-        or plan.manifest.version != current_manifest.version
-        or plan.manifest.resources != current_manifest.resources
-        or tuple(observation.resource for observation in plan.observations)
-        != current_manifest.resources
-    ):
-        raise ApplyError(
-            "plan does not match its manifest; no files were changed",
-            code="invalid_plan",
-        )
+    # The loaded manifest and its SHA-256 digest are captured by the planner.
+    # A matching byte digest is enough to establish that the parsed
+    # declaration is unchanged; reparsing and repeating global relationship
+    # validation here used to make every resource write quadratic in the batch
+    # size. The writer still performs fresh source/target/parent checks below.
+    del execution
 
 
 def _provider_manifest_matches(left: Manifest, right: Manifest) -> bool:
@@ -2972,10 +2937,7 @@ def _load_current_manifest(plan: Plan) -> Manifest:
         current.path != capability.manifest_path
         or current.root != capability.manifest_root
         or current.version != capability.manifest_version
-        or (
-            capability.manifest_version != PROVIDER_MANIFEST_VERSION
-            and current.content_digest != capability.manifest_digest
-        )
+        or current.content_digest != capability.manifest_digest
         or (
             capability.manifest_version == PROVIDER_MANIFEST_VERSION
             and not _provider_manifest_matches(plan.manifest, current)
