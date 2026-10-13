@@ -144,10 +144,13 @@ A version `7` manifest has exactly three root paths under `[roots]`:
 `source`, `inputs`, and `target`. Source templates are relative to the source
 root, public inputs and baselines are relative to the inputs root, and live
 targets are relative to the target root; the target root may also be an
-explicit absolute path for an isolated HOME. The roots must already exist, be
-regular directories without symlinked components, and be distinct and
-non-overlapping. Every target is named by a resource declaration; the
-extension does not discover resources by walking a root.
+explicit absolute path for an isolated HOME. The roots must already exist and
+be regular directories without symlinked components. `source` and `inputs`
+must be distinct and non-overlapping. The target root may contain those two
+roots so that an isolated target can be a normal HOME directory, but it must
+not be equal to or below either of them. Each declared target file must still
+remain outside the source and input roots. Every target is named by a resource
+declaration; the extension does not discover resources by walking a root.
 
 Each resource may map a declared field to exactly one input file below
 `global/` or `local/`. The file must contain that field as a public scalar;
@@ -198,8 +201,11 @@ target. Reverse changes may update only selected, declared live-owned input
 fields. Unselected fields and bytes outside the selected patch remain
 unchanged. `merge` and `ignore` retain their existing meanings; no whole-file
 replacement may be used to implement a field-level change. An absent target
-may be created from the explicitly declared pilot content; changes to an
-existing target are field-level patches.
+may be created only after a separate create preview and confirmation. The
+create plan must contain no undeclared rendered keys and its baseline must
+cover every non-ignored declared field; accepting a baseline does not by
+itself authorize creation. Changes to an existing target are field-level
+patches.
 
 JSON uses the existing strict UTF-8 JSON comparison rules. A missing member is
 distinct from a member whose value is `null`; deleting a selected member means
@@ -208,12 +214,16 @@ non-finite numbers, and other unsupported JSON syntax block mutation. A patch
 must preserve all unselected and undeclared source bytes; if a safe patch cannot
 be proven, the operation stops before writing.
 
-TOML support is limited to a UTF-8 top-level table of scalar assignments.
-Tables, arrays, inline comments, duplicate fields, unsupported values, and
-ambiguous syntax block mutation. TOML absence is distinct from a present value;
-TOML has no `null` value. A supported patch preserves comments and unselected
-bytes. Unsupported syntax is not normalized or rewritten as a complete
-document.
+TOML support is limited to a UTF-8 top-level table of bare-key scalar
+assignments. Tables, arrays, quoted keys, multiline strings, inline comments,
+duplicate fields, unsupported values, and ambiguous syntax block mutation.
+Strings containing `#` are supported when the character is inside the quoted
+string; the scanner must not treat it as an inline comment. Every non-empty,
+non-comment line must be fully recognized as one supported assignment or the
+document is rejected. TOML absence is distinct from a present value; TOML has
+no `null` value. A supported patch preserves comments, line endings, and
+unselected bytes. Unsupported syntax is not normalized or rewritten as a
+complete document.
 
 Any newly observed undeclared live key or undeclared live-side change in a
 pilot target is an actionable review stop before writing that target. The
@@ -231,13 +241,16 @@ verification never create or advance a baseline implicitly. The existing
 baseline field and acceptance semantics remain authoritative where they
 apply.
 
-Each state-changing step requires its own preview and explicit confirmation:
-baseline acceptance, reverse input patching, and forward target deployment
-are separate actions. Preview is read-only. Confirmation recalculates the
-observation and rejects the write as stale if the manifest, templates,
-global/local inputs, baseline, roots or allowlist, target, or relevant parent
-boundary changed or cannot be revalidated since preview. A stale result
-requires a new preview and confirmation.
+Each state-changing step requires its own read-only preview and explicit
+confirmation: baseline acceptance, reverse input patching, and forward target
+deployment are separate actions. Library confirmation is bound to the
+in-memory plan that was previewed. The CLI has no persisted cross-process
+preview token; `--yes` is explicit confirmation of a freshly calculated plan
+and the same invocation rechecks the manifest, templates, global/local
+inputs, baseline, roots, allowlist, target, and relevant parent boundary
+before writing. A stale result requires a new preview and confirmation. A
+changed resource selection, field selection, input mapping, or accepted
+baseline side is also stale.
 
 After each confirmed write, Luwu re-reads the affected state and recalculates
 the field observation. Results distinguish a write that was not attempted, a
@@ -256,7 +269,11 @@ Pilot previews, errors, records, and machine-readable results are
 metadata-only: they may identify allowlisted resources, declared public field
 labels, provenance labels, safe states, and actionable reasons. They do not
 contain configuration values, rendered/source/target bytes, diffs, content
-hashes, secrets, raw parser excerpts, or exception payloads.
+hashes, secrets, raw parser excerpts, or exception payloads. Declared public
+input, target, and baseline files may persist the public values required by
+their contracts; scalar shape and field-name checks do not prove that an
+arbitrary string is not a secret. A complete public-only admission check is
+required before a file or baseline is staged.
 
 ### Dotter handoff
 

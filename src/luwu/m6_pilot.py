@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .baseline import make_baseline, read_baseline, write_baseline
+from .baseline import baseline_values, make_baseline, read_baseline, write_baseline
 from .errors import LuwuError, MutationError
 from .filesystem import (
     FileChangedError,
@@ -36,8 +36,16 @@ from .reconcile import _read_target
 from .rendering import RenderedTemplate, render_template
 
 
-class M6PilotError(LuwuError):
+class M6PilotError(MutationError):
     """A stable, metadata-only M6 pilot boundary error."""
+
+
+class M6WriteError(M6PilotError):
+    """A write boundary result whose replacement state is explicit."""
+
+    def __init__(self, message: str, *, code: str, state: str) -> None:
+        super().__init__(message, code=code, outcome=state)
+        self.state = state
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +113,10 @@ class M6MutationResult:
     fields: tuple[str, ...]
     verification: dict[str, object] | None = None
     committed: tuple[str, ...] = ()
+    attempted: tuple[str, ...] = ()
+    not_replaced: tuple[str, ...] = ()
+    uncertain: tuple[str, ...] = ()
+    verification_status: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -114,6 +126,10 @@ class M6MutationResult:
             "fields": list(self.fields),
             "outcome": self.outcome,
             "committed": list(self.committed),
+            "attempted": list(self.attempted),
+            "not_replaced": list(self.not_replaced),
+            "uncertain": list(self.uncertain),
+            "verification_status": self.verification_status,
             "verification": self.verification,
         }
 
@@ -145,6 +161,14 @@ def accept_m6_baseline(
 
     plan = build_m6_plan(manifest)
     item = _resource_plan(plan, resource_name)
+    if item.status == "blocked":
+        raise M6PilotError(
+            "M6 baseline acceptance requires an unblocked observation",
+            code="m6_review_required",
+            operation="m6-accept",
+            resource=resource_name,
+            fields=fields,
+        )
     if value_from not in {"desired", "live"} or (
         value_from == "live" and item.live is None
     ):
@@ -164,7 +188,7 @@ def accept_m6_baseline(
         return M6MutationResult(
             "m6-accept", "confirmation_required", resource_name, fields
         )
-    _recheck_plan(plan)
+    _recheck_plan(plan, operation="accept", fields=fields, value_from=value_from)
     write_baseline(
         manifest.roots.inputs.path,
         item.resource,
@@ -183,11 +207,19 @@ def apply_m6_forward(plan: M6Plan, *, confirm: bool) -> M6MutationResult:
     """Apply only source-owned field changes to the allowlisted target."""
 
     item = plan.resource
+    if item.status == "blocked" or item.action not in {"create", "forward", "noop"}:
+        raise M6PilotError(
+            "M6 plan has no safe forward candidate",
+            code="m6_review_required",
+            operation="m6-apply",
+            resource=item.resource.name,
+            fields=item.forward_fields,
+        )
     if not confirm:
         return M6MutationResult(
             "m6-apply", "confirmation_required", item.resource.name, item.forward_fields
         )
-    _recheck_plan(plan)
+    _recheck_plan(plan, operation="apply", fields=item.forward_fields)
     current = build_m6_plan(load_manifest(plan.manifest.path))
     fresh = current.resource
     if fresh.forward_fields != item.forward_fields or fresh.action != item.action:
@@ -214,17 +246,39 @@ def apply_m6_forward(plan: M6Plan, *, confirm: bool) -> M6MutationResult:
         )
         expected_identity = fresh.target_identity
         expected_digest = fresh.target_digest
-    _write_atomic(
-        plan.manifest.roots.target.path,
-        fresh.resource.target,
-        data,
-        expected_identity=expected_identity,
-        expected_digest=expected_digest,
-    )
+    try:
+        _write_atomic(
+            plan.manifest.roots.target.path,
+            fresh.resource.target,
+            data,
+            expected_identity=expected_identity,
+            expected_digest=expected_digest,
+        )
+    except M6WriteError as exc:
+        if exc.state == "uncertain":
+            return M6MutationResult(
+                "m6-apply",
+                "committed_state_unknown",
+                fresh.resource.name,
+                fresh.forward_fields,
+                committed=(),
+                attempted=(fresh.resource.target_name,),
+                uncertain=(fresh.resource.target_name,),
+                verification_status="unknown",
+            )
+        return M6MutationResult(
+            "m6-apply",
+            "attempted_not_replaced",
+            fresh.resource.name,
+            fresh.forward_fields,
+            committed=(),
+            attempted=(fresh.resource.target_name,),
+            not_replaced=(fresh.resource.target_name,),
+            verification_status="not_verified",
+        )
     verification = build_m6_plan(load_manifest(plan.manifest.path))
-    outcome = "committed"
-    if verification.resource.action in {"forward", "create"}:
-        outcome = "committed_but_verification_failed"
+    verified = _forward_postcondition(verification.resource, fresh.forward_fields)
+    outcome = "committed" if verified else "committed_but_verification_failed"
     return M6MutationResult(
         "m6-apply",
         outcome,
@@ -232,6 +286,8 @@ def apply_m6_forward(plan: M6Plan, *, confirm: bool) -> M6MutationResult:
         fresh.forward_fields,
         verification.to_dict(command="verification"),
         (fresh.resource.target_name,),
+        attempted=(fresh.resource.target_name,),
+        verification_status="verified" if verified else "failed",
     )
 
 
@@ -240,10 +296,19 @@ def reverse_m6_inputs(
     *,
     fields: tuple[str, ...],
     confirm: bool,
+    resource_name: str | None = None,
 ) -> M6MutationResult:
     """Preview or explicitly patch selected live-owned input fields."""
 
     item = plan.resource
+    if resource_name is not None and resource_name != item.resource.name:
+        raise M6PilotError(
+            "M6 resource selection does not match the plan",
+            code="m6_resource",
+            operation="m6-reverse-sync",
+            resource=resource_name,
+            fields=fields,
+        )
     _validate_fields(item.resource, fields)
     if any(name not in item.reverse_fields for name in fields):
         raise M6PilotError(
@@ -253,9 +318,9 @@ def reverse_m6_inputs(
         return M6MutationResult(
             "m6-reverse-sync", "confirmation_required", item.resource.name, fields
         )
-    _recheck_plan(plan)
+    _recheck_plan(plan, operation="reverse-sync", fields=fields)
     fresh = build_m6_plan(load_manifest(plan.manifest.path)).resource
-    if fresh.action == "review":
+    if fresh.status == "blocked" or fresh.action == "review":
         raise M6PilotError(
             "M6 resource requires review before reverse sync",
             code="m6_review_required",
@@ -264,6 +329,9 @@ def reverse_m6_inputs(
         raise M6PilotError("M6 reverse plan is stale", code="m6_stale_plan")
     assert plan.manifest.roots is not None
     committed: list[str] = []
+    attempted: list[str] = []
+    not_replaced: list[str] = []
+    uncertain: list[str] = []
     grouped: dict[Path, list[str]] = {}
     for name in fields:
         path = fresh.resource.inputs.get(name)
@@ -272,17 +340,38 @@ def reverse_m6_inputs(
                 "reverse field has no declared input", code="m6_input_mapping"
             )
         grouped.setdefault(path, []).append(name)
-    try:
-        for path, names in grouped.items():
-            raw, identity = _read_file(path)
-            live = fresh.live or {}
-            updates, deletes = _selected_values_from_object(live, names)
-            data = patch_m6_document(
-                raw,
-                format=_format_for_path(path),
-                updates=updates,
-                deletes=deletes,
+    prepared: list[tuple[Path, list[str], bytes, bytes, tuple[int, int]]] = []
+    for path, names in grouped.items():
+        raw, identity = _read_file(path)
+        expected_items = [fresh.input_context.values[name] for name in names]
+        if any(
+            item.path != path
+            or item.identity != identity
+            or item.digest != _digest(raw)
+            for item in expected_items
+        ):
+            raise M6PilotError("M6 input changed; run a new plan", code="m6_stale_plan")
+        live = fresh.live or {}
+        updates, deletes = _selected_values_from_object(live, names)
+        if deletes:
+            raise M6PilotError(
+                "reverse sync would delete a mapped input field",
+                code="m6_reverse_delete",
+                operation="m6-reverse-sync",
+                resource=fresh.resource.name,
+                fields=tuple(deletes),
             )
+        data = patch_m6_document(
+            raw,
+            format=_format_for_path(path),
+            updates=updates,
+            deletes=deletes,
+        )
+        prepared.append((path, names, raw, data, identity))
+
+    for path, names, raw, data, identity in prepared:
+        attempted.extend(names)
+        try:
             _write_atomic(
                 plan.manifest.roots.inputs.path,
                 path,
@@ -290,22 +379,30 @@ def reverse_m6_inputs(
                 expected_identity=identity,
                 expected_digest=_digest(raw),
             )
-            committed.extend(names)
-    except (M6PilotError, MutationError, LuwuError):
-        outcome = "committed_state_unknown" if committed else "not_committed"
+        except M6WriteError as exc:
+            if exc.state == "uncertain":
+                uncertain.extend(names)
+            else:
+                not_replaced.extend(names)
+            break
+        committed.extend(names)
+
+    if uncertain or not_replaced:
+        outcome = "committed_state_unknown" if uncertain else "attempted_not_replaced"
         return M6MutationResult(
             "m6-reverse-sync",
             outcome,
             fresh.resource.name,
             fields,
             committed=tuple(committed),
+            attempted=tuple(attempted),
+            not_replaced=tuple(not_replaced),
+            uncertain=tuple(uncertain),
+            verification_status="unknown" if uncertain else "not_verified",
         )
     verification = build_m6_plan(load_manifest(plan.manifest.path))
-    outcome = (
-        "committed"
-        if not any(name in verification.resource.reverse_fields for name in fields)
-        else "committed_but_verification_failed"
-    )
+    verified = _reverse_postcondition(verification.resource, fields)
+    outcome = "committed" if verified else "committed_but_verification_failed"
     return M6MutationResult(
         "m6-reverse-sync",
         outcome,
@@ -313,6 +410,8 @@ def reverse_m6_inputs(
         fields,
         verification.to_dict(command="verification"),
         tuple(committed),
+        attempted=tuple(attempted),
+        verification_status="verified" if verified else "failed",
     )
 
 
@@ -346,6 +445,63 @@ def _plan_resource(manifest: Manifest, resource: Resource) -> M6ResourcePlan:
             target=target,
         )
     if target.data is None:
+        if set(desired) - set(resource.fields):
+            return _blocked_plan(
+                resource,
+                "rendered content contains an undeclared field",
+                code="m6_undeclared_desired",
+                rendered=rendered,
+                desired=desired,
+                inputs=inputs,
+                target=target,
+            )
+        try:
+            accepted = (
+                baseline_values(baseline, resource=resource) if baseline else None
+            )
+        except MutationError as exc:
+            return _blocked_plan(
+                resource,
+                str(exc),
+                code=getattr(exc, "code", "m6_baseline_invalid"),
+                rendered=rendered,
+                desired=desired,
+                inputs=inputs,
+                target=target,
+            )
+        required = {
+            name for name, owner in resource.fields.items() if owner != "ignore"
+        }
+        if accepted is None:
+            return M6ResourcePlan(
+                resource,
+                "unbased",
+                "review",
+                "baseline is absent; accept selected fields explicitly",
+                None,
+                (),
+                (),
+                desired,
+                rendered.data,
+                None,
+                inputs,
+                rendered.source_identity,
+                rendered.source_digest,
+                None,
+                None,
+                target.parent_identity,
+                _digest(baseline),
+            )
+        if required - set(accepted):
+            return _blocked_plan(
+                resource,
+                "baseline does not cover every declared create field",
+                code="m6_baseline_incomplete",
+                rendered=rendered,
+                desired=desired,
+                inputs=inputs,
+                target=target,
+            )
         return M6ResourcePlan(
             resource,
             "missing",
@@ -477,7 +633,13 @@ def _blocked_plan(
     )
 
 
-def _recheck_plan(plan: M6Plan) -> None:
+def _recheck_plan(
+    plan: M6Plan,
+    *,
+    operation: str,
+    fields: tuple[str, ...],
+    value_from: str | None = None,
+) -> None:
     current = load_manifest(plan.manifest.path)
     if current.content_digest != plan.manifest.content_digest:
         raise M6PilotError("M6 manifest changed; run a new plan", code="m6_stale_plan")
@@ -498,6 +660,16 @@ def _recheck_plan(plan: M6Plan) -> None:
         raise M6PilotError(
             "M6 inputs or target changed; run a new plan", code="m6_stale_plan"
         )
+    if fresh.resource.name != expected.resource.name:
+        raise M6PilotError("M6 resource selection changed", code="m6_stale_plan")
+    if operation == "apply" and fresh.forward_fields != fields:
+        raise M6PilotError("M6 forward field selection changed", code="m6_stale_plan")
+    if operation == "reverse-sync" and any(
+        name not in fresh.reverse_fields for name in fields
+    ):
+        raise M6PilotError("M6 reverse field selection changed", code="m6_stale_plan")
+    if operation == "accept" and value_from not in {"desired", "live"}:
+        raise M6PilotError("M6 baseline side changed", code="m6_stale_plan")
 
 
 def _write_atomic(
@@ -517,6 +689,7 @@ def _write_atomic(
     temp: str | None = None
     locked = False
     replaced = False
+    replace_attempted = False
     try:
         lock_directory(parent)
         locked = True
@@ -555,16 +728,49 @@ def _write_atomic(
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        # Recheck the destination after staging. This closes the cooperating
+        # writer/create race between the initial observation and replacement;
+        # unrelated writers that ignore the advisory lock remain outside the
+        # pilot's consistency claim.
+        try:
+            latest = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            if expected_identity is not None or expected_digest is not None:
+                raise M6PilotError(
+                    "M6 write inputs are stale", code="m6_stale_plan"
+                ) from None
+        else:
+            if stat.S_ISLNK(latest.st_mode) or not stat.S_ISREG(latest.st_mode):
+                raise M6PilotError(
+                    "M6 target is not a regular file", code="m6_unsafe_target"
+                )
+            latest_identity = (latest.st_dev, latest.st_ino)
+            if expected_identity is None or latest_identity != expected_identity:
+                raise M6PilotError("M6 write inputs are stale", code="m6_stale_plan")
+            if expected_digest is not None:
+                latest_data, _ = read_regular_file_at(parent, name)
+                if _digest(latest_data) != expected_digest:
+                    raise M6PilotError(
+                        "M6 write inputs are stale", code="m6_stale_plan"
+                    )
+        replace_attempted = True
         os.replace(temp, name, src_dir_fd=parent, dst_dir_fd=parent)
         temp = None
         replaced = True
         sync_directory(parent)
+    except M6WriteError:
+        raise
     except M6PilotError:
         raise
     except (OSError, NotImplementedError, FileChangedError):
-        raise M6PilotError(
-            "M6 write outcome is unknown" if replaced else "M6 write failed",
-            code="m6_write_unknown" if replaced else "m6_write_failed",
+        if replaced or replace_attempted:
+            raise M6WriteError(
+                "M6 write outcome is unknown",
+                code="m6_write_unknown",
+                state="uncertain",
+            ) from None
+        raise M6WriteError(
+            "M6 write was not replaced", code="m6_write_failed", state="not_replaced"
         ) from None
     finally:
         if temp is not None:
@@ -630,6 +836,33 @@ def _selected_values_from_object(
         else:
             updates[name] = values[name]
     return updates, tuple(deletes)
+
+
+def _forward_postcondition(item: M6ResourcePlan, fields: tuple[str, ...]) -> bool:
+    if item.status == "blocked" or item.live is None:
+        return False
+    if any(name in item.forward_fields for name in fields):
+        return False
+    return all(
+        name in item.desired
+        and name in item.live
+        and item.desired[name] == item.live[name]
+        for name in fields
+    )
+
+
+def _reverse_postcondition(item: M6ResourcePlan, fields: tuple[str, ...]) -> bool:
+    if item.status == "blocked" or item.live is None:
+        return False
+    if any(name in item.reverse_fields for name in fields):
+        return False
+    for name in fields:
+        input_value = item.input_context.values.get(name)
+        if input_value is None or name not in item.live:
+            return False
+        if input_value.value != item.live[name]:
+            return False
+    return True
 
 
 def _format_for(resource: Resource) -> str:

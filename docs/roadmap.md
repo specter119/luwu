@@ -1,6 +1,7 @@
 # Luwu Delivery Roadmap
 
-Status: M1-M5 are closed within their recorded scopes. M6 is in development;
+Status: M1-M4 are closed within their recorded scopes. M5 has a dated closure
+record but its current checkout revalidation is partial. M6 is in development;
 M7-M9 remain planned.
 
 This document turns the product seed into a small number of delivery
@@ -20,7 +21,7 @@ The roadmap is allowed to change when evidence changes the product direction. A 
 | M2        | Resource and semantic drift foundation       | Closed: declared resources and supported format experiments are compared without claiming unsupported equivalence.                      |
 | M3        | Ownership and auditable reconciliation       | Closed: baselines, ownership, conflicts, controlled reverse sync, and recoverable plans have explicit contracts.                        |
 | M4        | Providers, secrets, and operational maturity | Closed: external providers, secret boundaries, persistence, portability, and release behavior are verified without hidden capabilities. |
-| M5        | Batch performance and interruption safety    | Closed: everyday batch operations meet the recorded latency budgets without weakening validation or recovery.                           |
+| M5        | Batch performance and interruption safety    | Revalidation in progress: the optimization is present, while the fixed benchmark, installed-artifact, profiling, and process-interruption gates are being rerun against the current checkout. |
 | M6        | First usable bidirectional pilot             | In progress: version 7 roots and a bounded public field loop exist; complete Pi/Codex rehearsal, recovery, handoff, and user-trial gates remain. |
 | M7        | Feedback-led dotfiles coverage               | Provisional: expand the proven workflow to more resources, profiles and formats after M6 user feedback.                                 |
 | M8        | Real provider and mixed-input integration    | Planned: public/local/provider inputs work together without persistent secret intermediates.                                            |
@@ -61,7 +62,8 @@ automatic recovery.
 The [2026-09-20 isolated pilot and M5 record](milestones/m5.md) motivate the
 remaining four milestones. This is a dependency sequence, not a
 calendar estimate or a promise of feature parity with every Dotter
-installation. M5 is closed; implement M6's complete bidirectional pilot next.
+installation. Finish the current M5 revalidation, then implement M6's complete
+bidirectional pilot.
 Deliver M6 for the user's first trial and wait for their feedback before
 starting M7-M9 implementation. M7-M9 are provisional directions: revise their
 scope and acceptance cases from that feedback before proceeding. M8 integrates

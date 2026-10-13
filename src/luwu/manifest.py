@@ -666,6 +666,18 @@ def load_manifest(path: Path) -> Manifest:
                 code="resource_source_boundary",
             ) from None
 
+        if version == M6_MANIFEST_VERSION:
+            assert m6_roots is not None
+            protected_roots = (m6_roots.source.path, m6_roots.inputs.path)
+            if any(
+                _paths_overlap(target, protected_root)
+                for protected_root in protected_roots
+            ):
+                raise ManifestError(
+                    "version 7 resource target must stay outside source and inputs roots",
+                    code="m6_root_overlap",
+                )
+
         if target == manifest_path:
             raise ManifestError(
                 f"resource {name!r} target must not replace the manifest",
@@ -920,6 +932,14 @@ def _is_path_ancestor(parent: Path, child: Path) -> bool:
     return parent != child and parent in child.parents
 
 
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return (
+        left == right
+        or _is_path_ancestor(left, right)
+        or _is_path_ancestor(right, left)
+    )
+
+
 def _parse_m6_roots(raw_roots: object, *, root: Path) -> M6Roots:
     if not isinstance(raw_roots, dict):
         raise ManifestError("version 7 manifest roots must be a table", code="m6_roots")
@@ -954,19 +974,22 @@ def _parse_m6_roots(raw_roots: object, *, root: Path) -> M6Roots:
 
     names = ("source", "inputs", "target")
     resolved_paths = {name: paths[name].resolve(strict=False) for name in names}
-    for index, left_name in enumerate(names):
-        for right_name in names[index + 1 :]:
-            left = resolved_paths[left_name]
-            right = resolved_paths[right_name]
-            if (
-                left == right
-                or _is_path_ancestor(left, right)
-                or _is_path_ancestor(right, left)
-            ):
-                raise ManifestError(
-                    "version 7 roots must be distinct and non-overlapping",
-                    code="m6_root_overlap",
-                )
+    source = resolved_paths["source"]
+    inputs = resolved_paths["inputs"]
+    target = resolved_paths["target"]
+    if _paths_overlap(source, inputs):
+        raise ManifestError(
+            "version 7 source and inputs roots must be distinct and non-overlapping",
+            code="m6_root_overlap",
+        )
+    if any(
+        target == protected_root or _is_path_ancestor(protected_root, target)
+        for protected_root in (source, inputs)
+    ):
+        raise ManifestError(
+            "version 7 target root must not be equal to or below source or inputs",
+            code="m6_root_overlap",
+        )
 
     try:
         boundaries = {name: capture_directory_boundary(paths[name]) for name in names}

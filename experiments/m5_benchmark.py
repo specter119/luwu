@@ -28,6 +28,9 @@ SCENARIOS = ("plan", "fresh", "noop", "one-change", "all-changed", "recovery")
 class Fixture:
     root: Path
     sources: list[Path]
+    source_names: list[str]
+    source_kinds: list[str]
+    target_names: list[str]
     manifest: Path
     python: Path
     source_root: Path | None
@@ -54,6 +57,9 @@ def _write_fixture(
     sources_root.mkdir()
     targets_root.mkdir()
     sources: list[Path] = []
+    source_names: list[str] = []
+    source_kinds: list[str] = []
+    target_names: list[str] = []
     resources: list[str] = []
 
     for ordinal in range(size):
@@ -71,6 +77,9 @@ def _write_fixture(
         source = sources_root / f"{name}{suffix}"
         source.write_text(source_text, encoding="utf-8")
         sources.append(source)
+        source_names.append(f"sources/{name}{suffix}")
+        source_kinds.append(kind)
+        target_names.append(f"targets/{name}.conf")
         resources.append(
             f"""[resources.{name}]
 kind = "{kind}"
@@ -87,13 +96,16 @@ content_sensitivity = "public"
     return Fixture(
         root=root,
         sources=sources,
+        source_names=source_names,
+        source_kinds=source_kinds,
+        target_names=target_names,
         manifest=manifest,
         python=python,
         source_root=source_root,
     )
 
 
-def _run(fixture: Fixture, *args: str) -> None:
+def _run_capture(fixture: Fixture, *args: str) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     if fixture.source_root is None:
@@ -114,6 +126,11 @@ def _run(fixture: Fixture, *args: str) -> None:
             f"scenario command failed ({completed.returncode}): "
             f"{completed.stderr.strip() or completed.stdout.strip()}"
         )
+    return completed
+
+
+def _run(fixture: Fixture, *args: str) -> None:
+    _run_capture(fixture, *args)
 
 
 def _apply(fixture: Fixture, record: Path) -> None:
@@ -129,6 +146,65 @@ def _apply(fixture: Fixture, record: Path) -> None:
     )
 
 
+def _plan_json(fixture: Fixture) -> dict[str, object]:
+    completed = _run_capture(
+        fixture,
+        "plan",
+        "--manifest",
+        str(fixture.manifest),
+        "--json",
+    )
+    value = json.loads(completed.stdout)
+    if not isinstance(value, dict):
+        raise TypeError("plan output is not a JSON object")
+    return value
+
+
+def _plan_actions(fixture: Fixture) -> tuple[tuple[str, str], ...]:
+    payload = _plan_json(fixture)
+    resources = payload.get("resources")
+    if not isinstance(resources, list):
+        raise TypeError("plan output has no resources")
+    result: list[tuple[str, str]] = []
+    for resource in resources:
+        if not isinstance(resource, dict):
+            raise TypeError("plan resource metadata is invalid")
+        name = resource.get("name")
+        action = resource.get("action")
+        if not isinstance(name, str) or not isinstance(action, str):
+            raise TypeError("plan resource action metadata is invalid")
+        result.append((name, action))
+    return tuple(result)
+
+
+def _change_source(fixture: Fixture, ordinal: int) -> None:
+    name = f"resource_{ordinal:04d}"
+    if fixture.source_kinds[ordinal] == "template":
+        source = fixture.sources[ordinal]
+        source.write_text(
+            f'public_value = "changed-{ordinal:04d}"\npublic_index = {ordinal}\n',
+            encoding="utf-8",
+        )
+        return
+    changed_name = f"sources/{name}-changed.conf"
+    changed_path = fixture.root / changed_name
+    changed_path.write_text(
+        f"public-symbolic-changed-{ordinal:04d}\n", encoding="utf-8"
+    )
+    target = fixture.root / fixture.target_names[ordinal]
+    if target.is_symlink() or target.exists():
+        target.unlink()
+    manifest_text = fixture.manifest.read_text(encoding="utf-8")
+    manifest_text = manifest_text.replace(
+        f'source = "{fixture.source_names[ordinal]}"',
+        f'source = "{changed_name}"',
+        1,
+    )
+    fixture.manifest.write_text(manifest_text, encoding="utf-8")
+    fixture.sources[ordinal] = changed_path
+    fixture.source_names[ordinal] = changed_name
+
+
 def _prepare_scenario(fixture: Fixture, scenario: str) -> Path:
     record = fixture.root / f"{scenario}.journal.json"
     if scenario == "plan":
@@ -136,24 +212,43 @@ def _prepare_scenario(fixture: Fixture, scenario: str) -> Path:
     if scenario in {"noop", "one-change", "all-changed", "recovery"}:
         _apply(fixture, fixture.root / "setup.journal.json")
     if scenario == "one-change":
-        fixture.sources[0].write_text(
-            'public_value = "changed"\npublic_index = 0\n',
-            encoding="utf-8",
-        )
+        _change_source(fixture, 0)
     elif scenario == "all-changed":
-        for ordinal, source in enumerate(fixture.sources):
-            if source.suffix == ".j2":
-                source.write_text(
-                    f'public_value = "changed-{ordinal:04d}"\n'
-                    f"public_index = {ordinal}\n",
-                    encoding="utf-8",
-                )
-            else:
-                source.write_text(
-                    f"public-symbolic-changed-{ordinal:04d}\n",
-                    encoding="utf-8",
-                )
+        for ordinal in range(len(fixture.sources)):
+            _change_source(fixture, ordinal)
     return record
+
+
+def _assert_prepared_scenario(
+    fixture: Fixture, scenario: str
+) -> tuple[tuple[str, str], ...]:
+    actions = _plan_actions(fixture)
+    by_name = dict(actions)
+    if scenario == "plan" or scenario == "fresh":
+        expected = {name: "create" for name in by_name}
+    elif scenario == "noop":
+        expected = {name: "noop" for name in by_name}
+    elif scenario == "one-change":
+        expected = {
+            name: ("create" if fixture.source_kinds[0] == "symbolic" else "replace")
+            if index == 0
+            else "noop"
+            for index, name in enumerate(by_name)
+        }
+    elif scenario == "all-changed":
+        expected = {
+            name: ("create" if fixture.source_kinds[index] == "symbolic" else "replace")
+            for index, name in enumerate(by_name)
+        }
+    elif scenario == "recovery":
+        expected = {name: "noop" for name in by_name}
+    else:
+        raise RuntimeError(f"unknown scenario {scenario}")
+    if by_name != expected:
+        raise RuntimeError(
+            f"scenario {scenario} action set mismatch: expected {expected}, got {by_name}"
+        )
+    return actions
 
 
 def _timed_sample(
@@ -163,7 +258,7 @@ def _timed_sample(
     *,
     python: Path,
     source_root: Path | None,
-) -> float:
+) -> tuple[float, tuple[tuple[str, str], ...]]:
     with tempfile.TemporaryDirectory(dir=base) as directory:
         fixture = _write_fixture(
             Path(directory),
@@ -172,6 +267,7 @@ def _timed_sample(
             source_root=source_root,
         )
         record = _prepare_scenario(fixture, scenario)
+        actions = _assert_prepared_scenario(fixture, scenario)
         args: tuple[str, ...]
         if scenario == "plan":
             args = (
@@ -199,7 +295,7 @@ def _timed_sample(
             )
         started = time.perf_counter()
         _run(fixture, *args)
-        return time.perf_counter() - started
+        return time.perf_counter() - started, actions
 
 
 def _measure(
@@ -211,7 +307,14 @@ def _measure(
     python: Path,
     source_root: Path | None,
 ) -> dict[str, object]:
-    samples = [
+    first, first_actions = _timed_sample(
+        base,
+        size,
+        scenario,
+        python=python,
+        source_root=source_root,
+    )
+    warm_results = [
         _timed_sample(
             base,
             size,
@@ -221,13 +324,19 @@ def _measure(
         )
         for _ in range(repetitions)
     ]
+    warm_samples = [sample for sample, _actions in warm_results]
+    actions = [actions for _sample, actions in warm_results]
+    if any(item != first_actions for item in actions):
+        raise RuntimeError("scenario action set changed between restored samples")
     return {
         "size": size,
         "scenario": scenario,
-        "first": samples[0],
-        "samples": samples,
-        "median": statistics.median(samples),
-        "maximum": max(samples),
+        "first": first,
+        "samples": warm_samples,
+        "warm_samples": warm_samples,
+        "median": statistics.median(warm_samples),
+        "maximum": max(warm_samples),
+        "actions": [{"name": name, "action": action} for name, action in first_actions],
     }
 
 
@@ -236,6 +345,34 @@ def _parse_sizes(values: Iterable[str]) -> tuple[int, ...]:
     if not sizes or any(size <= 0 for size in sizes):
         raise argparse.ArgumentTypeError("sizes must be positive integers")
     return sizes
+
+
+def _environment_metadata(scratch: Path, *, python: Path) -> dict[str, object]:
+    statvfs = os.statvfs(scratch)
+    return {
+        "python": str(python),
+        "python_version": sys.version.split()[0],
+        "platform": sys.platform,
+        "filesystem": {
+            "block_size": statvfs.f_frsize,
+            "durable_scratch": True,
+            "tmpfs_excluded_by_operator": True,
+        },
+        "sandbox_mode": os.environ.get("LUWU_SANDBOX_MODE", "unspecified"),
+    }
+
+
+def _add_scaling_ratios(results: list[dict[str, object]]) -> None:
+    medians = {
+        (int(row["size"]), str(row["scenario"])): float(row["median"])
+        for row in results
+    }
+    for row in results:
+        if int(row["size"]) != 200:
+            continue
+        baseline = medians.get((100, str(row["scenario"])))
+        if baseline is not None and baseline > 0:
+            row["ratio_100_to_200"] = float(row["median"]) / baseline
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -274,8 +411,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output", type=Path, help="optional JSON result path")
     args = parser.parse_args(argv)
-    if args.repetitions < 1:
-        parser.error("--repetitions must be positive")
+    if args.repetitions < 5:
+        parser.error("--repetitions must be at least five warm samples")
     if not args.scratch.exists() or not args.scratch.is_dir():
         parser.error("--scratch must be an existing directory")
     if not args.python.is_file():
@@ -297,12 +434,15 @@ def main(argv: list[str] | None = None) -> int:
         for size in sizes
         for scenario in scenarios
     ]
+    _add_scaling_ratios(results)
     payload = {
         "schema_version": 1,
         "fixture": "synthetic-public-v5",
         "sizes": list(sizes),
         "scenarios": list(scenarios),
         "repetitions": args.repetitions,
+        "sample_policy": "one first sample plus restored independent warm samples",
+        "environment": _environment_metadata(args.scratch, python=args.python),
         "results": results,
     }
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"

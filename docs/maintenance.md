@@ -25,6 +25,27 @@ M4 provider tests use an injected resolver or a fake `rbw` executable. They do
 not access a real vault. The M3 ablation experiments and the M4 ablation are
 part of the boundary review and must run in temporary directories.
 
+## M5 benchmark and interruption evidence
+
+Run the performance experiments on a durable local filesystem. Do not use
+tmpfs for the acceptance matrix, and keep the output artifacts under the M5
+milestone record:
+
+```text
+uv run experiments/m5_benchmark.py --scratch /path/on/durable-fs/luwu-m5-scratch --output docs/milestones/m5-benchmark-current-source.json
+uv run experiments/m5_profile.py --scratch /path/on/durable-fs/luwu-m5-profile --output-dir docs/milestones/m5-profile-current
+uv run experiments/m5_provider_latency.py --output docs/milestones/m5-provider-latency-current.json
+PYTHONPATH=src python3 -B -m unittest tests.test_m5_benchmark tests.test_m5_sigkill
+```
+
+The benchmark must retain sizes 1, 10, 30, 100, 176, and 200, first and five
+warm samples, exact action lists, and the environment metadata. Profile plan
+and apply separately, and report counted directory synchronization and journal
+publication calls. The provider experiment uses an injected resolver and
+synthetic latency only. Build and install the wheel and sdist in fresh
+environments before claiming the installed-artifact gate; the installed full
+suite does not replace the installed benchmark matrix.
+
 ## M6 isolated rehearsal and Dotter handoff
 
 Run the sanitized version 7 rehearsal from the repository root:
@@ -34,12 +55,12 @@ uv run experiments/m6_pilot.py
 ```
 
 The runner creates separate temporary source, input, baseline, and target
-roots for Pi-shaped (`model`, `provider`, `changelog`) and Codex-shaped
-(`model`, `provider`) public JSON. It exercises baseline acceptance, a
-read-only forward preview followed by confirmation, a read-only reverse-sync
-preview followed by confirmation, and the final no-op observation. Its output
-contains only field labels and outcomes. It is evidence for the isolated
-pilot loop and does not authorize a real target.
+roots under a normal HOME-shaped layout for Pi-shaped JSON and Codex-shaped
+TOML public fields. It exercises absent-target baseline acceptance and create,
+two bidirectional cycles, read-only previews, post-replace uncertainty, a
+fresh-process read-only observation, and a Dotter handoff conflict plus return
+state. Its output contains only field labels and outcomes. It is evidence for
+the isolated pilot loop and does not authorize a real target.
 
 Before placing a real target in a version 7 manifest, perform the handoff
 manually for that target:

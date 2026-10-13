@@ -195,6 +195,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         build_m6_plan(manifest),
                         fields=tuple(args.field),
                         confirm=args.yes,
+                        resource_name=args.resource,
                     )
                 _emit_m6_result(result, as_json=args.json)
                 return 0 if args.yes and result.outcome == "committed" else 2

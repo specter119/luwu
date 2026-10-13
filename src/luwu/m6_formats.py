@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
-import tomllib
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from .baseline import _encode_value, parse_public_object
+from .baseline import _encode_value
 from .errors import MutationError
 from .filesystem import (
     FileChangedError,
@@ -50,7 +48,7 @@ class M6InputContext:
 _SAFE_TOML_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 _TOML_ASSIGNMENT = re.compile(
     r"^(?P<prefix>[ \t]*)(?P<key>[A-Za-z0-9_-]+)(?P<separator>[ \t]*=[ \t]*)"
-    r"(?P<value>[^\r\n]*?)(?P<newline>\r?\n|$)$"
+    r"(?P<value>.*?)[ \t]*$"
 )
 _SENSITIVE_NAMES = frozenset(
     {"api_key", "apikey", "credential", "password", "private_key", "secret", "token"}
@@ -118,7 +116,11 @@ def patch_m6_document(
             "at least one M6 field must be selected", code="field_required"
         )
     for name in selected:
-        if not isinstance(name, str) or not _SAFE_TOML_KEY.fullmatch(name):
+        if (
+            not isinstance(name, str)
+            or not _SAFE_TOML_KEY.fullmatch(name)
+            or _is_sensitive_name(name)
+        ):
             raise M6FormatError("M6 field name is unsupported", code="m6_patch")
     if format == "json":
         return _patch_json(source, updates, deletes, selected)
@@ -133,8 +135,9 @@ def _patch_json(
     deletes: tuple[str, ...],
     selected: tuple[str, ...],
 ) -> bytes:
-    document = parse_public_object(source, code="m6_format")
+    document = parse_m6_document(source, format="json")
     changed = dict(document)
+    _validate_patch_values(updates)
     changed.update(updates)
     for name in deletes:
         changed.pop(name, None)
@@ -159,55 +162,21 @@ def _patch_toml(
     selected: tuple[str, ...],
 ) -> bytes:
     text = _decode_utf8(source)
-    _parse_toml(text, path=None)
-    lines = text.splitlines(keepends=True)
-    spans: dict[str, tuple[int, int, str]] = {}
-    offset = 0
-    for line in lines:
-        stripped = line.lstrip()
-        if stripped.startswith("["):
-            raise M6FormatError(
-                "TOML tables are outside the M6 bounded subset", code="m6_format"
-            )
-        match = _TOML_ASSIGNMENT.match(line)
-        if match is not None:
-            key = match.group("key")
-            if key in spans:
-                raise M6FormatError("duplicate TOML field", code="m6_format")
-            value_text = match.group("value").rstrip(" \t")
-            if "#" in value_text:
-                raise M6FormatError(
-                    "inline TOML comments are outside the M6 bounded subset",
-                    code="m6_format",
-                )
-            value_start = offset + match.start("value")
-            value_end = value_start + len(value_text)
-            spans[key] = (
-                offset,
-                offset + len(line),
-                line[value_start - offset : value_end - offset],
-            )
-        offset += len(line)
+    document, spans = _scan_toml(text)
+    _validate_public_keys(document)
+    _validate_patch_values(updates)
 
     replacements: list[tuple[int, int, str]] = []
     for name in selected:
         if name in deletes:
             if name in spans:
-                replacements.append((spans[name][0], spans[name][1], ""))
+                line_start, line_end, _value_start, _value_end = spans[name]
+                replacements.append((line_start, line_end, ""))
             continue
         value = updates[name]
-        if not _is_public_scalar(value):
-            raise M6FormatError(
-                "TOML value is outside the scalar subset", code="m6_format"
-            )
         literal = _encode_toml_scalar(value)
         if name in spans:
-            line_start, line_end, _ = spans[name]
-            line = text[line_start:line_end]
-            match = _TOML_ASSIGNMENT.match(line)
-            assert match is not None
-            start = line_start + match.start("value")
-            end = start + len(match.group("value").rstrip(" \t"))
+            _line_start, _line_end, start, end = spans[name]
             replacements.append((start, end, literal))
         else:
             suffix = "" if text.endswith(("\n", "\r")) or not text else "\n"
@@ -215,7 +184,24 @@ def _patch_toml(
 
     for start, end, replacement in sorted(replacements, reverse=True):
         text = text[:start] + replacement + text[end:]
-    return text.encode("utf-8")
+    result = text.encode("utf-8")
+    reparsed = parse_m6_document(result, format="toml")
+    for name, value in document.items():
+        if name not in selected and reparsed.get(name, _MISSING) != value:
+            raise M6FormatError(
+                "TOML patch changed an unselected field", code="m6_patch"
+            )
+    for name, value in updates.items():
+        if reparsed.get(name, _MISSING) != value:
+            raise M6FormatError(
+                "TOML patch did not establish the selected value", code="m6_patch"
+            )
+    for name in deletes:
+        if name in reparsed:
+            raise M6FormatError(
+                "TOML patch did not remove the selected field", code="m6_patch"
+            )
+    return result
 
 
 def parse_m6_document(data: bytes, *, format: str) -> dict[str, object]:
@@ -225,6 +211,8 @@ def parse_m6_document(data: bytes, *, format: str) -> dict[str, object]:
         try:
             value = json.loads(
                 _decode_utf8(data),
+                parse_int=Decimal,
+                parse_float=Decimal,
                 parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
                 object_pairs_hook=_reject_duplicate_json_keys,
             )
@@ -238,6 +226,11 @@ def parse_m6_document(data: bytes, *, format: str) -> dict[str, object]:
         raise M6FormatError("M6 input format is unsupported", code="m6_format")
     if not isinstance(value, dict):
         raise M6FormatError("M6 input must be a top-level object", code="m6_format")
+    if any(not _is_public_scalar(item) for item in value.values()):
+        raise M6FormatError(
+            "M6 input must contain only top-level scalar values", code="m6_format"
+        )
+    _validate_public_keys(value)
     return value
 
 
@@ -252,21 +245,90 @@ def _parse_document(data: bytes, *, path: Path) -> dict[str, object]:
 
 
 def _parse_toml(text: str, *, path: Path | None) -> dict[str, object]:
-    try:
-        value = tomllib.loads(text)
-    except tomllib.TOMLDecodeError:
-        raise M6FormatError("M6 TOML input is unsupported", code="m6_format") from None
-    if not isinstance(value, dict) or any(
-        not _is_public_scalar(item) for item in value.values()
-    ):
-        raise M6FormatError(
-            "M6 TOML must contain only top-level scalar values", code="m6_format"
-        )
-    if any(line.lstrip().startswith("[") for line in text.splitlines()):
-        raise M6FormatError(
-            "TOML tables are outside the M6 bounded subset", code="m6_format"
-        )
+    value, _spans = _scan_toml(text)
+    _validate_public_keys(value)
     return value
+
+
+_MISSING = object()
+
+
+def _scan_toml(
+    text: str,
+) -> tuple[dict[str, object], dict[str, tuple[int, int, int, int]]]:
+    """Parse and locate the deliberately small supported TOML subset."""
+
+    values: dict[str, object] = {}
+    spans: dict[str, tuple[int, int, int, int]] = {}
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        newline_length = 2 if line.endswith("\r\n") else 1 if line.endswith("\n") else 0
+        body = line[: len(line) - newline_length] if newline_length else line
+        stripped = body.strip(" \t")
+        if not stripped or stripped.startswith("#"):
+            offset += len(line)
+            continue
+        match = _TOML_ASSIGNMENT.fullmatch(body)
+        if match is None:
+            raise M6FormatError(
+                "M6 TOML contains unsupported or ambiguous syntax", code="m6_format"
+            )
+        key = match.group("key")
+        if key in values:
+            raise M6FormatError("duplicate TOML field", code="m6_format")
+        raw_value = match.group("value").strip(" \t")
+        if not raw_value:
+            raise M6FormatError("M6 TOML assignment has no value", code="m6_format")
+        value_start = offset + match.start("value")
+        value_start += len(match.group("value")) - len(
+            match.group("value").lstrip(" \t")
+        )
+        value_end = value_start + len(raw_value)
+        values[key] = _parse_toml_scalar(raw_value)
+        spans[key] = (offset, offset + len(line), value_start, value_end)
+        offset += len(line)
+    if offset < len(text):
+        # splitlines() returns no item for a final empty string, but it must not
+        # hide a bare carriage return or other unconsumed trailing bytes.
+        raise M6FormatError(
+            "M6 TOML contains unsupported or ambiguous syntax", code="m6_format"
+        )
+    return values, spans
+
+
+def _parse_toml_scalar(raw_value: str) -> object:
+    if raw_value.startswith('"'):
+        if len(raw_value) < 2 or not raw_value.endswith('"'):
+            raise M6FormatError("M6 TOML string is unsupported", code="m6_format")
+        try:
+            value = json.loads(raw_value)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise M6FormatError(
+                "M6 TOML string is unsupported", code="m6_format"
+            ) from None
+        if not isinstance(value, str):
+            raise M6FormatError("M6 TOML string is unsupported", code="m6_format")
+        return value
+    if raw_value.startswith("'"):
+        if len(raw_value) < 2 or not raw_value.endswith("'") or "'" in raw_value[1:-1]:
+            raise M6FormatError("M6 TOML string is unsupported", code="m6_format")
+        return raw_value[1:-1]
+    if raw_value in {"true", "false"}:
+        return raw_value == "true"
+    numeric = raw_value.replace("_", "")
+    if re.fullmatch(r"[+-]?\d+", numeric):
+        try:
+            return int(numeric)
+        except ValueError:
+            pass
+    if re.fullmatch(r"[+-]?(?:\d+\.\d*|\d*\.\d+|\d+)(?:[eE][+-]?\d+)?", numeric):
+        try:
+            value = Decimal(numeric)
+        except (InvalidOperation, ValueError):
+            value = None
+        if value is not None and value.is_finite():
+            return value
+    raise M6FormatError("M6 TOML value is outside the scalar subset", code="m6_format")
 
 
 def _read_input(path: Path) -> tuple[bytes, tuple[int, int]]:
@@ -310,9 +372,21 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
 
 
 def _is_public_scalar(value: object) -> bool:
-    if value is None or isinstance(value, (str, bool, int, Decimal)):
-        return True
-    return isinstance(value, float) and math.isfinite(value)
+    return value is None or isinstance(value, (str, bool, int, Decimal))
+
+
+def _validate_public_keys(document: dict[str, object]) -> None:
+    if any(_is_sensitive_name(name) for name in document):
+        raise M6FormatError(
+            "M6 document contains a sensitive field name", code="m6_sensitive_input"
+        )
+
+
+def _validate_patch_values(values: dict[str, object]) -> None:
+    if any(not _is_public_scalar(value) for value in values.values()):
+        raise M6FormatError(
+            "M6 value is outside the public scalar boundary", code="m6_format"
+        )
 
 
 def _is_sensitive_name(name: str) -> bool:
@@ -331,6 +405,6 @@ def _encode_toml_scalar(value: object) -> str:
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
-    if isinstance(value, float) and math.isfinite(value):
-        return repr(value)
+    if isinstance(value, Decimal) and value.is_finite():
+        return str(value)
     raise M6FormatError("TOML value is outside the scalar subset", code="m6_format")

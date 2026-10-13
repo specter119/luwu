@@ -28,12 +28,42 @@ class M6ManifestRootsTests(unittest.TestCase):
             self.assertEqual(manifest.resources[0].source, root / "repo/pi.json.j2")
             self.assertEqual(manifest.resources[0].target, root / "home/pi.json")
 
-    def test_overlapping_roots_are_rejected_after_resolution(self) -> None:
+    def test_home_root_can_contain_source_and_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "repo").mkdir()
-            (root / "repo" / "nested").mkdir()
-            (root / "home").mkdir()
+            home = root / "home"
+            source = home / ".dotfiles"
+            inputs = home / ".local/share/luwu/inputs"
+            source.mkdir(parents=True)
+            inputs.mkdir(parents=True)
+            (home / ".config/pi").mkdir(parents=True)
+            (root / "luwu.toml").write_text(
+                self._manifest_text(
+                    source_root="home/.dotfiles",
+                    input_root="home/.local/share/luwu/inputs",
+                    target_root=str(home),
+                    target=".config/pi/settings.json",
+                ),
+                encoding="utf-8",
+            )
+
+            manifest = load_manifest(root / "luwu.toml")
+
+            self.assertIsNotNone(manifest.roots)
+            assert manifest.roots is not None
+            self.assertEqual(manifest.roots.source.path, source)
+            self.assertEqual(manifest.roots.inputs.path, inputs)
+            self.assertEqual(manifest.roots.target.path, home)
+            self.assertEqual(
+                manifest.resources[0].target,
+                home / ".config/pi/settings.json",
+            )
+
+    def test_source_and_inputs_roots_cannot_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._make_roots(root)
+            (root / "repo/nested").mkdir()
             manifest = self._manifest_text(
                 source_root="repo",
                 input_root="repo/nested",
@@ -43,6 +73,22 @@ class M6ManifestRootsTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ManifestError, "non-overlapping"):
                 load_manifest(root / "luwu.toml")
+
+    def test_target_root_cannot_equal_or_be_below_source_or_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._make_roots(root)
+            for target_root in ("repo", "repo/home", "inputs", "inputs/home"):
+                with self.subTest(target_root=target_root):
+                    target_path = root / target_root
+                    target_path.mkdir(parents=True, exist_ok=True)
+                    (root / "luwu.toml").write_text(
+                        self._manifest_text(target_root=target_root),
+                        encoding="utf-8",
+                    )
+
+                    with self.assertRaisesRegex(ManifestError, "target root"):
+                        load_manifest(root / "luwu.toml")
 
     def test_symlinked_root_is_rejected_before_observation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -78,6 +124,22 @@ class M6ManifestRootsTests(unittest.TestCase):
             with self.assertRaises(ManifestError) as raised:
                 load_manifest(root / "luwu.toml")
             self.assertEqual(raised.exception.code, "path_boundary")
+
+    def test_target_files_inside_source_or_inputs_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._make_roots(root)
+            (root / "inputs/global").mkdir(parents=True)
+            for target in ("repo/unmanaged.json", "inputs/global/model.json"):
+                with self.subTest(target=target):
+                    (root / "luwu.toml").write_text(
+                        self._manifest_text(target_root=str(root), target=target),
+                        encoding="utf-8",
+                    )
+
+                    with self.assertRaises(ManifestError) as raised:
+                        load_manifest(root / "luwu.toml")
+                    self.assertEqual(raised.exception.code, "m6_root_overlap")
 
     def _make_roots(self, root: Path) -> None:
         for name in ("repo", "inputs", "home"):

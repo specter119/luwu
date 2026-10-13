@@ -168,6 +168,83 @@ class M6PilotTests(unittest.TestCase):
                 apply_m6_forward(plan, confirm=True)
             self.assertEqual(raised.exception.code, "m6_stale_plan")
 
+    def test_reverse_cli_rejects_a_resource_different_from_the_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._make_project(root)
+            manifest = load_manifest(root / "luwu.toml")
+            for fields, source in (
+                (("model", "changelog"), "desired"),
+                (("provider",), "live"),
+            ):
+                accept_m6_baseline(
+                    manifest,
+                    resource_name="pi",
+                    fields=fields,
+                    value_from=source,
+                    confirm=True,
+                )
+            target = json.loads((root / "home/pi.json").read_text())
+            target["provider"] = "provider-2"
+            (root / "home/pi.json").write_text(json.dumps(target) + "\n")
+
+            result = main(
+                [
+                    "reverse-sync",
+                    "--manifest",
+                    str(root / "luwu.toml"),
+                    "--resource",
+                    "wrong",
+                    "--field",
+                    "provider",
+                    "--yes",
+                    "--json",
+                ]
+            )
+
+            self.assertEqual(result, 2)
+            self.assertEqual(
+                json.loads((root / "inputs/local/provider.json").read_text()),
+                {"provider": "provider-1"},
+            )
+
+    def test_missing_target_requires_complete_baseline_and_declared_output(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._make_project(root)
+            (root / "home/pi.json").unlink()
+            manifest = load_manifest(root / "luwu.toml")
+
+            unbased = build_m6_plan(manifest)
+            self.assertEqual(unbased.resource.action, "review")
+            self.assertEqual(unbased.resource.status, "unbased")
+            accepted = accept_m6_baseline(
+                manifest,
+                resource_name="pi",
+                fields=("model", "changelog", "provider"),
+                value_from="desired",
+                confirm=True,
+            )
+            self.assertEqual(accepted.outcome, "committed")
+            create = build_m6_plan(load_manifest(root / "luwu.toml"))
+            self.assertEqual(create.resource.action, "create")
+            preview = apply_m6_forward(create, confirm=False)
+            self.assertEqual(preview.outcome, "confirmation_required")
+            self.assertFalse((root / "home/pi.json").exists())
+
+            (root / "home/pi.json").write_text(
+                '{"model":"pi-4","provider":"provider-1",'
+                '"changelog":"release-1","client_secret":"opaque"}\n'
+            )
+            blocked = build_m6_plan(load_manifest(root / "luwu.toml"))
+            self.assertEqual(blocked.resource.status, "blocked")
+            before = (root / "home/pi.json").read_bytes()
+            with self.assertRaises(LuwuError):
+                apply_m6_forward(blocked, confirm=True)
+            self.assertEqual((root / "home/pi.json").read_bytes(), before)
+
     def _make_project(self, root: Path) -> None:
         for path in (
             root / "repo",

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 
 from luwu.errors import MutationError
-from luwu.m6_formats import load_m6_inputs, patch_m6_document
+from luwu.m6_formats import load_m6_inputs, parse_m6_document, patch_m6_document
 from luwu.manifest import load_manifest
 from luwu.rendering import render_template
 
@@ -80,6 +81,70 @@ class M6InputsAndFormatsTests(unittest.TestCase):
             patch_m6_document(
                 b'[provider]\nmodel = "x"\n', format="toml", updates={"model": "y"}
             )
+
+    def test_json_numbers_keep_decimal_precision_and_types(self) -> None:
+        source = b'{"precise": 0.10000000000000001, "whole": 1, "flag": true}\n'
+
+        parsed = parse_m6_document(source, format="json")
+        changed = patch_m6_document(
+            source,
+            format="json",
+            updates={"precise": Decimal("1234567890.1234567890123456789")},
+        )
+
+        self.assertEqual(parsed["precise"], Decimal("0.10000000000000001"))
+        self.assertEqual(type(parsed["whole"]), Decimal)
+        self.assertIs(parsed["flag"], True)
+        self.assertIn(b"1234567890.1234567890123456789", changed)
+
+    def test_sensitive_top_level_key_blocks_complete_document(self) -> None:
+        with self.assertRaisesRegex(MutationError, "sensitive"):
+            parse_m6_document(
+                b'{"provider": "public", "client_secret": "opaque"}',
+                format="json",
+            )
+
+    def test_toml_hash_inside_string_is_not_an_inline_comment(self) -> None:
+        source = b'# keep\r\nmodel = "old#value"\r\nprovider = "x"'
+
+        changed = patch_m6_document(
+            source, format="toml", updates={"model": "new#value"}
+        )
+
+        self.assertEqual(
+            changed,
+            b'# keep\r\nmodel = "new#value"\r\nprovider = "x"',
+        )
+
+    def test_toml_unsupported_lexical_forms_fail_closed(self) -> None:
+        cases = (
+            b'"model" = "x"\n',
+            b'model = """x\n',
+            b'model = "x" # inline\n',
+            b'model = "x"\nnot-an-assignment\n',
+        )
+        for source in cases:
+            with self.subTest(source=source), self.assertRaises(MutationError):
+                parse_m6_document(source, format="toml")
+
+    def test_toml_patch_updates_and_deletes_without_touching_unselected_bytes(
+        self,
+    ) -> None:
+        source = (
+            b'# keep\r\nmodel = "old"\r\nremove = "gone"\r\nkeep = 12345678901234567890'
+        )
+
+        changed = patch_m6_document(
+            source,
+            format="toml",
+            updates={"model": "new"},
+            deletes=("remove",),
+        )
+
+        self.assertEqual(
+            changed,
+            b'# keep\r\nmodel = "new"\r\nkeep = 12345678901234567890',
+        )
 
     def _manifest(self) -> str:
         return """version = 7
