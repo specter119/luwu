@@ -1,0 +1,1091 @@
+{
+  "acceptance_cases": [
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_both_side_conflict_stops_for_review_for_each_format (resource='pi')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_both_side_conflict_stops_for_review_for_each_format (resource='codex')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_both_side_conflict_stops_for_review_for_each_format"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_comments_and_unsupported_syntax_follow_each_format_boundary (resource='pi-comments')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_comments_and_unsupported_syntax_follow_each_format_boundary (resource='codex-comments-and-syntax')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_comments_and_unsupported_syntax_follow_each_format_boundary"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_fresh_baseline_create_and_noop_for_each_format (resource='pi')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_fresh_baseline_create_and_noop_for_each_format (resource='codex')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_fresh_baseline_create_and_noop_for_each_format"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_json_null_is_distinct_from_absence_and_toml_rejects_null (format='json-null-and-deletion')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_json_null_is_distinct_from_absence_and_toml_rejects_null (format='toml-null-and-deletion')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_json_null_is_distinct_from_absence_and_toml_rejects_null"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_selected_patch_preserves_unselected_input_bytes_for_each_format (resource='pi')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_selected_patch_preserves_unselected_input_bytes_for_each_format (resource='codex')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_selected_patch_preserves_unselected_input_bytes_for_each_format"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_source_only_change_preserves_live_owned_value_for_each_format (resource='pi')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_source_only_change_preserves_live_owned_value_for_each_format (resource='codex')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_source_only_change_preserves_live_owned_value_for_each_format"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_source_owned_template_field_deletion_uses_cli_and_reobserves_noop (resource='pi')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_source_owned_template_field_deletion_uses_cli_and_reobserves_noop (resource='codex')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_source_owned_template_field_deletion_uses_cli_and_reobserves_noop"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_stale_baseline_and_stale_input_stop_reverse_sync_for_each_format (resource='pi', stale='baseline')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_stale_baseline_and_stale_input_stop_reverse_sync_for_each_format (resource='pi', stale='input')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_stale_baseline_and_stale_input_stop_reverse_sync_for_each_format (resource='codex', stale='baseline')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_stale_baseline_and_stale_input_stop_reverse_sync_for_each_format (resource='codex', stale='input')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_stale_baseline_and_stale_input_stop_reverse_sync_for_each_format"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_templates_serialize_escaped_public_strings_for_each_format (resource='pi')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_templates_serialize_escaped_public_strings_for_each_format (resource='codex')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_templates_serialize_escaped_public_strings_for_each_format"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_undeclared_live_key_is_reviewed_and_not_written_for_each_format (resource='pi')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_undeclared_live_key_is_reviewed_and_not_written_for_each_format (resource='codex')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_undeclared_live_key_is_reviewed_and_not_written_for_each_format"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_unselected_field_corruption_is_caught_by_independent_byte_oracle (resource='pi')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_unselected_field_corruption_is_caught_by_independent_byte_oracle (resource='codex')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_unselected_field_corruption_is_caught_by_independent_byte_oracle"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_wrong_owner_and_selected_with_unselected_conflict_for_each_format (resource='pi', case='wrong_owner')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_wrong_owner_and_selected_with_unselected_conflict_for_each_format (resource='pi', case='unselected_conflict')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_wrong_owner_and_selected_with_unselected_conflict_for_each_format (resource='codex', case='wrong_owner')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_wrong_owner_and_selected_with_unselected_conflict_for_each_format (resource='codex', case='unselected_conflict')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_wrong_owner_and_selected_with_unselected_conflict_for_each_format"
+    }
+  ],
+  "design_ablation": {
+    "decision": "retain typed serialization and bounded span patching; standard TOML validation rejects the reproduced legacy forms",
+    "probes": [
+      {
+        "probe": "typed_json_null",
+        "quoted_serialization_matches_null": false,
+        "status": "pass",
+        "typed_serialization_matches_null": true
+      },
+      {
+        "absent_matches_json_null": false,
+        "deleted_field_absent": true,
+        "naive_verification_passes": false,
+        "presence_aware_verification_passes": true,
+        "probe": "presence_aware_deletion",
+        "status": "pass"
+      },
+      {
+        "invalid_counterexamples_accepted": 3,
+        "mode": "legacy_guard_off",
+        "positive_control_accepted": true,
+        "probe": "toml_standard_syntax_guard",
+        "status": "pass",
+        "valid_unicode_escape_accepted": false
+      },
+      {
+        "invalid_counterexamples_accepted": 0,
+        "mode": "tomllib_guard_on",
+        "positive_control_accepted": true,
+        "probe": "toml_standard_syntax_guard",
+        "status": "pass",
+        "valid_unicode_escape_accepted": true
+      },
+      {
+        "new_adapter": false,
+        "preserves_comments_crlf_and_unselected_bytes": true,
+        "probe": "existing_span_patcher",
+        "status": "pass"
+      }
+    ],
+    "status": "pass"
+  },
+  "installed_package_bytes_match_source": true,
+  "m5_regression_cases": [
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_completed_matrix_marks_output_complete"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_installed_probe_rejects_checkout_source_import"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_installed_probe_rejects_other_editable_imports"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_main_preserves_venv_python_symlink_for_probe_and_measure"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_one_and_all_change_have_exact_actions"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_output_checkpoints_completed_rows_as_incomplete"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_prepared_scenario_rejects_incomplete_resource_sets (label='missing')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_prepared_scenario_rejects_incomplete_resource_sets (label='duplicate')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_prepared_scenario_rejects_incomplete_resource_sets (label='extra')"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_prepared_scenario_rejects_incomplete_resource_sets"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_python_probe_reports_the_target_interpreter_and_import"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_recovery_sample_checks_setup_create_journal"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_timed_sample_accepts_complete_successful_execution"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_benchmark.M5BenchmarkHarnessTests.test_timed_sample_rejects_zero_exit_without_durable_mutation"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_interruption.M5InterruptionHonestyTests.test_failure_after_replacement_before_journal_publication"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_interruption.M5InterruptionHonestyTests.test_journal_cas_conflict_before_any_target_write"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_interruption.M5InterruptionHonestyTests.test_journal_publication_failure_before_any_target_write"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_interruption.M5InterruptionHonestyTests.test_parent_rebinding_is_reported_as_concurrent_change"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_interruption.M5InterruptionHonestyTests.test_unprocessed_noop_stays_not_attempted_after_earlier_writer_failure"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_interruption.M5InterruptionHonestyTests.test_writer_failure_after_one_committed_target"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_interruption.M5InterruptionHonestyTests.test_writer_failure_before_first_target_writer"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_sigkill.M5SigkillTests.test_sigkill_after_replace_reports_uncommitted_journal_state"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_sigkill.M5SigkillTests.test_sigkill_before_journal_leaves_no_mutation"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_sigkill.M5SigkillTests.test_sigkill_before_replace_keeps_journal_and_target_unmodified"
+    },
+    {
+      "status": "pass",
+      "test": "test_m5_sigkill.M5SigkillTests.test_sigkill_between_resources_preserves_partial_commit_boundary"
+    }
+  ],
+  "m6_regressions": [
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_both_side_conflict_stops_for_review_for_each_format"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_comments_and_unsupported_syntax_follow_each_format_boundary"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_fresh_baseline_create_and_noop_for_each_format"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_json_null_is_distinct_from_absence_and_toml_rejects_null"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_selected_patch_preserves_unselected_input_bytes_for_each_format"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_source_only_change_preserves_live_owned_value_for_each_format"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_source_owned_template_field_deletion_uses_cli_and_reobserves_noop"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 4,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_stale_baseline_and_stale_input_stop_reverse_sync_for_each_format"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_templates_serialize_escaped_public_strings_for_each_format"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_undeclared_live_key_is_reviewed_and_not_written_for_each_format"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_unselected_field_corruption_is_caught_by_independent_byte_oracle"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 4,
+      "test": "test_m6_acceptance.M6AcceptanceTests.test_wrong_owner_and_selected_with_unselected_conflict_for_each_format"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_apply_blocks_unselected_privatekey_shared_by_desired_and_live"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 18,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_camel_case_and_hyphen_sensitive_keys_are_rejected_in_json_and_toml"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 3,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_complete_desired_live_and_input_documents_check_all_top_level_keys"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_input_provenance_and_renderer_context_are_explicit"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_json_duplicate_or_invalid_input_fails_closed"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_json_numbers_keep_decimal_precision_and_types"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_json_patch_preserves_unselected_bytes_and_absent_null"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_sensitive_top_level_key_blocks_complete_document"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_toml_hash_inside_string_is_not_an_inline_comment"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_toml_inline_comment_cannot_extend_a_string_token"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_toml_patch_preserves_comments_and_rejects_tables"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_toml_patch_updates_and_deletes_without_touching_unselected_bytes"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 4,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_toml_requires_standard_syntax_before_parsing_or_patching"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_toml_string_token_consumes_escaped_quotes_and_unicode"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 5,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_toml_unsupported_lexical_forms_fail_closed"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_inputs_formats.M6InputsAndFormatsTests.test_toml_uses_toml_unicode_escapes_and_keeps_decimal_precision"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_manifest_roots.M6ManifestRootsTests.test_home_root_can_contain_source_and_inputs"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_manifest_roots.M6ManifestRootsTests.test_source_and_inputs_roots_cannot_overlap"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_manifest_roots.M6ManifestRootsTests.test_symlinked_root_is_rejected_before_observation"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_manifest_roots.M6ManifestRootsTests.test_target_files_inside_source_or_inputs_are_rejected"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 4,
+      "test": "test_m6_manifest_roots.M6ManifestRootsTests.test_target_root_cannot_equal_or_be_below_source_or_inputs"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_manifest_roots.M6ManifestRootsTests.test_target_traversal_is_rejected"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_manifest_roots.M6ManifestRootsTests.test_version_seven_captures_distinct_root_authorities"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_pilot.M6PilotTests.test_changed_input_after_preview_is_stale"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_pilot.M6PilotTests.test_cli_routes_version_seven_without_an_execution_record"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_pilot.M6PilotTests.test_missing_target_requires_complete_baseline_and_declared_output"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_pilot.M6PilotTests.test_preview_baseline_forward_and_reverse_form_one_closed_loop"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_pilot.M6PilotTests.test_reverse_cli_rejects_a_resource_different_from_the_plan"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_pilot.M6PilotTests.test_undeclared_live_change_blocks_forward_write"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_rehearsal.M6RehearsalTests.test_cli_absolutizes_existing_relative_pythonpath_before_chdir"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_rehearsal.M6RehearsalTests.test_dotter_conflict_is_blocked_and_return_steps_are_recorded"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_rehearsal.M6RehearsalTests.test_pi_json_and_codex_toml_complete_two_bidirectional_cycles"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_rehearsal.M6RehearsalTests.test_runner_does_not_force_a_source_checkout_on_sys_path"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_rehearsal.M6RehearsalTests.test_stdout_and_artifacts_contain_only_sanitized_metadata"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_rehearsal.M6RehearsalTests.test_uncertain_write_is_metadata_only_and_recovery_is_read_only"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_accept_verification_exception_keeps_baseline_commit_evidence"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_baseline_callback_accepts_its_post_replace_digest"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_baseline_callback_rejects_live_change_during_staging"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_baseline_writer_receives_and_runs_the_freshness_callback"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_existing_baseline_nested_value_is_rejected_before_persistence"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_forward_post_replace_input_change_preserves_commit_as_unverified"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_forward_rechecks_input_authority_after_staging"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_forward_rejects_manifest_change_between_fresh_loads"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_forward_removal_verifies_absent_against_absent"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_forward_verification_exception_keeps_commit_evidence"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_json_boolean_and_number_remain_distinct_for_forward_plan"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_mutation_rejects_tampered_m6_plan_resource_path"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_parent_rebinding_after_staging_prevents_replacement"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_replaced_manifest_without_loader_provenance_is_rejected"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_reverse_allows_its_expected_prior_input_write"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_reverse_post_replace_baseline_change_preserves_commit_as_unverified"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_reverse_preserves_partial_commit_when_second_file_changes"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_reverse_preview_rejects_resource_conflict_and_deletion"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_reverse_preview_rejects_unmapped_and_unsafe_patch"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_reverse_verification_exception_keeps_commit_evidence"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_reverse_verification_requires_rendered_desired_and_live_to_match"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 2,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_staged_symlink_or_replacement_inode_is_rejected"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_target_mode_change_during_staging_is_not_restored"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_temporary_cleanup_failure_is_not_reported_as_clean"
+    },
+    {
+      "status": "pass",
+      "subtests_passed": 0,
+      "test": "test_m6_write_safety.M6WriteSafetyTests.test_unlock_failure_reports_committed_uncertain_result"
+    }
+  ],
+  "manual_guide": {
+    "codex": "executed with installed CLI; final apply asserted no_changes",
+    "pi": "executed with installed CLI; final apply asserted no_changes"
+  },
+  "rehearsal": {
+    "application_invocation": "none; application edits are synthetic file edits",
+    "cases": [
+      {
+        "baseline_outcome": "committed",
+        "cli_round_trip": true,
+        "create_outcome": "committed",
+        "cycles": [
+          {
+            "application_change": "synthetic_file_edit",
+            "baseline_unchanged_during_reverse": true,
+            "cycle": 1,
+            "final_action": "noop",
+            "forward_outcome": "committed",
+            "other_inputs_unchanged": true,
+            "retained_live_owned_field": true,
+            "reverse_fields": [
+              "defaultProvider"
+            ],
+            "reverse_outcome": "committed",
+            "source_change_fields": [
+              "defaultModel"
+            ],
+            "source_previous_value_changed": true,
+            "unselected_input_bytes_preserved": true
+          },
+          {
+            "application_change": "synthetic_file_edit",
+            "baseline_unchanged_during_reverse": true,
+            "cycle": 2,
+            "final_action": "noop",
+            "forward_outcome": "committed",
+            "other_inputs_unchanged": true,
+            "retained_live_owned_field": true,
+            "reverse_fields": [
+              "defaultProvider"
+            ],
+            "reverse_outcome": "committed",
+            "source_change_fields": [
+              "defaultModel"
+            ],
+            "source_previous_value_changed": true,
+            "unselected_input_bytes_preserved": true
+          }
+        ],
+        "declared_fields": [
+          "defaultModel",
+          "defaultProvider",
+          "lastChangelogVersion"
+        ],
+        "final_action": "noop",
+        "format": "json",
+        "initial_noop_observed": true,
+        "initial_target": "absent",
+        "normal_home_layout": true,
+        "resource": "pi",
+        "target_relative_to_home": ".pi/agent/settings.json"
+      },
+      {
+        "baseline_outcome": "committed",
+        "cli_round_trip": true,
+        "create_outcome": "committed",
+        "cycles": [
+          {
+            "application_change": "synthetic_file_edit",
+            "baseline_unchanged_during_reverse": true,
+            "cycle": 1,
+            "final_action": "noop",
+            "forward_outcome": "committed",
+            "other_inputs_unchanged": true,
+            "retained_live_owned_field": true,
+            "reverse_fields": [
+              "model_provider"
+            ],
+            "reverse_outcome": "committed",
+            "source_change_fields": [
+              "model"
+            ],
+            "source_previous_value_changed": true,
+            "unselected_input_bytes_preserved": true
+          },
+          {
+            "application_change": "synthetic_file_edit",
+            "baseline_unchanged_during_reverse": true,
+            "cycle": 2,
+            "final_action": "noop",
+            "forward_outcome": "committed",
+            "other_inputs_unchanged": true,
+            "retained_live_owned_field": true,
+            "reverse_fields": [
+              "model_provider"
+            ],
+            "reverse_outcome": "committed",
+            "source_change_fields": [
+              "model"
+            ],
+            "source_previous_value_changed": true,
+            "unselected_input_bytes_preserved": true
+          }
+        ],
+        "declared_fields": [
+          "model",
+          "model_provider"
+        ],
+        "final_action": "noop",
+        "format": "toml",
+        "initial_noop_observed": true,
+        "initial_target": "absent",
+        "normal_home_layout": true,
+        "resource": "codex",
+        "target_relative_to_home": ".codex/config.toml"
+      }
+    ],
+    "cli_execution": "python -m luwu from the active environment",
+    "dotter_handoff": {
+      "conflicting_link": "blocked",
+      "handoff_to_luwu_outcome": "committed",
+      "luwu_managed_after_handoff": true,
+      "real_application_invoked": false,
+      "real_dotter_called": false,
+      "real_home_touched": false,
+      "return_to_dotter": {
+        "dotter_manager_status": "active",
+        "fixture_declaration_restored": true,
+        "fixture_target_link_restored": true,
+        "luwu_reobservation": "blocked",
+        "luwu_resource_in_use": false,
+        "performed": true,
+        "steps": [
+          "observe_conflicting_target",
+          "stop_dotter_fixture_manager",
+          "remove_fixture_target_declaration",
+          "remove_conflicting_fixture_link",
+          "accept_baseline_and_create_with_luwu_cli",
+          "stop_using_the_luwu_resource",
+          "restore_dotter_fixture_declaration_and_target_link",
+          "verify_returned_fixture_is_blocked_to_luwu"
+        ]
+      },
+      "simulation": "synthetic_operator_and_target_fixture_only",
+      "target_relative_to_home": ".pi/agent/settings.json"
+    },
+    "dotter_invocation": "none; operator steps are simulated on fixture state",
+    "isolated": true,
+    "network_access": "none",
+    "provider_access": "none",
+    "recovery": [
+      {
+        "automatic_replay": false,
+        "baseline_advanced": false,
+        "fresh_process_cli_observation": true,
+        "injected_boundary": "post_replace_directory_sync",
+        "previous_source_value_was_replaced": true,
+        "read_only_baseline_unchanged": true,
+        "read_only_plan_action": "noop",
+        "read_only_plan_status": "noop",
+        "read_only_target_unchanged": true,
+        "resource": "pi",
+        "result": {
+          "attempted": [
+            ".pi/agent/settings.json"
+          ],
+          "committed": [
+            ".pi/agent/settings.json"
+          ],
+          "fields": [
+            "defaultModel"
+          ],
+          "not_replaced": [],
+          "operation": "m6-apply",
+          "outcome": "committed_state_unknown",
+          "resource": "pi",
+          "uncertain": [
+            ".pi/agent/settings.json"
+          ],
+          "verification_status": "unknown"
+        }
+      },
+      {
+        "automatic_replay": false,
+        "baseline_advanced": false,
+        "fresh_process_cli_observation": true,
+        "injected_boundary": "post_replace_directory_sync",
+        "previous_source_value_was_replaced": true,
+        "read_only_baseline_unchanged": true,
+        "read_only_plan_action": "noop",
+        "read_only_plan_status": "noop",
+        "read_only_target_unchanged": true,
+        "resource": "codex",
+        "result": {
+          "attempted": [
+            ".codex/config.toml"
+          ],
+          "committed": [
+            ".codex/config.toml"
+          ],
+          "fields": [
+            "model"
+          ],
+          "not_replaced": [],
+          "operation": "m6-apply",
+          "outcome": "committed_state_unknown",
+          "resource": "codex",
+          "uncertain": [
+            ".codex/config.toml"
+          ],
+          "verification_status": "unknown"
+        }
+      }
+    ],
+    "schema_version": 7
+  },
+  "schema_version": 1,
+  "source_base_commit": "cef82e68083b5c558c1214ac73b6e8771fc0b0a3",
+  "source_sha256": [
+    {
+      "path": "src/luwu/__init__.py",
+      "sha256": "bad00109f9a09ce0c8ba886917c9e5c92537fa49340a19357cef88ad43c6234a"
+    },
+    {
+      "path": "src/luwu/__main__.py",
+      "sha256": "307299fda7b77d22c64cb51430ec75e5f59d78e9c948786afb3b2544fe45e4b7"
+    },
+    {
+      "path": "src/luwu/baseline.py",
+      "sha256": "331e4b64071cec8cb60dd5145cc87d808a04534a897b3636c9e4ca16644aa6ac"
+    },
+    {
+      "path": "src/luwu/cli.py",
+      "sha256": "67d4f16bb21a29139a2ddf88627f4a7c33dfc854ce0e8d8e8703510998b7afd5"
+    },
+    {
+      "path": "src/luwu/errors.py",
+      "sha256": "9418519fe3ed9a0b5592107307a31133357b14dc1222cdd1b8f3bea1ddb52cbf"
+    },
+    {
+      "path": "src/luwu/filesystem.py",
+      "sha256": "036df9c25bc6572045ccf642577bdfa36522b3d0f8ed40642e6aa47c7964a353"
+    },
+    {
+      "path": "src/luwu/m6_formats.py",
+      "sha256": "07e3ab4e3534136a9edbbacc6f568d2676a1422c5b655512b1f624a45028eae1"
+    },
+    {
+      "path": "src/luwu/m6_pilot.py",
+      "sha256": "b427fee12181622cd272ed707cc8ced9e422d43b46cf51a5df8ffb6caaa8ae83"
+    },
+    {
+      "path": "src/luwu/manifest.py",
+      "sha256": "8cfdf60b544c2a77847a72a8c823a5a16716b4249c71666807b36a9ce0fcea6e"
+    },
+    {
+      "path": "src/luwu/mutations.py",
+      "sha256": "2105e936738e932a393087805ca89b0c16f77d370aa9f22a13ec08f10d9661d6"
+    },
+    {
+      "path": "src/luwu/ownership.py",
+      "sha256": "6dc5d31017d4c8ffa5dbd3de288a672199d00d75d3aa5f5ca089add16bfce6cc"
+    },
+    {
+      "path": "src/luwu/plan_record.py",
+      "sha256": "aeaddf60b99ae83d12d0c8886bb56065705886c7aff4af58e3487dcfb731b63f"
+    },
+    {
+      "path": "src/luwu/platform_support.py",
+      "sha256": "38b641c2f132dd6c2194a049e1ba6cdebe7c155ab2c749a55011cc8e393599dc"
+    },
+    {
+      "path": "src/luwu/provider_cache.py",
+      "sha256": "eae424227b0d441e53feac46355cad7022cf8cba6d6f8d44691fec3f52fe9504"
+    },
+    {
+      "path": "src/luwu/providers.py",
+      "sha256": "a24f6ea11ccc2e695e4d4883653bfb218cee5cd976135b5cbe705fb2c5a8187e"
+    },
+    {
+      "path": "src/luwu/reconcile.py",
+      "sha256": "7724469fad51d0621f10c096bce7963a704bc2d34fc4c1a1dc188d364e3e3aa4"
+    },
+    {
+      "path": "src/luwu/rendering.py",
+      "sha256": "a84f9419a14ca26c952909208e04084e1ea4b2244c18851768e8f5904e2146e2"
+    },
+    {
+      "path": "src/luwu/reverse_sync.py",
+      "sha256": "1dd1a17c7882d4b720807fb9d4987c7160d312168717d72497f998e9f3595ffc"
+    },
+    {
+      "path": "src/luwu/secrets.py",
+      "sha256": "88d54620224f4358b72540f09dedfaefb3f3bc72ebddf3e5089926df69a3a3e4"
+    },
+    {
+      "path": "src/luwu/semantic.py",
+      "sha256": "f64ddbc538b8ce865decadf66dbbb4e34f18bbc4a2ac7b267ad2dbf97cccf306"
+    }
+  ],
+  "suites": {
+    "sdist": {
+      "all_luwu_modules_in_site_packages": true,
+      "dependencies": {
+        "Jinja2": "3.1.6",
+        "MarkupSafe": "3.0.4"
+      },
+      "errors": 0,
+      "failures": 0,
+      "modules": {
+        "luwu": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/__init__.py",
+        "luwu.baseline": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/baseline.py",
+        "luwu.cli": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/cli.py",
+        "luwu.errors": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/errors.py",
+        "luwu.filesystem": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/filesystem.py",
+        "luwu.m6_formats": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/m6_formats.py",
+        "luwu.m6_pilot": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/m6_pilot.py",
+        "luwu.manifest": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/manifest.py",
+        "luwu.mutations": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/mutations.py",
+        "luwu.ownership": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/ownership.py",
+        "luwu.plan_record": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/plan_record.py",
+        "luwu.platform_support": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/platform_support.py",
+        "luwu.provider_cache": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/provider_cache.py",
+        "luwu.providers": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/providers.py",
+        "luwu.reconcile": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/reconcile.py",
+        "luwu.rendering": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/rendering.py",
+        "luwu.reverse_sync": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/reverse_sync.py",
+        "luwu.secrets": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/secrets.py",
+        "luwu.semantic": "/tmp/luwu-m56-final-validation/sdist-env/lib/python3.13/site-packages/luwu/semantic.py"
+      },
+      "package_version": "0.1.0",
+      "python": "/tmp/luwu-m56-final-validation/sdist-env/bin/python",
+      "python_version": "3.13.15",
+      "skipped": 0,
+      "successful": true,
+      "tests_run": 437
+    },
+    "source": {
+      "all_luwu_modules_in_site_packages": false,
+      "dependencies": {
+        "Jinja2": "3.1.6",
+        "MarkupSafe": "3.0.3"
+      },
+      "errors": 0,
+      "failures": 0,
+      "modules": {
+        "luwu": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/__init__.py",
+        "luwu.baseline": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/baseline.py",
+        "luwu.cli": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/cli.py",
+        "luwu.errors": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/errors.py",
+        "luwu.filesystem": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/filesystem.py",
+        "luwu.m6_formats": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/m6_formats.py",
+        "luwu.m6_pilot": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/m6_pilot.py",
+        "luwu.manifest": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/manifest.py",
+        "luwu.mutations": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/mutations.py",
+        "luwu.ownership": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/ownership.py",
+        "luwu.plan_record": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/plan_record.py",
+        "luwu.platform_support": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/platform_support.py",
+        "luwu.provider_cache": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/provider_cache.py",
+        "luwu.providers": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/providers.py",
+        "luwu.reconcile": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/reconcile.py",
+        "luwu.rendering": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/rendering.py",
+        "luwu.reverse_sync": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/reverse_sync.py",
+        "luwu.secrets": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/secrets.py",
+        "luwu.semantic": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/src/luwu/semantic.py"
+      },
+      "package_version": "0.1.0",
+      "python": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/84d33c57-0e04-4819-8a43-fa731fd439ce/.venv/bin/python",
+      "python_version": "3.13.15",
+      "skipped": 0,
+      "successful": true,
+      "tests_run": 437
+    },
+    "wheel": {
+      "all_luwu_modules_in_site_packages": true,
+      "dependencies": {
+        "Jinja2": "3.1.6",
+        "MarkupSafe": "3.0.4"
+      },
+      "errors": 0,
+      "failures": 0,
+      "modules": {
+        "luwu": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/__init__.py",
+        "luwu.baseline": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/baseline.py",
+        "luwu.cli": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/cli.py",
+        "luwu.errors": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/errors.py",
+        "luwu.filesystem": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/filesystem.py",
+        "luwu.m6_formats": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/m6_formats.py",
+        "luwu.m6_pilot": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/m6_pilot.py",
+        "luwu.manifest": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/manifest.py",
+        "luwu.mutations": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/mutations.py",
+        "luwu.ownership": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/ownership.py",
+        "luwu.plan_record": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/plan_record.py",
+        "luwu.platform_support": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/platform_support.py",
+        "luwu.provider_cache": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/provider_cache.py",
+        "luwu.providers": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/providers.py",
+        "luwu.reconcile": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/reconcile.py",
+        "luwu.rendering": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/rendering.py",
+        "luwu.reverse_sync": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/reverse_sync.py",
+        "luwu.secrets": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/secrets.py",
+        "luwu.semantic": "/tmp/luwu-m56-final-validation/wheel-env/lib/python3.13/site-packages/luwu/semantic.py"
+      },
+      "package_version": "0.1.0",
+      "python": "/tmp/luwu-m56-final-validation/wheel-env/bin/python",
+      "python_version": "3.13.15",
+      "skipped": 0,
+      "successful": true,
+      "tests_run": 437
+    }
+  },
+  "timezone": "Asia/Shanghai",
+  "trial": {
+    "real_applications_invoked": false,
+    "real_dotter_invoked": false,
+    "real_home_mutated": false,
+    "technical_evidence_only": true,
+    "user_feedback": "pending"
+  },
+  "verified_date": "2026-10-14",
+  "working_tree_changes_included": true
+}

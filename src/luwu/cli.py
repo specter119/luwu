@@ -12,6 +12,8 @@ from typing import cast
 from . import __version__, provider_cache
 from .errors import LuwuError, MutationError
 from .m6_pilot import (
+    M6MutationResult,
+    M6Plan,
     accept_m6_baseline,
     apply_m6_forward,
     build_m6_plan,
@@ -474,24 +476,22 @@ def _emit_plan(plan: Plan, *, command: str, as_json: bool) -> None:
     _print_human_plan(plan, heading="Inspection" if command == "inspect" else "Plan")
 
 
-def _emit_m6_plan(plan: object, *, command: str, as_json: bool) -> None:
-    payload = plan.to_dict(command=command)
+def _emit_m6_plan(plan: M6Plan, *, command: str, as_json: bool) -> None:
     if as_json:
-        _print_json(payload)
+        _print_json(plan.to_dict(command=command))
         return
-    print(f"M6 {command}: {len(payload['resources'])} resource(s)")
-    for resource in payload["resources"]:
-        print(f"- {resource['name']}: {resource['action']} ({resource['reason']})")
+    print(f"M6 {command}: {len(plan.resources)} resource(s)")
+    for resource in plan.resources:
+        print(f"- {resource.resource.name}: {resource.action} ({resource.reason})")
 
 
-def _emit_m6_result(result: object, *, as_json: bool) -> None:
-    payload = result.to_dict()
+def _emit_m6_result(result: M6MutationResult, *, as_json: bool) -> None:
     if as_json:
-        _print_json(payload)
+        _print_json(result.to_dict())
         return
-    print(f"{payload['command']}: {payload['outcome']}")
-    print(f"Resource: {_display(payload['resource'])}")
-    print(f"Fields: {len(payload['fields'])}")
+    print(f"{result.operation}: {result.outcome}")
+    print(f"Resource: {_display(result.resource)}")
+    print(f"Fields: {len(result.fields)}")
 
 
 def _emit_apply_preview(plan: Plan, *, as_json: bool) -> None:

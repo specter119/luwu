@@ -1,0 +1,21 @@
+version = 7
+
+[roots]
+source = "home/repo"
+inputs = "home/inputs"
+target = "home"
+
+[resources.codex]
+kind = "template"
+source = "templates/codex-config.toml.j2"
+target = ".codex/config.toml"
+owner = "fields"
+scope = "fields"
+comparison = "toml"
+content_sensitivity = "public"
+baseline = "baselines/codex.json"
+inputs = { model = "global/codex.toml", model_provider = "local/codex.toml" }
+
+[resources.codex.fields]
+model = "source"
+model_provider = "live"

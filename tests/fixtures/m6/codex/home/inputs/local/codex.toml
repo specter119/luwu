@@ -1,0 +1,3 @@
+# Local public inputs. Reverse sync should change only the selected assignment.
+model_provider = "synthetic-codex-provider-v1"
+retained = "public-note"

@@ -8,11 +8,10 @@ pretending that every difference should be overwritten. Luwu explores explicit
 resource semantics, semantic drift, field ownership, controlled reverse sync,
 and narrow external providers.
 
-The project is currently a developer-confidence preview, not a general-use
-tool. The first vertical slice supports local `.j2` templates and source
-symlinks: inspect and plan are read-only, and apply requires explicit
-confirmation. The implementation is deliberately allowed to grow from
-validated experiments rather than from a fully predetermined architecture.
+The project is an early developer preview with a bounded public Pi/Codex
+bidirectional pilot. Inspect and plan are read-only; writes require explicit
+confirmation. Start with the isolated examples below and consult the
+[current verified scope](docs/status.md) before selecting a real target.
 
 ## Try the preview
 
@@ -37,6 +36,12 @@ and safety contract, and [implementation status](docs/status.md) for the
 verified scope. The reference and status documents are the authority for
 current capabilities; this page intentionally stays at user-entry-point
 level.
+
+For the public Pi JSON and Codex TOML bidirectional loop, use the
+[isolated M6 trial guide](tests/fixtures/m6/README.md) and the
+[per-target Dotter handoff workflow](docs/maintenance.md#m6-isolated-rehearsal-and-dotter-handoff).
+The trial uses a small field allowlist and requires the complete target and
+input flow to be public. It does not qualify a whole dotfiles migration.
 
 Run the deterministic test suite with:
 

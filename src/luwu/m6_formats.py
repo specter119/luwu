@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import tomllib
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 
 from .baseline import _encode_value
@@ -17,7 +18,7 @@ from .filesystem import (
     open_parent_directory,
     read_regular_file_at,
 )
-from .manifest import M6Roots, Resource
+from .manifest import M6Roots, Resource, _is_sensitive_variable_key
 from .reverse_sync import build_source_patch
 
 
@@ -51,7 +52,16 @@ _TOML_ASSIGNMENT = re.compile(
     r"(?P<value>.*?)[ \t]*$"
 )
 _SENSITIVE_NAMES = frozenset(
-    {"api_key", "apikey", "credential", "password", "private_key", "secret", "token"}
+    {
+        "api_key",
+        "apikey",
+        "credential",
+        "password",
+        "private_key",
+        "privatekey",
+        "secret",
+        "token",
+    }
 )
 
 
@@ -258,7 +268,7 @@ def _scan_toml(
 ) -> tuple[dict[str, object], dict[str, tuple[int, int, int, int]]]:
     """Parse and locate the deliberately small supported TOML subset."""
 
-    values: dict[str, object] = {}
+    values = _load_toml_values(text)
     spans: dict[str, tuple[int, int, int, int]] = {}
     offset = 0
     for line in text.splitlines(keepends=True):
@@ -274,17 +284,21 @@ def _scan_toml(
                 "M6 TOML contains unsupported or ambiguous syntax", code="m6_format"
             )
         key = match.group("key")
-        if key in values:
+        if key in spans:
             raise M6FormatError("duplicate TOML field", code="m6_format")
         raw_value = match.group("value").strip(" \t")
         if not raw_value:
             raise M6FormatError("M6 TOML assignment has no value", code="m6_format")
+        value = values.get(key, _MISSING)
+        if value is _MISSING or not _is_supported_toml_scalar(raw_value, value):
+            raise M6FormatError(
+                "M6 TOML value is outside the scalar subset", code="m6_format"
+            )
         value_start = offset + match.start("value")
         value_start += len(match.group("value")) - len(
             match.group("value").lstrip(" \t")
         )
         value_end = value_start + len(raw_value)
-        values[key] = _parse_toml_scalar(raw_value)
         spans[key] = (offset, offset + len(line), value_start, value_end)
         offset += len(line)
     if offset < len(text):
@@ -293,42 +307,61 @@ def _scan_toml(
         raise M6FormatError(
             "M6 TOML contains unsupported or ambiguous syntax", code="m6_format"
         )
+    if set(spans) != set(values):
+        raise M6FormatError(
+            "M6 TOML contains unsupported or ambiguous syntax", code="m6_format"
+        )
     return values, spans
 
 
-def _parse_toml_scalar(raw_value: str) -> object:
+def _load_toml_values(text: str) -> dict[str, object]:
+    try:
+        return tomllib.loads(text, parse_float=Decimal)
+    except (tomllib.TOMLDecodeError, ValueError, OverflowError):
+        raise M6FormatError("M6 TOML syntax is unsupported", code="m6_format") from None
+
+
+def _is_supported_toml_scalar(raw_value: str, value: object) -> bool:
     if raw_value.startswith('"'):
-        if len(raw_value) < 2 or not raw_value.endswith('"'):
-            raise M6FormatError("M6 TOML string is unsupported", code="m6_format")
-        try:
-            value = json.loads(raw_value)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            raise M6FormatError(
-                "M6 TOML string is unsupported", code="m6_format"
-            ) from None
-        if not isinstance(value, str):
-            raise M6FormatError("M6 TOML string is unsupported", code="m6_format")
-        return value
+        return (
+            not raw_value.startswith('"""')
+            and _is_single_line_toml_string_token(raw_value, '"')
+            and isinstance(value, str)
+        )
     if raw_value.startswith("'"):
-        if len(raw_value) < 2 or not raw_value.endswith("'") or "'" in raw_value[1:-1]:
-            raise M6FormatError("M6 TOML string is unsupported", code="m6_format")
-        return raw_value[1:-1]
+        return (
+            not raw_value.startswith("'''")
+            and _is_single_line_toml_string_token(raw_value, "'")
+            and isinstance(value, str)
+        )
     if raw_value in {"true", "false"}:
-        return raw_value == "true"
+        return isinstance(value, bool)
     numeric = raw_value.replace("_", "")
     if re.fullmatch(r"[+-]?\d+", numeric):
-        try:
-            return int(numeric)
-        except ValueError:
-            pass
+        return isinstance(value, int) and not isinstance(value, bool)
     if re.fullmatch(r"[+-]?(?:\d+\.\d*|\d*\.\d+|\d+)(?:[eE][+-]?\d+)?", numeric):
-        try:
-            value = Decimal(numeric)
-        except (InvalidOperation, ValueError):
-            value = None
-        if value is not None and value.is_finite():
-            return value
-    raise M6FormatError("M6 TOML value is outside the scalar subset", code="m6_format")
+        return isinstance(value, Decimal) and value.is_finite()
+    return False
+
+
+def _is_single_line_toml_string_token(raw_value: str, quote: str) -> bool:
+    """Require one complete, single-line TOML string token."""
+
+    if len(raw_value) < 2 or raw_value[0] != quote:
+        return False
+    if quote == "'":
+        return raw_value.find(quote, 1) == len(raw_value) - 1
+
+    index = 1
+    while index < len(raw_value):
+        character = raw_value[index]
+        if character == "\\":
+            index += 2
+            continue
+        if character == '"':
+            return index == len(raw_value) - 1
+        index += 1
+    return False
 
 
 def _read_input(path: Path) -> tuple[bytes, tuple[int, int]]:
@@ -391,8 +424,10 @@ def _validate_patch_values(values: dict[str, object]) -> None:
 
 def _is_sensitive_name(name: str) -> bool:
     folded = name.casefold()
-    return folded in _SENSITIVE_NAMES or any(
-        token in folded for token in _SENSITIVE_NAMES
+    return (
+        _is_sensitive_variable_key(name)
+        or folded in _SENSITIVE_NAMES
+        or any(token in folded for token in _SENSITIVE_NAMES)
     )
 
 

@@ -130,13 +130,14 @@ version `7` contract and is not a general profile or package system.
 
 The initial pilot examples use the following declared public fields:
 
-- Pi: `model`, `provider`, and `changelog`.
-- Codex: `model` and `provider`.
+- Pi: `defaultModel`, `defaultProvider`, and `lastChangelogVersion` in
+  `.pi/agent/settings.json`.
+- Codex: `model` and `model_provider` in `.codex/config.toml`.
 
 The manifest field table is the allowlist: only names declared there can be
 observed or changed. The current implementation treats these as top-level
 JSON or bounded TOML scalar fields and does not infer application-specific
-schemas. A configuration value named `provider` is application data and does
+schemas. A configuration value selecting a provider is application data and does
 not invoke Luwu's provider capability. Project trust and hook trust are
 outside this pilot.
 
@@ -174,17 +175,18 @@ target = "home"
 [resources.pi]
 kind = "template"
 source = "pi.json.j2"
-target = "pi.json"
+target = ".pi/agent/settings.json"
 owner = "fields"
 scope = "fields"
 comparison = "json" # or "toml"
 content_sensitivity = "public"
 baseline = "baselines/pi.json"
-inputs = { model = "global/model.json", provider = "local/provider.json" }
+inputs = { defaultModel = "global/pi.json", defaultProvider = "local/pi.json", lastChangelogVersion = "local/pi.json" }
 
 [resources.pi.fields]
-model = "source"
-provider = "live"
+defaultModel = "source"
+defaultProvider = "live"
+lastChangelogVersion = "source"
 ```
 
 Version `7` resources require an explicit template kind, relative source and
@@ -213,6 +215,14 @@ it becomes absent. Duplicate keys, comments, trailing commas, invalid UTF-8,
 non-finite numbers, and other unsupported JSON syntax block mutation. A patch
 must preserve all unselected and undeclared source bytes; if a safe patch cannot
 be proven, the operation stops before writing.
+
+A source-owned field removed from the rendered desired object may be deleted
+from an existing target. Reverse deletion of a mapped input field is rejected
+with `m6_reverse_delete`, including during preview: removing that required
+input would make the next render undefined. A JSON null remains a present
+value and may be reverse-synchronized when the declared template preserves
+its type. Successful reverse verification requires both the mapped input and
+the recalculated desired field to match the live value with strict semantics.
 
 TOML support is limited to a UTF-8 top-level table of bare-key scalar
 assignments. Tables, arrays, quoted keys, multiline strings, inline comments,
@@ -243,14 +253,17 @@ apply.
 
 Each state-changing step requires its own read-only preview and explicit
 confirmation: baseline acceptance, reverse input patching, and forward target
-deployment are separate actions. Library confirmation is bound to the
-in-memory plan that was previewed. The CLI has no persisted cross-process
-preview token; `--yes` is explicit confirmation of a freshly calculated plan
-and the same invocation rechecks the manifest, templates, global/local
-inputs, baseline, roots, allowlist, target, and relevant parent boundary
-before writing. A stale result requires a new preview and confirmation. A
-changed resource selection, field selection, input mapping, or accepted
-baseline side is also stale.
+deployment are separate actions. Library forward apply and reverse sync
+revalidate the supplied in-memory plan. Library baseline acceptance takes a
+manifest and recalculates its plan in each call, including a confirmed call;
+it does not bind that call to an earlier preview. Selected fields and the
+baseline side are explicit arguments to the confirming call. The CLI likewise
+has no persisted cross-process preview token: `--yes` confirms a freshly
+calculated plan. Within a mutation, the manifest, complete resource
+declaration, templates, global/local inputs, baseline, roots, allowlist,
+target, and relevant parent boundary are rechecked before writing. Selected
+fields must remain eligible under that observation. A stale result requires
+a new preview and confirmation.
 
 After each confirmed write, Luwu re-reads the affected state and recalculates
 the field observation. Results distinguish a write that was not attempted, a
@@ -264,6 +277,13 @@ Recovery is read-only re-observation of the relevant inputs, baseline, roots,
 and targets. It does not replay a write, roll back a prior write, or advance a
 baseline. An uncertain result remains unresolved until a fresh observation and
 explicit user decision establish the next action.
+
+Version 7 has no durable execution journal. After process termination, a fresh
+inspection observes current state; it cannot reconstruct which input writes
+completed before the process stopped. Multi-file reverse sync is not a
+transaction. Public hardlinked files are replaced at the declared pathname;
+other links retain their previous inode and content. Version 7 does not make
+the version 6 secret-target single-link guarantee.
 
 Pilot previews, errors, records, and machine-readable results are
 metadata-only: they may identify allowlisted resources, declared public field

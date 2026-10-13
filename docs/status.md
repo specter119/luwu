@@ -1,11 +1,8 @@
 # Luwu Implementation Status
 
-Status: M5 core optimization is implemented. Its current source benchmark,
-profiling, provider-latency, and process-interruption evidence is present, and
-the installed wheel passes the full suite; the installed-artifact benchmark
-matrix is still pending, so current M5 revalidation remains partial as of
-2026-10-13. M6 is in development with a version 7 pilot slice; its complete
-technical acceptance and user-trial gate are not closed. Automatic replay,
+Status: M5 revalidation and M6 technical acceptance are complete as of
+2026-10-14. The bounded version 7 Pi/Codex pilot is ready for the user's first
+trial; live trial results and feedback remain pending. Automatic replay,
 rollback, and strong consistency against unrelated writers remain outside the
 verified scope.
 
@@ -17,41 +14,38 @@ or historical closure evidence. See [product](product.md),
 
 ## Current capability matrix
 
-| Area                      | Current status | Authority and evidence                                                                                                                                                         |
-| ------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| M1 preview                | Implemented    | The single-resource template and symbolic loop is covered by the M1 contract in [reference](reference.md) and the M1 closure record                                            |
-| M2 observation            | Implemented    | Multi-resource observation, literal copy, and strict JSON comparison remain read-only under the M2 contract                                                                    |
-| M3a ownership observation | Implemented    | Public JSON field observation, baseline classification, ownership decisions, and undeclared-change reporting are implemented within the v3 contract                            |
-| M3b selective mutation    | Implemented    | Explicit baseline acceptance and literal-JSON reverse sync are implemented within the v4 contract                                                                              |
-| M3c execution             | Implemented    | Public whole-file execution, metadata-only records, partial outcomes, and read-only recovery are implemented within the v5 contract                                            |
-| M4 provider execution     | Implemented    | The independent v6 provider, secret-target, metadata-cache, and platform-fail-closed paths are implemented within the v6 contract                                              |
-| M5 batch execution        | Partial        | Indexed validation, digest-based stale checks, bounded journal publication, fixed source benchmark rows, current profiling/provider reports, and process-kill rows are implemented; the installed-artifact benchmark matrix remains open in [M5](milestones/m5.md) |
-| M6 pilot slice            | Partial        | Version 7 roots, public input provenance, bounded JSON/TOML patching, field-aware forward apply, baseline acceptance, selected reverse input sync, dual-format rehearsal, uncertainty observation, and isolated Dotter handoff are implemented; the complete acceptance table and user-trial gate remain open |
+| Area                      | Current status                | Authority and evidence                                                                                                                                                                                                         |
+| ------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| M1 preview                | Implemented                   | The single-resource template and symbolic loop is covered by the M1 contract in [reference](reference.md) and the M1 closure record                                                                                            |
+| M2 observation            | Implemented                   | Multi-resource observation, literal copy, and strict JSON comparison remain read-only under the M2 contract                                                                                                                    |
+| M3a ownership observation | Implemented                   | Public JSON field observation, baseline classification, ownership decisions, and undeclared-change reporting are implemented within the v3 contract                                                                            |
+| M3b selective mutation    | Implemented                   | Explicit baseline acceptance and literal-JSON reverse sync are implemented within the v4 contract                                                                                                                              |
+| M3c execution             | Implemented                   | Public whole-file execution, metadata-only records, partial outcomes, and read-only recovery are implemented within the v5 contract                                                                                            |
+| M4 provider execution     | Implemented                   | The independent v6 provider, secret-target, metadata-cache, and platform-fail-closed paths are implemented within the v6 contract                                                                                              |
+| M5 batch execution        | Implemented                   | The complete installed-artifact matrix, current profiling/provider reports, interruption tests, and safety regressions are revalidated in [M5](milestones/m5.md)                                                               |
+| M6 bidirectional pilot    | Technical acceptance complete | The application-shaped Pi/Codex loop, write-boundary regressions, complete format/conflict acceptance, uncertainty observation, and isolated Dotter handoff are verified in [M6](milestones/m6.md); user trial remains pending |
 
 The exact fields, states, error codes, output projections, compatibility
 behavior, and unsupported cases are owned only by [reference](reference.md).
 The rows above are status claims, not a second contract.
 
-M5 and M6 remain on the active revalidation path; M7-M9 remain planned. Their
-delivery sequence is in [roadmap](roadmap.md#next-delivery-sequence). The
-current M6 implementation slice is covered by focused tests and a sanitized
-Pi JSON/Codex TOML closed-loop fixture using normal HOME containment, absent
-target creation, two bidirectional cycles, post-write uncertainty, fresh
-read-only observation, and an isolated Dotter handoff. The complete acceptance
-table is not yet a closure claim: the retained evidence does not cover every
-two-sided conflict and format-specific deletion/null combination as a single
-acceptance artifact, and it does not authorize a real target. The motivating
-real-dotfiles pilot and M5's dated historical evidence remain recorded in
-[M5](milestones/m5.md#closure-evidence-2026-09-22).
+M7-M9 remain planned and wait for M6 user feedback. The delivery sequence is
+in [roadmap](roadmap.md#next-delivery-sequence). Start with the
+[isolated trial guide](../tests/fixtures/m6/README.md) and review the
+[per-target handoff](maintenance.md#m6-isolated-rehearsal-and-dotter-handoff)
+before selecting a real target. The installed rehearsal uses normal HOME
+containment and synthetic public values; it does not launch either application
+or real Dotter and does not authorize a live deployment.
 
-## Current re-audit boundary — 2026-10-13
+## Current re-audit boundary — 2026-10-14
 
-The current work repairs the benchmark fixture and sample classification,
-records current profiling and provider latency, adds subprocess SIGKILL rows,
-and retains the installed full-suite result. It does not claim the interrupted
-installed benchmark matrix. It also hardens the M6 version 7 slice without
-changing v1-v6 contracts; M6 technical completion will be recorded only after
-the remaining acceptance evidence is retained and reviewed.
+The benchmark now validates every resource and postcondition independently
+of command exit status. The failed first scaling run is retained alongside
+the complete passing final matrix. M6 authorization is rechecked around
+replacement and during final verification; partial and uncertain writes
+retain their observed outcomes. Independent byte expectations, format
+negative controls, source/wheel/sdist suites, and copyable CLI trial steps
+support the current acceptance record. Versions 1-6 retain their contracts.
 
 ## Verified scope and limits
 

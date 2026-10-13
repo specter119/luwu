@@ -3,14 +3,22 @@ from __future__ import annotations
 import os
 import signal
 import unittest
+from contextlib import ExitStack
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 from luwu import reconcile
 from luwu.manifest import load_manifest
-from luwu.reconcile import build_plan, execute_execution_plan, inspect_execution_record
+from luwu.reconcile import (
+    Plan,
+    ResourceObservation,
+    build_plan,
+    execute_execution_plan,
+    inspect_execution_record,
+)
 from tests.test_m3c_execution import _ExecutionProject
 
 
@@ -26,40 +34,73 @@ def _child_execute(root: str, mode: str, ready: Connection) -> None:
             ready.close()
             signal.pause()
 
-        if mode == "pre-journal":
-            reconcile._preflight_execution_manifest = lambda _plan: block()
-        elif mode == "before-replace":
+        with ExitStack() as patches:
+            if mode == "pre-journal":
 
-            def before_replace(*args: object, **kwargs: object) -> bool:
-                del args, kwargs
-                block()
-                return False
+                def before_journal(plan: Plan) -> None:
+                    del plan
+                    block()
 
-            reconcile._write_observation = before_replace
-        elif mode == "after-replace":
+                patches.enter_context(
+                    patch.object(
+                        reconcile,
+                        "_preflight_execution_manifest",
+                        before_journal,
+                    )
+                )
+            elif mode == "before-replace":
 
-            def after_replace(*args: object, **kwargs: object) -> bool:
-                committed = real_writer(*args, **kwargs)
-                block()
-                return committed
-
-            reconcile._write_observation = after_replace
-        elif mode == "partial":
-            calls = 0
-
-            def partial(*args: object, **kwargs: object) -> bool:
-                nonlocal calls
-                calls += 1
-                if calls == 2:
+                def before_replace(
+                    plan: Plan,
+                    observation: ResourceObservation,
+                    *,
+                    execution: bool = False,
+                ) -> bool:
+                    del plan, observation, execution
                     block()
                     return False
-                return real_writer(*args, **kwargs)
 
-            reconcile._write_observation = partial
-        else:
-            raise AssertionError(f"unknown mode: {mode}")
+                patches.enter_context(
+                    patch.object(reconcile, "_write_observation", before_replace)
+                )
+            elif mode == "after-replace":
 
-        execute_execution_plan(plan, record_path, confirm=True)
+                def after_replace(
+                    plan: Plan,
+                    observation: ResourceObservation,
+                    *,
+                    execution: bool = False,
+                ) -> bool:
+                    committed = real_writer(plan, observation, execution=execution)
+                    block()
+                    return committed
+
+                patches.enter_context(
+                    patch.object(reconcile, "_write_observation", after_replace)
+                )
+            elif mode == "partial":
+                calls = 0
+
+                def partial(
+                    plan: Plan,
+                    observation: ResourceObservation,
+                    *,
+                    execution: bool = False,
+                ) -> bool:
+                    nonlocal calls
+                    calls += 1
+                    if calls == 2:
+                        block()
+                        return False
+                    return real_writer(plan, observation, execution=execution)
+
+                patches.enter_context(
+                    patch.object(reconcile, "_write_observation", partial)
+                )
+            else:
+                raise AssertionError(f"unknown mode: {mode}")
+
+            execute_execution_plan(plan, record_path, confirm=True)
     except BaseException as exc:
         try:
             ready.send((type(exc).__name__, str(exc)))
@@ -85,12 +126,17 @@ class M5SigkillTests(unittest.TestCase):
             )
             message = receiver.recv()
             self.assertEqual(message, "ready")
-            os.kill(process.pid, signal.SIGKILL)
+            pid = process.pid
+            if pid is None:
+                raise AssertionError("child process has no pid")
+            os.kill(pid, signal.SIGKILL)
             process.join(10)
             self.assertEqual(process.exitcode, -signal.SIGKILL)
         finally:
             if process.is_alive():
-                os.kill(process.pid, signal.SIGKILL)
+                pid = process.pid
+                if pid is not None:
+                    os.kill(pid, signal.SIGKILL)
                 process.join(10)
             receiver.close()
 
@@ -106,10 +152,7 @@ class M5SigkillTests(unittest.TestCase):
         with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             self._kill_at_boundary(project, "before-replace")
 
-            journal = cast(
-                dict[str, object],
-                inspect_execution_record(project.root / "journal.json"),
-            )
+            journal = inspect_execution_record(project.root / "journal.json")
             self.assertNotEqual(journal["state"], "committed")
             self.assertEqual(project.targets["alpha"].read_text(), "alpha-old\n")
 
@@ -117,10 +160,7 @@ class M5SigkillTests(unittest.TestCase):
         with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             self._kill_at_boundary(project, "after-replace")
 
-            journal = cast(
-                dict[str, object],
-                inspect_execution_record(project.root / "journal.json"),
-            )
+            journal = inspect_execution_record(project.root / "journal.json")
             resources = cast(list[dict[str, object]], journal["resources"])
             self.assertNotEqual(journal["state"], "committed")
             self.assertNotEqual(resources[0]["state"], "committed")
@@ -133,10 +173,7 @@ class M5SigkillTests(unittest.TestCase):
         ) as project:
             self._kill_at_boundary(project, "partial")
 
-            journal = cast(
-                dict[str, object],
-                inspect_execution_record(project.root / "journal.json"),
-            )
+            journal = inspect_execution_record(project.root / "journal.json")
             resources = {
                 str(item["name"]): item["state"]
                 for item in cast(list[dict[str, object]], journal["resources"])

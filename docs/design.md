@@ -128,12 +128,18 @@ cannot disagree about a field's state. Any newly observed undeclared live
 key/change in a pilot target becomes a review stop before a writer for that
 target is entered.
 
-Use format adapters only to parse the pilot's selected configuration shapes
+Use the bounded format routines to parse the pilot's selected configuration shapes
 and patch the chosen fields. JSON uses strict parsing plus member-span patching
 so unchanged bytes survive. TOML accepts only top-level scalar assignments and
 preserves comments and unselected bytes; tables, inline comments, duplicates,
 and unsupported values are rejected. Do not parse and re-encode a complete
 file for a field mutation.
+
+TOML syntax is validated with `tomllib` using `Decimal` for floating-point
+values before the bounded scanner locates assignment spans. The scanner
+requires a complete scalar token, so an inline comment cannot become part of
+a replacement span. Public-key checks reuse the manifest's normalized
+sensitive-name predicate while retaining the pilot's additional exclusions.
 
 ### Confirm, write, and recover
 
@@ -145,6 +151,15 @@ preview observation. A mismatch stops before replacement and requires a new
 preview. Create an absent target only from declared pilot content; apply only
 the selected field patch to an existing target at the existing atomic write
 boundary. Then re-read and recalculate before reporting success.
+
+The mutation path checks loader provenance and binds the complete resource
+declaration to a freshly loaded manifest. Writer callbacks repeat authorization
+checks after staging. The atomic writer also checks the destination mode,
+parent binding, and the staged inode before publishing it. A reverse operation
+keeps an in-memory map of its completed input replacements, allowing those
+specific changes during later checks while rejecting unrelated changes.
+Replacement facts are retained separately from reload and verification, so a
+later exception cannot erase an earlier successful write.
 
 Treat writes to inputs, baselines, and live targets as separate boundaries;
 do not imply a transaction across them. The pilot returns metadata-only
