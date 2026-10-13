@@ -18,6 +18,7 @@ from .filesystem import (
     open_parent_directory,
     read_regular_file_at,
 )
+from .m6_formats import M6InputContext
 from .manifest import Resource, _PublicVariables
 from .secrets import (
     _RENDERER_SECRET_TOKEN,
@@ -221,6 +222,7 @@ def render_template(
     *,
     root: Path,
     secrets: SecretRenderContext | None = None,
+    m6_inputs: M6InputContext | None = None,
 ) -> RenderedTemplate:
     """Render one template from data already validated by the manifest loader."""
 
@@ -240,6 +242,14 @@ def render_template(
             "secret namespace collides with public variables",
             code="secret_collision",
         )
+    if m6_inputs is not None:
+        if "global_inputs" in public_variables or "local_inputs" in public_variables:
+            raise RenderError(
+                "M6 input namespace collides with public variables",
+                code="input_collision",
+            )
+        public_variables["global_inputs"] = dict(m6_inputs.global_values)
+        public_variables["local_inputs"] = dict(m6_inputs.local_values)
     source_path, source, source_identity = read_source(resource, root=root)
 
     try:

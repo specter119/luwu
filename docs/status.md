@@ -1,8 +1,9 @@
 # Luwu Implementation Status
 
-Status: M5 complete within the frozen public v1-v6 contracts. Automatic replay,
-rollback, and strong consistency against unrelated writers remain outside the
-verified scope.
+Status: M5 complete within the frozen public v1-v6 contracts. M6 is in
+development with a version 7 pilot slice implemented; the full user-trial gate
+is not closed. Automatic replay, rollback, and strong consistency against
+unrelated writers remain outside the verified scope.
 
 This document owns the current implementation snapshot. It does not define
 product direction, public command or manifest behavior, internal mechanisms,
@@ -21,14 +22,18 @@ or historical closure evidence. See [product](product.md),
 | M3c execution             | Implemented    | Public whole-file execution, metadata-only records, partial outcomes, and read-only recovery are implemented within the v5 contract                                            |
 | M4 provider execution     | Implemented    | The independent v6 provider, secret-target, metadata-cache, and platform-fail-closed paths are implemented within the v6 contract                                              |
 | M5 batch execution        | Implemented    | Indexed validation, digest-based stale checks, bounded journal publication, interruption honesty, and installed-artifact scaling evidence are closed in [M5](milestones/m5.md) |
+| M6 pilot slice            | Partial        | Version 7 roots, public input provenance, bounded JSON/TOML patching, field-aware forward apply, baseline acceptance, and selected reverse input sync are implemented; full Pi/Codex rehearsal, interruption recovery, and Dotter handoff remain open |
 
 The exact fields, states, error codes, output projections, compatibility
 behavior, and unsupported cases are owned only by [reference](reference.md).
 The rows above are status claims, not a second contract.
 
-M6-M9 remain planned; their delivery sequence is in
-[roadmap](roadmap.md#next-delivery-sequence). The motivating real-dotfiles
-pilot and M5's dated implementation evidence are recorded in
+M6 remains in development and M7-M9 remain planned; their delivery sequence is
+in [roadmap](roadmap.md#next-delivery-sequence). The current M6 implementation
+slice is covered by focused tests and a sanitized Pi-shaped closed-loop
+fixture. It does not yet prove the full milestone acceptance cases in
+[milestones/m6.md](milestones/m6.md). The motivating real-dotfiles pilot and
+M5's dated implementation evidence are recorded in
 [M5](milestones/m5.md#closure-evidence-2026-09-22).
 
 ## Verified scope and limits

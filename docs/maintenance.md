@@ -25,6 +25,41 @@ M4 provider tests use an injected resolver or a fake `rbw` executable. They do
 not access a real vault. The M3 ablation experiments and the M4 ablation are
 part of the boundary review and must run in temporary directories.
 
+## M6 isolated rehearsal and Dotter handoff
+
+Run the sanitized version 7 rehearsal from the repository root:
+
+```text
+uv run experiments/m6_pilot.py
+```
+
+The runner creates separate temporary source, input, baseline, and target
+roots for Pi-shaped (`model`, `provider`, `changelog`) and Codex-shaped
+(`model`, `provider`) public JSON. It exercises baseline acceptance, a
+read-only forward preview followed by confirmation, a read-only reverse-sync
+preview followed by confirmation, and the final no-op observation. Its output
+contains only field labels and outcomes. It is evidence for the isolated
+pilot loop and does not authorize a real target.
+
+Before placing a real target in a version 7 manifest, perform the handoff
+manually for that target:
+
+1. Record the target label and its current manager as metadata. Confirm that
+   the target is an allowlisted regular file under the declared target root,
+   that its parent exists, and that it is not a conflicting symlink.
+1. Remove the target from the Dotter package or exclusion set through the
+   operator's normal Dotter workflow, then verify that Dotter will not deploy
+   it during the trial. Luwu does not edit Dotter configuration for this step.
+1. Run `inspect` and `plan` against an isolated target root first. Review the
+   ownership and undeclared-change results before enabling a real target.
+1. To return management, stop using the Luwu resource, restore the Dotter
+   declaration through the normal Dotter workflow, and verify the target's
+   manager before the next deployment. Do not run both managers against one
+   target during the transition.
+
+The handoff is an operator boundary. It is not inferred from a clean isolated
+test and is not performed by inspection, planning, confirmation, or recovery.
+
 `prek run --all-files` must be run in a checkout whose hook and cache
 directories are writable. A read-only shared agent directory is an environment
 failure, not evidence that the source or tests passed. An isolated copy is

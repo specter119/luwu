@@ -1,7 +1,7 @@
 # Luwu Delivery Roadmap
 
-Status: M1-M5 are closed within their recorded scopes. M6-M9 are planned;
-M6 is the next development priority.
+Status: M1-M5 are closed within their recorded scopes. M6 is in development;
+M7-M9 remain planned.
 
 This document turns the product seed into a small number of delivery
 milestones. It defines sequence and boundaries, not detailed contracts or the
@@ -21,7 +21,7 @@ The roadmap is allowed to change when evidence changes the product direction. A 
 | M3        | Ownership and auditable reconciliation       | Closed: baselines, ownership, conflicts, controlled reverse sync, and recoverable plans have explicit contracts.                        |
 | M4        | Providers, secrets, and operational maturity | Closed: external providers, secret boundaries, persistence, portability, and release behavior are verified without hidden capabilities. |
 | M5        | Batch performance and interruption safety    | Closed: everyday batch operations meet the recorded latency budgets without weakening validation or recovery.                           |
-| M6        | First usable bidirectional pilot             | Planned: real Pi and Codex public configuration round-trips safely; deliver for user trial.                                             |
+| M6        | First usable bidirectional pilot             | In progress: version 7 roots and a bounded public field loop exist; complete Pi/Codex rehearsal, recovery, handoff, and user-trial gates remain. |
 | M7        | Feedback-led dotfiles coverage               | Provisional: expand the proven workflow to more resources, profiles and formats after M6 user feedback.                                 |
 | M8        | Real provider and mixed-input integration    | Planned: public/local/provider inputs work together without persistent secret intermediates.                                            |
 | M9        | Real-project migration qualification         | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies.                       |
@@ -59,7 +59,7 @@ automatic recovery.
 ## Next delivery sequence
 
 The [2026-09-20 isolated pilot and M5 record](milestones/m5.md) motivate the
-remaining four planned milestones. This is a dependency sequence, not a
+remaining four milestones. This is a dependency sequence, not a
 calendar estimate or a promise of feature parity with every Dotter
 installation. M5 is closed; implement M6's complete bidirectional pilot next.
 Deliver M6 for the user's first trial and wait for their feedback before

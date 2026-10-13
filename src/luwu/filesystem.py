@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -14,6 +15,37 @@ class NotRegularFileError(OSError):
 
 class FileChangedError(OSError):
     """A file changed between its descriptor-free and descriptor checks."""
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryBoundary:
+    """A directory path captured without following any path component."""
+
+    path: Path
+    device: int
+    inode: int
+
+    def verify(self) -> None:
+        """Reject a replaced root or any symlink/rebinding in its path."""
+
+        descriptor = _open_directory(self.path)
+        try:
+            current = os.fstat(descriptor)
+            if current.st_dev != self.device or current.st_ino != self.inode:
+                raise FileChangedError(str(self.path))
+        finally:
+            os.close(descriptor)
+
+
+def capture_directory_boundary(path: Path) -> DirectoryBoundary:
+    """Capture an existing absolute directory through no-follow opens."""
+
+    descriptor = _open_directory(path)
+    try:
+        current = os.fstat(descriptor)
+        return DirectoryBoundary(path, current.st_dev, current.st_ino)
+    finally:
+        os.close(descriptor)
 
 
 def open_parent_directory(root: Path, path: Path) -> tuple[int, str]:
@@ -73,17 +105,17 @@ def read_descriptor(descriptor: int) -> bytes:
 def verify_directory_identity(descriptor: int, path: Path) -> None:
     """Ensure an open directory is still reachable at its intended path."""
 
+    expected_descriptor = -1
     try:
-        expected = os.stat(path, follow_symlinks=False)
+        expected_descriptor = _open_directory(path)
+        expected = os.fstat(expected_descriptor)
         current = os.fstat(descriptor)
-    except OSError:
+    except (OSError, ValueError):
         raise FileChangedError(str(path)) from None
-    if (
-        not stat.S_ISDIR(expected.st_mode)
-        or not stat.S_ISDIR(current.st_mode)
-        or expected.st_dev != current.st_dev
-        or expected.st_ino != current.st_ino
-    ):
+    finally:
+        if expected_descriptor >= 0:
+            os.close(expected_descriptor)
+    if expected.st_dev != current.st_dev or expected.st_ino != current.st_ino:
         raise FileChangedError(str(path))
 
 
@@ -159,7 +191,20 @@ def unlock_directory(descriptor: int) -> None:
 
 
 def _open_directory(path: Path) -> int:
-    return os.open(path, _directory_flags())
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("directory path must be absolute and contain no '..'")
+
+    descriptor = os.open(path.anchor, _directory_flags())
+    try:
+        for component in path.parts[1:]:
+            child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            previous = descriptor
+            descriptor = child
+            os.close(previous)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def _directory_flags() -> int:

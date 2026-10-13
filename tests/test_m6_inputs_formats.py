@@ -1,0 +1,109 @@
+"""Focused M6 public input and bounded format tests."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from luwu.errors import MutationError
+from luwu.m6_formats import load_m6_inputs, patch_m6_document
+from luwu.manifest import load_manifest
+from luwu.rendering import render_template
+
+
+class M6InputsAndFormatsTests(unittest.TestCase):
+    def test_input_provenance_and_renderer_context_are_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("repo", "inputs/global", "inputs/local", "home"):
+                (root / name).mkdir(parents=True)
+            (root / "repo/pi.json.j2").write_text(
+                '{"model":"{{ global_inputs.model }}","provider":"{{ local_inputs.provider }}"}\n',
+                encoding="utf-8",
+            )
+            (root / "inputs/global/pi.json").write_text(
+                '{"model":"pi-4"}\n', encoding="utf-8"
+            )
+            (root / "inputs/local/pi.json").write_text(
+                '{"provider":"local-provider"}\n', encoding="utf-8"
+            )
+            manifest_path = root / "luwu.toml"
+            manifest_path.write_text(self._manifest(), encoding="utf-8")
+
+            manifest = load_manifest(manifest_path)
+            context = load_m6_inputs(manifest.resources[0], manifest.roots)
+            rendered = render_template(
+                manifest.resources[0],
+                root=manifest.roots.source.path,
+                m6_inputs=context,
+            )
+
+            self.assertEqual(context.values["model"].provenance, "global")
+            self.assertEqual(context.values["provider"].provenance, "local")
+            self.assertEqual(
+                rendered.data, b'{"model":"pi-4","provider":"local-provider"}\n'
+            )
+            self.assertNotIn("pi-4", repr(context.values["model"]))
+
+    def test_json_patch_preserves_unselected_bytes_and_absent_null(self) -> None:
+        source = b'{"model": "old", "nullable": null, "keep": 1}\n'
+
+        changed = patch_m6_document(source, format="json", updates={"model": "new"})
+        deleted = patch_m6_document(source, format="json", deletes=("nullable",))
+
+        self.assertEqual(changed, b'{"model": "new", "nullable": null, "keep": 1}\n')
+        self.assertEqual(deleted, b'{"model": "old", "keep": 1}\n')
+
+    def test_json_duplicate_or_invalid_input_fails_closed(self) -> None:
+        with self.assertRaises(MutationError):
+            patch_m6_document(
+                b'{"model": 1, "model": 2}', format="json", updates={"model": 3}
+            )
+        with self.assertRaises(MutationError):
+            patch_m6_document(
+                b'{"model": "\xff"}', format="json", updates={"model": "x"}
+            )
+
+    def test_toml_patch_preserves_comments_and_rejects_tables(self) -> None:
+        source = b'# keep\nmodel = "old"\nprovider = "x"\n'
+
+        changed = patch_m6_document(source, format="toml", updates={"model": "new"})
+        added = patch_m6_document(source, format="toml", updates={"changelog": "on"})
+        deleted = patch_m6_document(source, format="toml", deletes=("provider",))
+
+        self.assertEqual(changed, b'# keep\nmodel = "new"\nprovider = "x"\n')
+        self.assertIn(b"# keep\n", added)
+        self.assertIn(b'changelog = "on"\n', added)
+        self.assertEqual(deleted, b'# keep\nmodel = "old"\n')
+        with self.assertRaises(MutationError):
+            patch_m6_document(
+                b'[provider]\nmodel = "x"\n', format="toml", updates={"model": "y"}
+            )
+
+    def _manifest(self) -> str:
+        return """version = 7
+
+[roots]
+source = "repo"
+inputs = "inputs"
+target = "home"
+
+[resources.pi]
+kind = "template"
+source = "pi.json.j2"
+target = "pi.json"
+owner = "fields"
+scope = "fields"
+comparison = "json"
+content_sensitivity = "public"
+inputs = { model = "global/pi.json", provider = "local/pi.json" }
+
+[resources.pi.fields]
+model = "source"
+provider = "live"
+"""
+
+
+if __name__ == "__main__":
+    unittest.main()
