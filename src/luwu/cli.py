@@ -11,7 +11,20 @@ from typing import cast
 
 from . import __version__, provider_cache
 from .errors import LuwuError, MutationError
-from .manifest import is_execution_manifest, is_provider_manifest, load_manifest
+from .m6_pilot import (
+    M6MutationResult,
+    M6Plan,
+    accept_m6_baseline,
+    apply_m6_forward,
+    build_m6_plan,
+    reverse_m6_inputs,
+)
+from .manifest import (
+    is_execution_manifest,
+    is_m6_manifest,
+    is_provider_manifest,
+    load_manifest,
+)
 from .mutations import accept_baseline, reverse_sync
 from .platform_support import probe_platform
 from .providers import (
@@ -169,6 +182,43 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         manifest = load_manifest(args.manifest)
         authority = _authority_from_args(args)
+        if is_m6_manifest(manifest):
+            if args.command in {"accept", "reverse-sync"}:
+                if args.command == "accept":
+                    result = accept_m6_baseline(
+                        manifest,
+                        resource_name=args.resource,
+                        value_from=args.value_from,
+                        fields=tuple(args.field),
+                        confirm=args.yes,
+                    )
+                else:
+                    result = reverse_m6_inputs(
+                        build_m6_plan(manifest),
+                        fields=tuple(args.field),
+                        confirm=args.yes,
+                        resource_name=args.resource,
+                    )
+                _emit_m6_result(result, as_json=args.json)
+                return 0 if args.yes and result.outcome == "committed" else 2
+            if args.command in {"inspect", "plan"}:
+                _emit_m6_plan(
+                    build_m6_plan(manifest), command=args.command, as_json=args.json
+                )
+                return 0
+            if args.command == "apply":
+                if args.record is not None:
+                    raise LuwuError(
+                        "version 7 pilot apply does not use an execution record",
+                        code="record_unsupported",
+                    )
+                m6_plan = build_m6_plan(manifest)
+                if not args.yes:
+                    _emit_m6_plan(m6_plan, command="apply", as_json=args.json)
+                    return 2
+                result = apply_m6_forward(m6_plan, confirm=True)
+                _emit_m6_result(result, as_json=args.json)
+                return 0 if result.outcome in {"committed", "no_changes"} else 2
         if args.command in {"accept", "reverse-sync"}:
             if is_provider_manifest(manifest):
                 raise LuwuError(
@@ -424,6 +474,24 @@ def _emit_plan(plan: Plan, *, command: str, as_json: bool) -> None:
         _print_json(plan_to_dict(plan, command=command))
         return
     _print_human_plan(plan, heading="Inspection" if command == "inspect" else "Plan")
+
+
+def _emit_m6_plan(plan: M6Plan, *, command: str, as_json: bool) -> None:
+    if as_json:
+        _print_json(plan.to_dict(command=command))
+        return
+    print(f"M6 {command}: {len(plan.resources)} resource(s)")
+    for resource in plan.resources:
+        print(f"- {resource.resource.name}: {resource.action} ({resource.reason})")
+
+
+def _emit_m6_result(result: M6MutationResult, *, as_json: bool) -> None:
+    if as_json:
+        _print_json(result.to_dict())
+        return
+    print(f"{result.operation}: {result.outcome}")
+    print(f"Resource: {_display(result.resource)}")
+    print(f"Fields: {len(result.fields)}")
 
 
 def _emit_apply_preview(plan: Plan, *, as_json: bool) -> None:

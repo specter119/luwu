@@ -96,6 +96,83 @@ The implementation deliberately avoids a general transaction engine, a
 second durable ledger, or a recovery mutation layer. The public partial
 success and recovery meanings are defined in [reference.md](reference.md).
 
+## M6 pilot extension mechanism
+
+This section describes the implemented mechanism for the version 7 pilot. The
+public behavior is owned by [the M6 pilot extension section in reference.md](reference.md#m6-pilot-extension-manifest-version-7).
+
+### Resolve roots and declared inputs
+
+Represent the source, input, and target roots as separate captured directory
+authorities. Build the resource set only from explicit declarations; do not
+discover resources by walking a root. Resolve and validate root identity,
+containment, overlap/alias conflicts, parent identity, target type, and
+symlink boundaries before observation and again at confirmation. Reuse the
+existing no-follow filesystem primitives for descriptor-relative reads and
+atomic writes.
+
+Load only declared public global and local input files. Keep provenance
+alongside each resolved value so the renderer and field observer can explain
+which declared layer supplied it without exposing the value. There is no
+implicit overlay: each field maps to one file. Treat input contents as
+stale-check evidence only in memory; do not place input values or content
+hashes in public output or durable records.
+
+### Observe and patch selected fields
+
+Render the desired configuration from declared templates and public inputs,
+then construct one field observation from desired values, live values,
+baseline values, and the existing field ownership declarations. Use this same
+observation to explain forward and reverse candidates so the two directions
+cannot disagree about a field's state. Any newly observed undeclared live
+key/change in a pilot target becomes a review stop before a writer for that
+target is entered.
+
+Use the bounded format routines to parse the pilot's selected configuration shapes
+and patch the chosen fields. JSON uses strict parsing plus member-span patching
+so unchanged bytes survive. TOML accepts only top-level scalar assignments and
+preserves comments and unselected bytes; tables, inline comments, duplicates,
+and unsupported values are rejected. Do not parse and re-encode a complete
+file for a field mutation.
+
+TOML syntax is validated with `tomllib` using `Decimal` for floating-point
+values before the bounded scanner locates assignment spans. The scanner
+requires a complete scalar token, so an inline comment cannot become part of
+a replacement span. Public-key checks reuse the manifest's normalized
+sensitive-name predicate while retaining the pilot's additional exclusions.
+
+### Confirm, write, and recover
+
+Keep baseline acceptance, reverse input mutation, and forward target mutation
+as distinct confirmed operations. At confirmation, recalculate desired/live
+fields and revalidate the manifest, templates, all contributing inputs,
+baseline, root identities, allowlist, target, and parent boundary against the
+preview observation. A mismatch stops before replacement and requires a new
+preview. Create an absent target only from declared pilot content; apply only
+the selected field patch to an existing target at the existing atomic write
+boundary. Then re-read and recalculate before reporting success.
+
+The mutation path checks loader provenance and binds the complete resource
+declaration to a freshly loaded manifest. Writer callbacks repeat authorization
+checks after staging. The atomic writer also checks the destination mode,
+parent binding, and the staged inode before publishing it. A reverse operation
+keeps an in-memory map of its completed input replacements, allowing those
+specific changes during later checks while rejecting unrelated changes.
+Replacement facts are retained separately from reload and verification, so a
+later exception cannot erase an earlier successful write.
+
+Treat writes to inputs, baselines, and live targets as separate boundaries;
+do not imply a transaction across them. The pilot returns metadata-only
+committed, no-change, stale, verification-failed, or state-unknown outcomes
+and does not create a second durable execution journal. Recovery remains the
+read-only act of building a fresh plan; it never replays or rolls back a
+mutation.
+
+The Dotter handoff is an external precondition for each allowlisted target.
+Keep Dotter configuration changes and return-to-Dotter steps in the explicit
+operator procedure; inspection, planning, confirmation, and recovery do not
+perform that handoff themselves.
+
 ## Provider and secret path
 
 The provider path is isolated behind an explicit runtime authority and a

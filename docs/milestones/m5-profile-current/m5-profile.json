@@ -1,0 +1,795 @@
+{
+  "environment": {
+    "cprofile": true,
+    "filesystem_block_size": 4096,
+    "platform": "linux",
+    "python": "/home/specter119/.local/share/lody/repos/github---specter119---luwu/worktrees/28533753-07bc-4eac-96d7-7b847e18b975/.venv/bin/python",
+    "python_version": "3.13.15",
+    "scratch": ".m5-profile-scratch",
+    "tracemalloc": true
+  },
+  "fixture": "synthetic-public-v5",
+  "operations": [
+    "plan",
+    "apply"
+  ],
+  "rows": [
+    {
+      "operation": "plan",
+      "profile": {
+        "directory_sync_calls": 0,
+        "journal_publication_calls": 0,
+        "peak_traced_bytes": 1412666,
+        "profile": "docs/milestones/m5-profile-current/plan-30.pstats",
+        "seconds": 0.07865805103210732,
+        "top_functions": [
+          {
+            "calls": 1,
+            "cumulative_seconds": 0.07804530700000001,
+            "function": "m5_profile.py:108:<lambda>",
+            "primitive_calls": 1,
+            "total_seconds": 3.9470000000000005e-06
+          },
+          {
+            "calls": 1,
+            "cumulative_seconds": 0.07804136,
+            "function": "reconcile.py:300:build_plan",
+            "primitive_calls": 1,
+            "total_seconds": 6.611e-05
+          },
+          {
+            "calls": 31,
+            "cumulative_seconds": 0.07693079200000001,
+            "function": "reconcile.py:330:<genexpr>",
+            "primitive_calls": 31,
+            "total_seconds": 2.1807e-05
+          },
+          {
+            "calls": 30,
+            "cumulative_seconds": 0.076908985,
+            "function": "reconcile.py:528:_plan_resource",
+            "primitive_calls": 30,
+            "total_seconds": 4.4438000000000004e-05
+          },
+          {
+            "calls": 27,
+            "cumulative_seconds": 0.073461316,
+            "function": "reconcile.py:768:_plan_template",
+            "primitive_calls": 27,
+            "total_seconds": 0.000505421
+          },
+          {
+            "calls": 27,
+            "cumulative_seconds": 0.06018023,
+            "function": "rendering.py:220:render_template",
+            "primitive_calls": 27,
+            "total_seconds": 0.0007401440000000001
+          },
+          {
+            "calls": 27,
+            "cumulative_seconds": 0.038604892,
+            "function": "rendering.py:88:_render_source",
+            "primitive_calls": 27,
+            "total_seconds": 0.000258676
+          },
+          {
+            "calls": 27,
+            "cumulative_seconds": 0.036533056,
+            "function": "environment.py:1092:from_string",
+            "primitive_calls": 27,
+            "total_seconds": 7.6557e-05
+          },
+          {
+            "calls": 27,
+            "cumulative_seconds": 0.03604934,
+            "function": "environment.py:731:compile",
+            "primitive_calls": 27,
+            "total_seconds": 7.9677e-05
+          },
+          {
+            "calls": 27,
+            "cumulative_seconds": 0.020368315,
+            "function": "rendering.py:290:read_source",
+            "primitive_calls": 27,
+            "total_seconds": 0.00012622500000000002
+          },
+          {
+            "calls": 27,
+            "cumulative_seconds": 0.018361686000000002,
+            "function": "environment.py:618:_parse",
+            "primitive_calls": 27,
+            "total_seconds": 0.000112584
+          },
+          {
+            "calls": 27,
+            "cumulative_seconds": 0.014126550000000002,
+            "function": "parser.py:53:__init__",
+            "primitive_calls": 27,
+            "total_seconds": 7.8619e-05
+          }
+        ]
+      },
+      "size": 30
+    },
+    {
+      "operation": "apply",
+      "profile": {
+        "directory_sync_calls": 30,
+        "journal_publication_calls": 65,
+        "peak_traced_bytes": 2566454,
+        "profile": "docs/milestones/m5-profile-current/apply-30.pstats",
+        "seconds": 1.2956939490395598,
+        "top_functions": [
+          {
+            "calls": 1,
+            "cumulative_seconds": 1.294535336,
+            "function": "m5_profile.py:110:<lambda>",
+            "primitive_calls": 1,
+            "total_seconds": 0.00047245900000000005
+          },
+          {
+            "calls": 1,
+            "cumulative_seconds": 1.227031706,
+            "function": "reconcile.py:1177:execute_execution_plan",
+            "primitive_calls": 1,
+            "total_seconds": 0.0034486820000000002
+          },
+          {
+            "calls": 65,
+            "cumulative_seconds": 0.254926932,
+            "function": "plan_record.py:113:_encode_record",
+            "primitive_calls": 65,
+            "total_seconds": 0.00046889100000000003
+          },
+          {
+            "calls": 65,
+            "cumulative_seconds": 0.253948565,
+            "function": "__init__.py:185:dumps",
+            "primitive_calls": 65,
+            "total_seconds": 0.00045376300000000004
+          },
+          {
+            "calls": 65,
+            "cumulative_seconds": 0.25344763400000003,
+            "function": "encoder.py:185:encode",
+            "primitive_calls": 65,
+            "total_seconds": 0.000462052
+          },
+          {
+            "calls": 65,
+            "cumulative_seconds": 0.25286540900000004,
+            "function": "encoder.py:207:iterencode",
+            "primitive_calls": 65,
+            "total_seconds": 0.252821275
+          },
+          {
+            "calls": 65,
+            "cumulative_seconds": 0.244816196,
+            "function": "m5_profile.py:43:counted_publish",
+            "primitive_calls": 65,
+            "total_seconds": 0.00028962000000000004
+          },
+          {
+            "calls": 65,
+            "cumulative_seconds": 0.24452657600000002,
+            "function": "reconcile.py:2242:_write_execution_record",
+            "primitive_calls": 65,
+            "total_seconds": 0.000362832
+          },
+          {
+            "calls": 65,
+            "cumulative_seconds": 0.244133859,
+            "function": "plan_record.py:448:write",
+            "primitive_calls": 65,
+            "total_seconds": 0.005014537
+          },
+          {
+            "calls": 60,
+            "cumulative_seconds": 0.238327325,
+            "function": "plan_record.py:248:_from_trusted_document",
+            "primitive_calls": 60,
+            "total_seconds": 0.00024666900000000003
+          },
+          {
+            "calls": 30,
+            "cumulative_seconds": 0.238014624,
+            "function": "reconcile.py:3014:_write_observation",
+            "primitive_calls": 30,
+            "total_seconds": 0.0009957310000000001
+          },
+          {
+            "calls": 108,
+            "cumulative_seconds": 0.20764542900000002,
+            "function": "rendering.py:220:render_template",
+            "primitive_calls": 108,
+            "total_seconds": 0.003164772
+          }
+        ]
+      },
+      "size": 30
+    },
+    {
+      "operation": "plan",
+      "profile": {
+        "directory_sync_calls": 0,
+        "journal_publication_calls": 0,
+        "peak_traced_bytes": 1671414,
+        "profile": "docs/milestones/m5-profile-current/plan-100.pstats",
+        "seconds": 0.26777700101956725,
+        "top_functions": [
+          {
+            "calls": 1,
+            "cumulative_seconds": 0.266625341,
+            "function": "m5_profile.py:108:<lambda>",
+            "primitive_calls": 1,
+            "total_seconds": 4.107000000000001e-06
+          },
+          {
+            "calls": 1,
+            "cumulative_seconds": 0.26662123400000004,
+            "function": "reconcile.py:300:build_plan",
+            "primitive_calls": 1,
+            "total_seconds": 0.000127436
+          },
+          {
+            "calls": 101,
+            "cumulative_seconds": 0.263130389,
+            "function": "reconcile.py:330:<genexpr>",
+            "primitive_calls": 101,
+            "total_seconds": 0.00010879800000000001
+          },
+          {
+            "calls": 100,
+            "cumulative_seconds": 0.263021591,
+            "function": "reconcile.py:528:_plan_resource",
+            "primitive_calls": 100,
+            "total_seconds": 0.000180838
+          },
+          {
+            "calls": 90,
+            "cumulative_seconds": 0.25079854900000004,
+            "function": "reconcile.py:768:_plan_template",
+            "primitive_calls": 90,
+            "total_seconds": 0.0021023540000000003
+          },
+          {
+            "calls": 90,
+            "cumulative_seconds": 0.19693554400000002,
+            "function": "rendering.py:220:render_template",
+            "primitive_calls": 90,
+            "total_seconds": 0.0030573500000000003
+          },
+          {
+            "calls": 90,
+            "cumulative_seconds": 0.11317182,
+            "function": "rendering.py:88:_render_source",
+            "primitive_calls": 90,
+            "total_seconds": 0.001125623
+          },
+          {
+            "calls": 90,
+            "cumulative_seconds": 0.103963234,
+            "function": "environment.py:1092:from_string",
+            "primitive_calls": 90,
+            "total_seconds": 0.00038388100000000003
+          },
+          {
+            "calls": 90,
+            "cumulative_seconds": 0.101506629,
+            "function": "environment.py:731:compile",
+            "primitive_calls": 90,
+            "total_seconds": 0.00036579
+          },
+          {
+            "calls": 90,
+            "cumulative_seconds": 0.078559135,
+            "function": "rendering.py:290:read_source",
+            "primitive_calls": 90,
+            "total_seconds": 0.000508959
+          },
+          {
+            "calls": 90,
+            "cumulative_seconds": 0.046344765,
+            "function": "environment.py:682:_generate",
+            "primitive_calls": 90,
+            "total_seconds": 0.00026128400000000003
+          },
+          {
+            "calls": 90,
+            "cumulative_seconds": 0.046083481,
+            "function": "compiler.py:101:generate",
+            "primitive_calls": 90,
+            "total_seconds": 0.000546034
+          }
+        ]
+      },
+      "size": 100
+    },
+    {
+      "operation": "apply",
+      "profile": {
+        "directory_sync_calls": 100,
+        "journal_publication_calls": 205,
+        "peak_traced_bytes": 3713644,
+        "profile": "docs/milestones/m5-profile-current/apply-100.pstats",
+        "seconds": 6.012501920980867,
+        "top_functions": [
+          {
+            "calls": 1,
+            "cumulative_seconds": 6.010918178000001,
+            "function": "m5_profile.py:110:<lambda>",
+            "primitive_calls": 1,
+            "total_seconds": 0.0012328320000000001
+          },
+          {
+            "calls": 1,
+            "cumulative_seconds": 5.760850338,
+            "function": "reconcile.py:1177:execute_execution_plan",
+            "primitive_calls": 1,
+            "total_seconds": 0.011702220000000001
+          },
+          {
+            "calls": 205,
+            "cumulative_seconds": 2.575487228,
+            "function": "plan_record.py:113:_encode_record",
+            "primitive_calls": 205,
+            "total_seconds": 0.001991079
+          },
+          {
+            "calls": 205,
+            "cumulative_seconds": 2.5701703620000003,
+            "function": "__init__.py:185:dumps",
+            "primitive_calls": 205,
+            "total_seconds": 0.0014158530000000001
+          },
+          {
+            "calls": 205,
+            "cumulative_seconds": 2.568620192,
+            "function": "encoder.py:185:encode",
+            "primitive_calls": 205,
+            "total_seconds": 0.0015642100000000001
+          },
+          {
+            "calls": 205,
+            "cumulative_seconds": 2.5666685250000003,
+            "function": "encoder.py:207:iterencode",
+            "primitive_calls": 205,
+            "total_seconds": 2.5665358140000003
+          },
+          {
+            "calls": 200,
+            "cumulative_seconds": 2.520527431,
+            "function": "plan_record.py:248:_from_trusted_document",
+            "primitive_calls": 200,
+            "total_seconds": 0.0008435830000000001
+          },
+          {
+            "calls": 100,
+            "cumulative_seconds": 1.275175873,
+            "function": "plan_record.py:299:_commit_path_fast",
+            "primitive_calls": 100,
+            "total_seconds": 0.002625198
+          },
+          {
+            "calls": 100,
+            "cumulative_seconds": 1.2538215780000002,
+            "function": "plan_record.py:274:_transition_path_fast",
+            "primitive_calls": 100,
+            "total_seconds": 0.002168521
+          },
+          {
+            "calls": 205,
+            "cumulative_seconds": 0.8234772570000001,
+            "function": "m5_profile.py:43:counted_publish",
+            "primitive_calls": 205,
+            "total_seconds": 0.000910711
+          },
+          {
+            "calls": 205,
+            "cumulative_seconds": 0.822566546,
+            "function": "reconcile.py:2242:_write_execution_record",
+            "primitive_calls": 205,
+            "total_seconds": 0.001056759
+          },
+          {
+            "calls": 205,
+            "cumulative_seconds": 0.821415824,
+            "function": "plan_record.py:448:write",
+            "primitive_calls": 205,
+            "total_seconds": 0.016030058
+          }
+        ]
+      },
+      "size": 100
+    },
+    {
+      "operation": "plan",
+      "profile": {
+        "directory_sync_calls": 0,
+        "journal_publication_calls": 0,
+        "peak_traced_bytes": 2019217,
+        "profile": "docs/milestones/m5-profile-current/plan-176.pstats",
+        "seconds": 0.3860396620002575,
+        "top_functions": [
+          {
+            "calls": 1,
+            "cumulative_seconds": 0.38492882900000003,
+            "function": "m5_profile.py:108:<lambda>",
+            "primitive_calls": 1,
+            "total_seconds": 4.087e-06
+          },
+          {
+            "calls": 1,
+            "cumulative_seconds": 0.38492474200000004,
+            "function": "reconcile.py:300:build_plan",
+            "primitive_calls": 1,
+            "total_seconds": 0.000122384
+          },
+          {
+            "calls": 177,
+            "cumulative_seconds": 0.379434535,
+            "function": "reconcile.py:330:<genexpr>",
+            "primitive_calls": 177,
+            "total_seconds": 0.00011353100000000001
+          },
+          {
+            "calls": 176,
+            "cumulative_seconds": 0.379321004,
+            "function": "reconcile.py:528:_plan_resource",
+            "primitive_calls": 176,
+            "total_seconds": 0.00021159300000000002
+          },
+          {
+            "calls": 158,
+            "cumulative_seconds": 0.35933791400000004,
+            "function": "reconcile.py:768:_plan_template",
+            "primitive_calls": 158,
+            "total_seconds": 0.002675274
+          },
+          {
+            "calls": 158,
+            "cumulative_seconds": 0.282356041,
+            "function": "rendering.py:220:render_template",
+            "primitive_calls": 158,
+            "total_seconds": 0.004076141
+          },
+          {
+            "calls": 158,
+            "cumulative_seconds": 0.156074349,
+            "function": "rendering.py:88:_render_source",
+            "primitive_calls": 158,
+            "total_seconds": 0.0014372030000000002
+          },
+          {
+            "calls": 158,
+            "cumulative_seconds": 0.144793734,
+            "function": "environment.py:1092:from_string",
+            "primitive_calls": 158,
+            "total_seconds": 0.00040272400000000003
+          },
+          {
+            "calls": 158,
+            "cumulative_seconds": 0.14212759900000002,
+            "function": "environment.py:731:compile",
+            "primitive_calls": 158,
+            "total_seconds": 0.00043574000000000005
+          },
+          {
+            "calls": 158,
+            "cumulative_seconds": 0.119616861,
+            "function": "rendering.py:290:read_source",
+            "primitive_calls": 158,
+            "total_seconds": 0.0007092320000000001
+          },
+          {
+            "calls": 686,
+            "cumulative_seconds": 0.068940712,
+            "function": "_local.py:365:relative_to",
+            "primitive_calls": 686,
+            "total_seconds": 0.008204092000000001
+          },
+          {
+            "calls": 334,
+            "cumulative_seconds": 0.068345813,
+            "function": "filesystem.py:51:open_parent_directory",
+            "primitive_calls": 334,
+            "total_seconds": 0.0014596260000000001
+          }
+        ]
+      },
+      "size": 176
+    },
+    {
+      "operation": "apply",
+      "profile": {
+        "directory_sync_calls": 176,
+        "journal_publication_calls": 357,
+        "peak_traced_bytes": 4904316,
+        "profile": "docs/milestones/m5-profile-current/apply-176.pstats",
+        "seconds": 14.39994304603897,
+        "top_functions": [
+          {
+            "calls": 1,
+            "cumulative_seconds": 14.397269121,
+            "function": "m5_profile.py:110:<lambda>",
+            "primitive_calls": 1,
+            "total_seconds": 0.002090858
+          },
+          {
+            "calls": 1,
+            "cumulative_seconds": 14.004285643000001,
+            "function": "reconcile.py:1177:execute_execution_plan",
+            "primitive_calls": 1,
+            "total_seconds": 0.023262476
+          },
+          {
+            "calls": 357,
+            "cumulative_seconds": 7.88773584,
+            "function": "plan_record.py:113:_encode_record",
+            "primitive_calls": 357,
+            "total_seconds": 0.005174105
+          },
+          {
+            "calls": 357,
+            "cumulative_seconds": 7.871660677,
+            "function": "__init__.py:185:dumps",
+            "primitive_calls": 357,
+            "total_seconds": 0.002727451
+          },
+          {
+            "calls": 357,
+            "cumulative_seconds": 7.868672245000001,
+            "function": "encoder.py:185:encode",
+            "primitive_calls": 357,
+            "total_seconds": 0.003557386
+          },
+          {
+            "calls": 357,
+            "cumulative_seconds": 7.864306910000001,
+            "function": "encoder.py:207:iterencode",
+            "primitive_calls": 357,
+            "total_seconds": 7.86406543
+          },
+          {
+            "calls": 352,
+            "cumulative_seconds": 7.797351218,
+            "function": "plan_record.py:248:_from_trusted_document",
+            "primitive_calls": 352,
+            "total_seconds": 0.0017969790000000002
+          },
+          {
+            "calls": 176,
+            "cumulative_seconds": 3.952208444,
+            "function": "plan_record.py:299:_commit_path_fast",
+            "primitive_calls": 176,
+            "total_seconds": 0.005066428
+          },
+          {
+            "calls": 176,
+            "cumulative_seconds": 3.8616876340000004,
+            "function": "plan_record.py:274:_transition_path_fast",
+            "primitive_calls": 176,
+            "total_seconds": 0.004073380000000001
+          },
+          {
+            "calls": 357,
+            "cumulative_seconds": 1.85769464,
+            "function": "m5_profile.py:43:counted_publish",
+            "primitive_calls": 357,
+            "total_seconds": 0.002070834
+          },
+          {
+            "calls": 357,
+            "cumulative_seconds": 1.855623806,
+            "function": "reconcile.py:2242:_write_execution_record",
+            "primitive_calls": 357,
+            "total_seconds": 0.002005967
+          },
+          {
+            "calls": 357,
+            "cumulative_seconds": 1.8534590050000002,
+            "function": "plan_record.py:448:write",
+            "primitive_calls": 357,
+            "total_seconds": 0.029152402
+          }
+        ]
+      },
+      "size": 176
+    },
+    {
+      "operation": "plan",
+      "profile": {
+        "directory_sync_calls": 0,
+        "journal_publication_calls": 0,
+        "peak_traced_bytes": 2029065,
+        "profile": "docs/milestones/m5-profile-current/plan-200.pstats",
+        "seconds": 0.4350583440391347,
+        "top_functions": [
+          {
+            "calls": 1,
+            "cumulative_seconds": 0.43397130700000003,
+            "function": "m5_profile.py:108:<lambda>",
+            "primitive_calls": 1,
+            "total_seconds": 2.745e-06
+          },
+          {
+            "calls": 1,
+            "cumulative_seconds": 0.433968562,
+            "function": "reconcile.py:300:build_plan",
+            "primitive_calls": 1,
+            "total_seconds": 0.000143261
+          },
+          {
+            "calls": 201,
+            "cumulative_seconds": 0.42753677,
+            "function": "reconcile.py:330:<genexpr>",
+            "primitive_calls": 201,
+            "total_seconds": 0.00012332600000000002
+          },
+          {
+            "calls": 200,
+            "cumulative_seconds": 0.42741344400000003,
+            "function": "reconcile.py:528:_plan_resource",
+            "primitive_calls": 200,
+            "total_seconds": 0.000246258
+          },
+          {
+            "calls": 180,
+            "cumulative_seconds": 0.405382305,
+            "function": "reconcile.py:768:_plan_template",
+            "primitive_calls": 180,
+            "total_seconds": 0.0030101240000000003
+          },
+          {
+            "calls": 180,
+            "cumulative_seconds": 0.318338736,
+            "function": "rendering.py:220:render_template",
+            "primitive_calls": 180,
+            "total_seconds": 0.004645897
+          },
+          {
+            "calls": 180,
+            "cumulative_seconds": 0.17543055600000002,
+            "function": "rendering.py:88:_render_source",
+            "primitive_calls": 180,
+            "total_seconds": 0.0016375220000000002
+          },
+          {
+            "calls": 180,
+            "cumulative_seconds": 0.162695167,
+            "function": "environment.py:1092:from_string",
+            "primitive_calls": 180,
+            "total_seconds": 0.000463594
+          },
+          {
+            "calls": 180,
+            "cumulative_seconds": 0.159686293,
+            "function": "environment.py:731:compile",
+            "primitive_calls": 180,
+            "total_seconds": 0.000484789
+          },
+          {
+            "calls": 180,
+            "cumulative_seconds": 0.13535133400000002,
+            "function": "rendering.py:290:read_source",
+            "primitive_calls": 180,
+            "total_seconds": 0.0008082300000000001
+          },
+          {
+            "calls": 780,
+            "cumulative_seconds": 0.078189439,
+            "function": "_local.py:365:relative_to",
+            "primitive_calls": 780,
+            "total_seconds": 0.009302046000000001
+          },
+          {
+            "calls": 380,
+            "cumulative_seconds": 0.077101035,
+            "function": "filesystem.py:51:open_parent_directory",
+            "primitive_calls": 380,
+            "total_seconds": 0.001642007
+          }
+        ]
+      },
+      "size": 200
+    },
+    {
+      "operation": "apply",
+      "profile": {
+        "directory_sync_calls": 200,
+        "journal_publication_calls": 405,
+        "peak_traced_bytes": 4990875,
+        "profile": "docs/milestones/m5-profile-current/apply-200.pstats",
+        "seconds": 17.125884366978426,
+        "top_functions": [
+          {
+            "calls": 1,
+            "cumulative_seconds": 17.123052305,
+            "function": "m5_profile.py:110:<lambda>",
+            "primitive_calls": 1,
+            "total_seconds": 0.002832943
+          },
+          {
+            "calls": 1,
+            "cumulative_seconds": 16.687738674000002,
+            "function": "reconcile.py:1177:execute_execution_plan",
+            "primitive_calls": 1,
+            "total_seconds": 0.026513630000000003
+          },
+          {
+            "calls": 405,
+            "cumulative_seconds": 10.148105765,
+            "function": "plan_record.py:113:_encode_record",
+            "primitive_calls": 405,
+            "total_seconds": 0.00652093
+          },
+          {
+            "calls": 405,
+            "cumulative_seconds": 10.129983065000001,
+            "function": "__init__.py:185:dumps",
+            "primitive_calls": 405,
+            "total_seconds": 0.003129568
+          },
+          {
+            "calls": 405,
+            "cumulative_seconds": 10.126591263,
+            "function": "encoder.py:185:encode",
+            "primitive_calls": 405,
+            "total_seconds": 0.004118360000000001
+          },
+          {
+            "calls": 405,
+            "cumulative_seconds": 10.121448864000001,
+            "function": "encoder.py:207:iterencode",
+            "primitive_calls": 405,
+            "total_seconds": 10.121183276
+          },
+          {
+            "calls": 400,
+            "cumulative_seconds": 10.040806142000001,
+            "function": "plan_record.py:248:_from_trusted_document",
+            "primitive_calls": 400,
+            "total_seconds": 0.002161744
+          },
+          {
+            "calls": 200,
+            "cumulative_seconds": 5.095421408,
+            "function": "plan_record.py:299:_commit_path_fast",
+            "primitive_calls": 200,
+            "total_seconds": 0.0055772700000000005
+          },
+          {
+            "calls": 200,
+            "cumulative_seconds": 4.963901739000001,
+            "function": "plan_record.py:274:_transition_path_fast",
+            "primitive_calls": 200,
+            "total_seconds": 0.00459541
+          },
+          {
+            "calls": 405,
+            "cumulative_seconds": 1.800721196,
+            "function": "m5_profile.py:43:counted_publish",
+            "primitive_calls": 405,
+            "total_seconds": 0.00251174
+          },
+          {
+            "calls": 405,
+            "cumulative_seconds": 1.7982094560000002,
+            "function": "reconcile.py:2242:_write_execution_record",
+            "primitive_calls": 405,
+            "total_seconds": 0.0022247210000000003
+          },
+          {
+            "calls": 405,
+            "cumulative_seconds": 1.795810015,
+            "function": "plan_record.py:448:write",
+            "primitive_calls": 405,
+            "total_seconds": 0.032688657
+          }
+        ]
+      },
+      "size": 200
+    }
+  ],
+  "schema_version": 1
+}

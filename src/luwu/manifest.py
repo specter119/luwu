@@ -14,6 +14,10 @@ from types import MappingProxyType
 from typing import Any
 
 from .errors import ManifestError
+from .filesystem import (
+    DirectoryBoundary,
+    capture_directory_boundary,
+)
 
 MANIFEST_VERSION = 1
 _MANIFEST_VERSION_V2 = 2
@@ -22,6 +26,7 @@ _MANIFEST_VERSION_V4 = 4
 EXECUTION_MANIFEST_VERSION = 5
 EXECUTION_RESOURCE_CAPABILITY = "public-source-whole-file"
 PROVIDER_MANIFEST_VERSION = 6
+M6_MANIFEST_VERSION = 7
 SUBPROCESS_CAPABILITY = "subprocess"
 _SUPPORTED_MANIFEST_VERSIONS = frozenset(
     {
@@ -31,10 +36,12 @@ _SUPPORTED_MANIFEST_VERSIONS = frozenset(
         _MANIFEST_VERSION_V4,
         EXECUTION_MANIFEST_VERSION,
         PROVIDER_MANIFEST_VERSION,
+        M6_MANIFEST_VERSION,
     }
 )
 _MANIFEST_FIELDS = {"version", "resources"}
 _PROVIDER_MANIFEST_FIELDS = {"version", "capabilities", "resources"}
+_M6_MANIFEST_FIELDS = {"version", "roots", "resources"}
 _RESOURCE_FIELDS = {
     "comparison",
     "kind",
@@ -79,6 +86,7 @@ _PROVIDER_RESOURCE_FIELDS = {
     "content_sensitivity",
     "providers",
 }
+_M6_RESOURCE_FIELDS = _V3_RESOURCE_FIELDS | {"inputs"}
 _LOADER_PROVENANCE = object()
 _PUBLIC_VARIABLES_TOKEN = object()
 _SENSITIVE_VARIABLE_KEYS = {
@@ -163,6 +171,25 @@ class Resource:
     providers: Mapping[str, ProviderReference] = dataclass_field(
         default_factory=lambda: MappingProxyType({}), repr=False
     )
+    inputs: Mapping[str, Path] = dataclass_field(
+        default_factory=lambda: MappingProxyType({}), repr=False
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class M6Roots:
+    """The explicit, non-overlapping filesystem authorities for version 7."""
+
+    source: DirectoryBoundary
+    inputs: DirectoryBoundary
+    target: DirectoryBoundary
+
+    def verify(self) -> None:
+        """Recheck all captured root identities before a later operation."""
+
+        self.source.verify()
+        self.inputs.verify()
+        self.target.verify()
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +205,7 @@ class Manifest:
         default=None, init=False, repr=False, compare=False
     )
     capabilities: tuple[str, ...] = ()
+    roots: M6Roots | None = None
 
     @property
     def execution_capability(self) -> str | None:
@@ -198,6 +226,12 @@ def is_provider_manifest(manifest: Manifest) -> bool:
     """Whether *manifest* uses the closed version-6 provider contract."""
 
     return manifest.version == PROVIDER_MANIFEST_VERSION
+
+
+def is_m6_manifest(manifest: Manifest) -> bool:
+    """Whether *manifest* uses the bounded version-7 pilot contract."""
+
+    return manifest.version == M6_MANIFEST_VERSION
 
 
 def load_manifest(path: Path) -> Manifest:
@@ -242,13 +276,15 @@ def load_manifest(path: Path) -> Manifest:
     version = document.get("version")
     if type(version) is not int or version not in _SUPPORTED_MANIFEST_VERSIONS:
         raise ManifestError(
-            "manifest version must be 1, 2, 3, 4, 5, or 6",
+            "manifest version must be 1, 2, 3, 4, 5, 6, or 7",
             code="manifest_version",
         )
 
     allowed_manifest_fields = (
         _PROVIDER_MANIFEST_FIELDS
         if version == PROVIDER_MANIFEST_VERSION
+        else _M6_MANIFEST_FIELDS
+        if version == M6_MANIFEST_VERSION
         else _MANIFEST_FIELDS
     )
     unknown_fields = set(document) - allowed_manifest_fields
@@ -287,6 +323,11 @@ def load_manifest(path: Path) -> Manifest:
             f"cannot resolve manifest directory {manifest_path.parent}",
             code="manifest_unreadable",
         ) from None
+    m6_roots = (
+        _parse_m6_roots(document.get("roots"), root=root)
+        if version == M6_MANIFEST_VERSION
+        else None
+    )
     resources: list[Resource] = []
     resolved_sources: list[Path] = []
 
@@ -311,6 +352,8 @@ def load_manifest(path: Path) -> Manifest:
             allowed_resource_fields = _EXECUTION_RESOURCE_FIELDS
         elif version == PROVIDER_MANIFEST_VERSION:
             allowed_resource_fields = _PROVIDER_RESOURCE_FIELDS
+        elif version == M6_MANIFEST_VERSION:
+            allowed_resource_fields = _M6_RESOURCE_FIELDS
         else:
             allowed_resource_fields = _RESOURCE_FIELDS - {
                 "fields",
@@ -333,7 +376,8 @@ def load_manifest(path: Path) -> Manifest:
 
         raw_kind = raw_resource.get("kind")
         if (
-            version in {_MANIFEST_VERSION_V3, EXECUTION_MANIFEST_VERSION}
+            version
+            in {_MANIFEST_VERSION_V3, EXECUTION_MANIFEST_VERSION, M6_MANIFEST_VERSION}
             and raw_kind is None
         ):
             raise ManifestError(
@@ -345,7 +389,15 @@ def load_manifest(path: Path) -> Manifest:
                 f"resource {name!r} kind must be explicitly 'template' in manifest version {version}",
                 code="resource_kind",
             )
-        if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4} and raw_kind is None:
+        if (
+            version
+            in {
+                _MANIFEST_VERSION_V3,
+                _MANIFEST_VERSION_V4,
+                M6_MANIFEST_VERSION,
+            }
+            and raw_kind is None
+        ):
             raise ManifestError(
                 f"resource {name!r} kind must be explicitly 'template' in manifest version {version}",
                 code="resource_kind",
@@ -360,6 +412,8 @@ def load_manifest(path: Path) -> Manifest:
         if version == _MANIFEST_VERSION_V3:
             supported_kinds = {"template"}
         if version == _MANIFEST_VERSION_V4:
+            supported_kinds = {"template"}
+        if version == M6_MANIFEST_VERSION:
             supported_kinds = {"template"}
         if version == EXECUTION_MANIFEST_VERSION:
             supported_kinds = {"template", "symbolic"}
@@ -395,12 +449,22 @@ def load_manifest(path: Path) -> Manifest:
                 f"resource {name!r} comparison must be 'json' in manifest version {version}",
                 code="resource_comparison_version",
             )
-        if comparison not in {"exact-bytes", "json"}:
+        if version == M6_MANIFEST_VERSION and comparison not in {"json", "toml"}:
             raise ManifestError(
-                f"resource {name!r} comparison must be 'exact-bytes' or 'json'",
+                "resource comparison must be 'json' or 'toml' in manifest version 7",
+                code="resource_comparison_version",
+            )
+        if version != M6_MANIFEST_VERSION and comparison not in {"exact-bytes", "json"}:
+            raise ManifestError(
+                "resource comparison is unsupported by this manifest version",
                 code="resource_comparison",
             )
-        if comparison == "json" and kind != "template":
+        if comparison not in {"exact-bytes", "json", "toml"}:
+            raise ManifestError(
+                f"resource {name!r} comparison is unsupported",
+                code="resource_comparison",
+            )
+        if comparison in {"json", "toml"} and kind != "template":
             raise ManifestError(
                 f"resource {name!r} json comparison requires a template resource",
                 code="resource_comparison_kind",
@@ -413,6 +477,13 @@ def load_manifest(path: Path) -> Manifest:
                 root=root,
                 field=f"resource {name!r} target",
             )
+        elif version == M6_MANIFEST_VERSION:
+            assert m6_roots is not None
+            target_relative = _declared_relative_path(
+                target_name,
+                field=f"resource {name!r} target",
+            )
+            target = m6_roots.target.path / target_relative
         else:
             target_relative = _declared_relative_path(
                 target_name,
@@ -421,7 +492,7 @@ def load_manifest(path: Path) -> Manifest:
             target = root / target_relative
 
         owner = _required_string(raw_resource, "owner", resource_name=name)
-        if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}:
+        if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4, M6_MANIFEST_VERSION}:
             if owner != "fields":
                 raise ManifestError(
                     f"resource {name!r} owner must be 'fields' in manifest version {version}",
@@ -434,7 +505,7 @@ def load_manifest(path: Path) -> Manifest:
             )
 
         scope = _required_string(raw_resource, "scope", resource_name=name)
-        if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}:
+        if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4, M6_MANIFEST_VERSION}:
             if scope != "fields":
                 raise ManifestError(
                     f"resource {name!r} scope must be 'fields' in manifest version {version}",
@@ -476,12 +547,22 @@ def load_manifest(path: Path) -> Manifest:
         raw_fields = raw_resource.get("fields")
         fields = (
             _parse_fields(raw_fields, resource_name=name)
-            if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}
+            if version
+            in {
+                _MANIFEST_VERSION_V3,
+                _MANIFEST_VERSION_V4,
+                M6_MANIFEST_VERSION,
+            }
             else MappingProxyType({})
         )
         raw_content_sensitivity = raw_resource.get("content_sensitivity")
         if (
-            version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}
+            version
+            in {
+                _MANIFEST_VERSION_V3,
+                _MANIFEST_VERSION_V4,
+                M6_MANIFEST_VERSION,
+            }
             and raw_content_sensitivity != "public"
         ):
             raise ManifestError(
@@ -490,7 +571,12 @@ def load_manifest(path: Path) -> Manifest:
             )
         content_sensitivity = (
             raw_content_sensitivity
-            if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}
+            if version
+            in {
+                _MANIFEST_VERSION_V3,
+                _MANIFEST_VERSION_V4,
+                M6_MANIFEST_VERSION,
+            }
             else None
         )
         if (
@@ -513,7 +599,12 @@ def load_manifest(path: Path) -> Manifest:
         baseline_name: str | None = None
         baseline: Path | None = None
         if (
-            version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}
+            version
+            in {
+                _MANIFEST_VERSION_V3,
+                _MANIFEST_VERSION_V4,
+                M6_MANIFEST_VERSION,
+            }
             and "baseline" in raw_resource
         ):
             baseline_name = _required_string(
@@ -523,7 +614,12 @@ def load_manifest(path: Path) -> Manifest:
                 baseline_name,
                 field=f"resource {name!r} baseline",
             )
-            baseline = root / baseline_relative
+            baseline_root = (
+                m6_roots.inputs.path
+                if version == M6_MANIFEST_VERSION and m6_roots is not None
+                else root
+            )
+            baseline = baseline_root / baseline_relative
 
         reverse_sync = (
             _parse_reverse_sync(
@@ -532,6 +628,17 @@ def load_manifest(path: Path) -> Manifest:
                 resource_name=name,
             )
             if version == _MANIFEST_VERSION_V4
+            else MappingProxyType({})
+        )
+
+        inputs = (
+            _parse_m6_inputs(
+                raw_resource.get("inputs"),
+                fields=fields,
+                roots=m6_roots,
+                resource_name=name,
+            )
+            if version == M6_MANIFEST_VERSION and m6_roots is not None
             else MappingProxyType({})
         )
 
@@ -544,15 +651,32 @@ def load_manifest(path: Path) -> Manifest:
             else MappingProxyType({})
         )
 
-        source = root / source_relative
+        source_root = (
+            m6_roots.source.path
+            if version == M6_MANIFEST_VERSION and m6_roots is not None
+            else root
+        )
+        source = source_root / source_relative
         try:
             resolved_source = source.resolve(strict=False)
-            resolved_source.relative_to(root)
+            resolved_source.relative_to(source_root)
         except (OSError, RuntimeError, ValueError):
             raise ManifestError(
-                f"resource {name!r} source must stay inside the manifest directory",
+                f"resource {name!r} source must stay inside its source root",
                 code="resource_source_boundary",
             ) from None
+
+        if version == M6_MANIFEST_VERSION:
+            assert m6_roots is not None
+            protected_roots = (m6_roots.source.path, m6_roots.inputs.path)
+            if any(
+                _paths_overlap(target, protected_root)
+                for protected_root in protected_roots
+            ):
+                raise ManifestError(
+                    "version 7 resource target must stay outside source and inputs roots",
+                    code="m6_root_overlap",
+                )
 
         if target == manifest_path:
             raise ManifestError(
@@ -593,6 +717,7 @@ def load_manifest(path: Path) -> Manifest:
                     else None
                 ),
                 providers=providers,
+                inputs=inputs,
             )
         )
         resolved_sources.append(resolved_source)
@@ -609,6 +734,7 @@ def load_manifest(path: Path) -> Manifest:
         resources=tuple(resources),
         content_digest=hashlib.sha256(raw).hexdigest(),
         capabilities=capabilities,
+        roots=m6_roots,
     )
     object.__setattr__(manifest, "_provenance", _LOADER_PROVENANCE)
     return manifest
@@ -804,6 +930,117 @@ def _resources_have_ancestor_overlap(
 
 def _is_path_ancestor(parent: Path, child: Path) -> bool:
     return parent != child and parent in child.parents
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    return (
+        left == right
+        or _is_path_ancestor(left, right)
+        or _is_path_ancestor(right, left)
+    )
+
+
+def _parse_m6_roots(raw_roots: object, *, root: Path) -> M6Roots:
+    if not isinstance(raw_roots, dict):
+        raise ManifestError("version 7 manifest roots must be a table", code="m6_roots")
+    unknown = set(raw_roots) - {"source", "inputs", "target"}
+    if unknown:
+        raise ManifestError(
+            "version 7 manifest roots have unsupported field(s)",
+            code="m6_roots",
+        )
+
+    paths: dict[str, Path] = {}
+    for name in ("source", "inputs"):
+        value = raw_roots.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise ManifestError(
+                f"version 7 roots.{name} must be a non-empty relative path",
+                code="m6_roots",
+            )
+        relative = _declared_relative_path(value, field=f"roots.{name}")
+        paths[name] = root / relative
+
+    target_value = raw_roots.get("target")
+    if not isinstance(target_value, str) or not target_value.strip():
+        raise ManifestError(
+            "version 7 roots.target must be a non-empty path", code="m6_roots"
+        )
+    if Path(target_value).is_absolute():
+        paths["target"] = Path(target_value)
+    else:
+        relative = _declared_relative_path(target_value, field="roots.target")
+        paths["target"] = root / relative
+
+    names = ("source", "inputs", "target")
+    resolved_paths = {name: paths[name].resolve(strict=False) for name in names}
+    source = resolved_paths["source"]
+    inputs = resolved_paths["inputs"]
+    target = resolved_paths["target"]
+    if _paths_overlap(source, inputs):
+        raise ManifestError(
+            "version 7 source and inputs roots must be distinct and non-overlapping",
+            code="m6_root_overlap",
+        )
+    if any(
+        target == protected_root or _is_path_ancestor(protected_root, target)
+        for protected_root in (source, inputs)
+    ):
+        raise ManifestError(
+            "version 7 target root must not be equal to or below source or inputs",
+            code="m6_root_overlap",
+        )
+
+    try:
+        boundaries = {name: capture_directory_boundary(paths[name]) for name in names}
+    except (OSError, NotImplementedError, ValueError):
+        raise ManifestError(
+            "version 7 roots must be existing safe directories",
+            code="m6_root_unreadable",
+        ) from None
+    return M6Roots(
+        source=boundaries["source"],
+        inputs=boundaries["inputs"],
+        target=boundaries["target"],
+    )
+
+
+def _parse_m6_inputs(
+    raw_inputs: object,
+    *,
+    fields: Mapping[str, str],
+    roots: M6Roots,
+    resource_name: str,
+) -> Mapping[str, Path]:
+    if raw_inputs is None:
+        return MappingProxyType({})
+    if not isinstance(raw_inputs, dict):
+        raise ManifestError(
+            f"resource {resource_name!r} inputs must be a table",
+            code="m6_inputs",
+        )
+    parsed: dict[str, Path] = {}
+    for field_name, raw_path in raw_inputs.items():
+        if field_name not in fields:
+            raise ManifestError(
+                f"resource {resource_name!r} input field is not declared",
+                code="m6_inputs",
+            )
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise ManifestError(
+                f"resource {resource_name!r} input path must be non-empty",
+                code="m6_inputs",
+            )
+        relative = _declared_relative_path(
+            raw_path, field=f"resource {resource_name!r} input"
+        )
+        if len(relative.parts) < 2 or relative.parts[0] not in {"global", "local"}:
+            raise ManifestError(
+                f"resource {resource_name!r} input path must start with 'global/' or 'local/'",
+                code="m6_input_provenance",
+            )
+        parsed[field_name] = roots.inputs.path / relative
+    return MappingProxyType(parsed)
 
 
 def _parse_fields(raw_fields: object, *, resource_name: str) -> Mapping[str, str]:

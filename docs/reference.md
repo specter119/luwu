@@ -1,12 +1,12 @@
-# Luwu M1/M2/M3a/M3b/M3c/M4 Reference
+# Luwu Public Reference
 
 Status: current preview contract
 
-This document owns the stable manifest, CLI, JSON, error, and compatibility contract for the developer-confidence preview and its M2, M3a, narrow single-resource M3b, explicit M3c execution, and M4 provider extensions. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
+This document owns the stable manifest, CLI, JSON, error, and compatibility contract for the developer-confidence preview and its M2, M3a, narrow single-resource M3b, explicit M3c execution, M4 provider extension, and additive M6 version 7 pilot extension. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
 
 ## Manifest
 
-The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source, target, and baseline. M1 uses manifest version `1`; M2 supports versions `1` and `2`; M3a adds version `3`; M3b adds version `4`; the M3c execution slice adds version `5`; M4 adds the independent provider execution version `6`.
+The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source, target, and baseline. M1 uses manifest version `1`; M2 supports versions `1` and `2`; M3a adds version `3`; M3b adds version `4`; the M3c execution slice adds version `5`; M4 adds the independent provider execution version `6`; the M6 pilot adds the opt-in version `7` contract.
 
 ```toml
 version = 1
@@ -119,15 +119,200 @@ cache status cannot authorize or alter reconciliation. `platform-check` is
 diagnostic only, and unsupported filesystem/provider primitives fail closed
 with `platform_unsupported`.
 
+## M6 pilot extension (manifest version 7)
+
+This section defines the bounded public contract implemented for the Pi/Codex
+public-configuration pilot. It does not change the meaning or capability of
+manifest or JSON schema versions `1` through `6`. The pilot remains a separate
+version `7` contract and is not a general profile or package system.
+
+### Scope and roots
+
+The initial pilot examples use the following declared public fields:
+
+- Pi: `defaultModel`, `defaultProvider`, and `lastChangelogVersion` in
+  `.pi/agent/settings.json`.
+- Codex: `model` and `model_provider` in `.codex/config.toml`.
+
+The manifest field table is the allowlist: only names declared there can be
+observed or changed. The current implementation treats these as top-level
+JSON or bounded TOML scalar fields and does not infer application-specific
+schemas. A configuration value selecting a provider is application data and does
+not invoke Luwu's provider capability. Project trust and hook trust are
+outside this pilot.
+
+A version `7` manifest has exactly three root paths under `[roots]`:
+`source`, `inputs`, and `target`. Source templates are relative to the source
+root, public inputs and baselines are relative to the inputs root, and live
+targets are relative to the target root; the target root may also be an
+explicit absolute path for an isolated HOME. The roots must already exist and
+be regular directories without symlinked components. `source` and `inputs`
+must be distinct and non-overlapping. The target root may contain those two
+roots so that an isolated target can be a normal HOME directory, but it must
+not be equal to or below either of them. Each declared target file must still
+remain outside the source and input roots. Every target is named by a resource
+declaration; the extension does not discover resources by walking a root.
+
+Each resource may map a declared field to exactly one input file below
+`global/` or `local/`. The file must contain that field as a public scalar;
+the value is exposed to templates through `global_inputs` or `local_inputs`
+and retains its provenance in memory. There is no implicit overlay or
+inheritance. Reverse sync updates only the explicitly mapped input file and
+recalculates provenance after the write. Secret-shaped field names, non-scalar
+values, missing fields, unsupported encodings, and unsafe input paths block
+the operation.
+
+The concrete version `7` manifest shape is:
+
+```toml
+version = 7
+
+[roots]
+source = "repo"
+inputs = "inputs"
+target = "home"
+
+[resources.pi]
+kind = "template"
+source = "pi.json.j2"
+target = ".pi/agent/settings.json"
+owner = "fields"
+scope = "fields"
+comparison = "json" # or "toml"
+content_sensitivity = "public"
+baseline = "baselines/pi.json"
+inputs = { defaultModel = "global/pi.json", defaultProvider = "local/pi.json", lastChangelogVersion = "local/pi.json" }
+
+[resources.pi.fields]
+defaultModel = "source"
+defaultProvider = "live"
+lastChangelogVersion = "source"
+```
+
+Version `7` resources require an explicit template kind, relative source and
+target names, `owner = "fields"`, `scope = "fields"`, public content
+sensitivity, a non-empty field table, and `comparison = "json"` or `"toml"`.
+The optional baseline is relative to the inputs root. The optional `inputs`
+table maps field names to the input files described above.
+
+### Field and format behavior
+
+The pilot uses the existing declared-field ownership and comparison model.
+Forward changes may update only declared source-owned fields in the live
+target. Reverse changes may update only selected, declared live-owned input
+fields. Unselected fields and bytes outside the selected patch remain
+unchanged. `merge` and `ignore` retain their existing meanings; no whole-file
+replacement may be used to implement a field-level change. An absent target
+may be created only after a separate create preview and confirmation. The
+create plan must contain no undeclared rendered keys and its baseline must
+cover every non-ignored declared field; accepting a baseline does not by
+itself authorize creation. Changes to an existing target are field-level
+patches.
+
+JSON uses the existing strict UTF-8 JSON comparison rules. A missing member is
+distinct from a member whose value is `null`; deleting a selected member means
+it becomes absent. Duplicate keys, comments, trailing commas, invalid UTF-8,
+non-finite numbers, and other unsupported JSON syntax block mutation. A patch
+must preserve all unselected and undeclared source bytes; if a safe patch cannot
+be proven, the operation stops before writing.
+
+A source-owned field removed from the rendered desired object may be deleted
+from an existing target. Reverse deletion of a mapped input field is rejected
+with `m6_reverse_delete`, including during preview: removing that required
+input would make the next render undefined. A JSON null remains a present
+value and may be reverse-synchronized when the declared template preserves
+its type. Successful reverse verification requires both the mapped input and
+the recalculated desired field to match the live value with strict semantics.
+
+TOML support is limited to a UTF-8 top-level table of bare-key scalar
+assignments. Tables, arrays, quoted keys, multiline strings, inline comments,
+duplicate fields, unsupported values, and ambiguous syntax block mutation.
+Strings containing `#` are supported when the character is inside the quoted
+string; the scanner must not treat it as an inline comment. Every non-empty,
+non-comment line must be fully recognized as one supported assignment or the
+document is rejected. TOML absence is distinct from a present value; TOML has
+no `null` value. A supported patch preserves comments, line endings, and
+unselected bytes. Unsupported syntax is not normalized or rewritten as a
+complete document.
+
+Any newly observed undeclared live key or undeclared live-side change in a
+pilot target is an actionable review stop before writing that target. The
+write does not adopt, delete, or silently accept that content. The result
+identifies the affected resource and the need to review its declared scope
+without exposing configuration values.
+
+### Baselines and mutation consent
+
+An absent baseline leaves declared fields unbased and produces no forward or
+reverse candidate. Establishing or advancing a baseline requires a separate
+explicitly confirmed acceptance of selected declared fields from the desired
+or live side. Preview, input patching, target deployment, and successful
+verification never create or advance a baseline implicitly. The existing
+baseline field and acceptance semantics remain authoritative where they
+apply.
+
+Each state-changing step requires its own read-only preview and explicit
+confirmation: baseline acceptance, reverse input patching, and forward target
+deployment are separate actions. Library forward apply and reverse sync
+revalidate the supplied in-memory plan. Library baseline acceptance takes a
+manifest and recalculates its plan in each call, including a confirmed call;
+it does not bind that call to an earlier preview. Selected fields and the
+baseline side are explicit arguments to the confirming call. The CLI likewise
+has no persisted cross-process preview token: `--yes` confirms a freshly
+calculated plan. Within a mutation, the manifest, complete resource
+declaration, templates, global/local inputs, baseline, roots, allowlist,
+target, and relevant parent boundary are rechecked before writing. Selected
+fields must remain eligible under that observation. A stale result requires
+a new preview and confirmation.
+
+After each confirmed write, Luwu re-reads the affected state and recalculates
+the field observation. Results distinguish a write that was not attempted, a
+write known not to have replaced its target, a verified replacement, a
+replacement followed by failed verification, and an uncertain replacement or
+durability state. Existing v5 execution outcome meanings apply where the same
+write boundary is involved. No uncertain or failed verification is reported as
+a clean success.
+
+Recovery is read-only re-observation of the relevant inputs, baseline, roots,
+and targets. It does not replay a write, roll back a prior write, or advance a
+baseline. An uncertain result remains unresolved until a fresh observation and
+explicit user decision establish the next action.
+
+Version 7 has no durable execution journal. After process termination, a fresh
+inspection observes current state; it cannot reconstruct which input writes
+completed before the process stopped. Multi-file reverse sync is not a
+transaction. Public hardlinked files are replaced at the declared pathname;
+other links retain their previous inode and content. Version 7 does not make
+the version 6 secret-target single-link guarantee.
+
+Pilot previews, errors, records, and machine-readable results are
+metadata-only: they may identify allowlisted resources, declared public field
+labels, provenance labels, safe states, and actionable reasons. They do not
+contain configuration values, rendered/source/target bytes, diffs, content
+hashes, secrets, raw parser excerpts, or exception payloads. Declared public
+input, target, and baseline files may persist the public values required by
+their contracts; scalar shape and field-name checks do not prove that an
+arbitrary string is not a secret. A complete public-only admission check is
+required before a file or baseline is staged.
+
+### Dotter handoff
+
+A target must be explicitly handed off to Luwu one target at a time before
+Luwu manages it. Dotter and Luwu must not both manage the same target. The
+handoff and any return to Dotter are operator actions; the pilot does not edit
+Dotter configuration, remove or create links, or adopt targets implicitly.
+The repeatable handoff and return procedure belongs in
+[maintenance.md](maintenance.md) and the M6 pilot record.
+
 ## Commands
 
 All manifest commands accept `--manifest PATH` (default `luwu.toml`) and `--json`. Version-6 manifest commands additionally accept `--allow-subprocess` and `--rbw-executable ABSOLUTE_PATH`; both are required to run the provider. `inspect` and `plan` never write the manifest, source, target, or any state file. `record-inspect --record PATH` and `recover --record PATH` read only the named execution journal; neither requires a manifest argument or writes state. `cache-inspect`, `cache-refresh`, and `platform-check` are separate diagnostic commands; only `cache-refresh` writes, and it writes a metadata-only owner-only cache.
 
 `inspect` reports the current state. `plan` reports the same observation together with the action an explicit apply could take. Both commands return exit code `0` after successfully calculating a plan, including when a resource is reported as `blocked`.
 
-`apply` always calculates a plan first. In human output, a confirmed version 1 apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. Version 1 with `--yes` rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. Versions 5 and 6 use their independent execution journal contracts and require `--record PATH` for a confirmed apply. Version 6 additionally requires explicit subprocess authority and writes only the external secret target after owner-only preflight. JSON mode keeps stdout as one result document; version 1 includes the initial and verification plans when verification can recalculate one, while versions 5 and 6 include only preview/journal metadata, target labels, states, outcomes, and changed target labels. A blocked, stale, or version 2/3/4 read-only plan returns exit code `2` and does not begin a write. A version 2 `apply` preview reports `m2_read_only`; a version 3 or 4 preview reports `m3_read_only`; a plan containing an unsafe resource reports `plan_blocked`.
+`apply` always calculates a plan first. In human output, a confirmed version 1 apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. Version 1 with `--yes` rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. Versions 5 and 6 use their independent execution journal contracts and require `--record PATH` for a confirmed apply. Version 7 uses no execution record: it writes only a declared source-owned field patch or an absent target created from the rendered declared content, then recalculates the field plan. A version 7 no-op returns `no_changes`; a blocked, stale, unsupported, or uncertain result returns exit code `2`. Version 6 additionally requires explicit subprocess authority and writes only the external secret target after owner-only preflight. JSON mode keeps stdout as one result document and excludes values, bytes, diffs, and hashes. A blocked, stale, or version 2/3/4 read-only plan returns exit code `2` and does not begin a write. A version 2 `apply` preview reports `m2_read_only`; a version 3 or 4 preview reports `m3_read_only`; a plan containing an unsafe resource reports `plan_blocked`.
 
-`accept` and `reverse-sync` require `--resource`, one or more `--field` values, and explicit `--yes` confirmation for mutation. Without `--yes`, both return exit code `2` and emit a metadata-only preview. The preview is explanatory and is not a persisted plan token; `--yes` recalculates the current inputs and then performs the documented stale checks. Successful mutation returns exit code `0`, records the selected fields and write path, and includes a fresh verification plan. The result never contains accepted values, rendered content, diffs, or hashes.
+`accept` and `reverse-sync` require `--resource`, one or more `--field` values, and explicit `--yes` confirmation for mutation. For version 7, `accept` establishes or advances selected baseline fields from the desired or live object, while `reverse-sync` patches the selected live-owned input destinations. Without `--yes`, both return exit code `2` and emit a metadata-only preview. The preview is explanatory and is not a persisted plan token; `--yes` recalculates the current inputs and then performs the documented stale checks. Successful mutation returns exit code `0` and includes a fresh verification plan. The result never contains accepted values, rendered content, diffs, or hashes.
 
 Writes use a temporary file or temporary symlink in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved for template targets; a new regular template target starts with mode `0644`. A template target symlink is refused rather than followed or replaced. A symbolic target symlink is accepted only when it resolves to the declared source; a different existing symlink is blocked. The current implementation uses descriptor-relative no-follow operations, records source/target identities, and takes a non-blocking advisory lock for cooperating Luwu writers on POSIX. It fails closed when those filesystem primitives are unavailable. An advisory lock does not control unrelated writers that ignore it, so M1 does not claim protection against those races; a stronger kernel compare-and-swap boundary is future work. M1 does not create parent directories, keep a baseline, or make a backup containing configuration content.
 
@@ -234,4 +419,12 @@ Error messages identify the failing boundary but never print rendered content or
 
 ## Compatibility
 
-The manifest `version` and JSON `schema_version` are independent explicit contracts. M1 uses version `1` for both; M2 uses version `2`; M3a uses version `3`; M3b uses manifest and mutation result version `4`; M3c execution and re-observation use version `5`; M4 provider execution and re-observation use version `6`. A future incompatible change must introduce a new version or a deliberate migration. There is no migration or automatic recovery mutation command.
+The manifest `version` and JSON `schema_version` are independent explicit contracts. M1 uses version `1` for both; M2 uses version `2`; M3a uses version `3`; M3b uses manifest and mutation result version `4`; M3c execution and re-observation use version `5`; M4 provider execution and re-observation use version `6`; the M6 pilot uses version `7` for manifests and pilot mutation results. A future incompatible change must introduce a new version or a deliberate migration. There is no migration or automatic recovery mutation command.
+
+The M6 pilot is an additive, opt-in extension alongside those contracts. It
+neither broadens nor reinterprets versions `1`–`6`, and their existing inputs
+and outputs retain their current meanings. Version `7` is selected only by
+`version = 7`; its commands use the existing CLI command names and its
+metadata results use `schema_version = 7`. There is no migration from an
+earlier manifest and no automatic conversion of an existing Dotter or v1-v6
+configuration.

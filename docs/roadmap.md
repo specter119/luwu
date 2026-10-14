@@ -1,7 +1,8 @@
 # Luwu Delivery Roadmap
 
-Status: M1-M5 are closed within their recorded scopes. M6-M9 are planned;
-M6 is the next development priority.
+Status: M1-M5 are closed within their recorded scopes, including current M5
+revalidation. M6 technical acceptance is complete and awaits user-trial
+feedback; M7-M9 remain planned.
 
 This document turns the product seed into a small number of delivery
 milestones. It defines sequence and boundaries, not detailed contracts or the
@@ -20,8 +21,8 @@ The roadmap is allowed to change when evidence changes the product direction. A 
 | M2        | Resource and semantic drift foundation       | Closed: declared resources and supported format experiments are compared without claiming unsupported equivalence.                      |
 | M3        | Ownership and auditable reconciliation       | Closed: baselines, ownership, conflicts, controlled reverse sync, and recoverable plans have explicit contracts.                        |
 | M4        | Providers, secrets, and operational maturity | Closed: external providers, secret boundaries, persistence, portability, and release behavior are verified without hidden capabilities. |
-| M5        | Batch performance and interruption safety    | Closed: everyday batch operations meet the recorded latency budgets without weakening validation or recovery.                           |
-| M6        | First usable bidirectional pilot             | Planned: real Pi and Codex public configuration round-trips safely; deliver for user trial.                                             |
+| M5        | Batch performance and interruption safety    | Revalidated: complete installed-artifact timing, profiling, interruption, and safety evidence is retained in the M5 record.             |
+| M6        | First usable bidirectional pilot             | Technical acceptance complete: the bounded Pi/Codex loop and trial handoff are ready; collect user feedback before expanding scope.     |
 | M7        | Feedback-led dotfiles coverage               | Provisional: expand the proven workflow to more resources, profiles and formats after M6 user feedback.                                 |
 | M8        | Real provider and mixed-input integration    | Planned: public/local/provider inputs work together without persistent secret intermediates.                                            |
 | M9        | Real-project migration qualification         | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies.                       |
@@ -59,9 +60,10 @@ automatic recovery.
 ## Next delivery sequence
 
 The [2026-09-20 isolated pilot and M5 record](milestones/m5.md) motivate the
-remaining four planned milestones. This is a dependency sequence, not a
+remaining four milestones. This is a dependency sequence, not a
 calendar estimate or a promise of feature parity with every Dotter
-installation. M5 is closed; implement M6's complete bidirectional pilot next.
+installation. M5 revalidation and M6 technical acceptance are recorded in
+their milestone records.
 Deliver M6 for the user's first trial and wait for their feedback before
 starting M7-M9 implementation. M7-M9 are provisional directions: revise their
 scope and acceptance cases from that feedback before proceeding. M8 integrates
@@ -96,7 +98,7 @@ roots, declared local inputs and format support it requires. The
 cases and user handoff. This milestone must not stop at forward deployment or
 an artificial literal-JSON demonstration.
 
-M6 is the first planned user-trial release. It does not imply that the entire
+M6 is the first user-trial delivery. It does not imply that the entire
 dotfiles repository can migrate. Deliver an installed artifact, explicit
 target allowlist, ownership handoff instructions and known limitations, then
 collect user feedback before expanding the product.
