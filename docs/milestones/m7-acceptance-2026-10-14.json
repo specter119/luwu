@@ -1,0 +1,312 @@
+{
+  "ablation": {
+    "experiment": "m7_ablation",
+    "naive_split_breaks_quoted_cases": 3,
+    "production_deletion": "pass",
+    "production_update_cases": 4,
+    "status": "pass",
+    "unsupported_shapes_rejected": 5
+  },
+  "file_sha256": [
+    {
+      "path": "src/luwu/__init__.py",
+      "sha256": "bad00109f9a09ce0c8ba886917c9e5c92537fa49340a19357cef88ad43c6234a"
+    },
+    {
+      "path": "src/luwu/__main__.py",
+      "sha256": "307299fda7b77d22c64cb51430ec75e5f59d78e9c948786afb3b2544fe45e4b7"
+    },
+    {
+      "path": "src/luwu/baseline.py",
+      "sha256": "331e4b64071cec8cb60dd5145cc87d808a04534a897b3636c9e4ca16644aa6ac"
+    },
+    {
+      "path": "src/luwu/cli.py",
+      "sha256": "67d4f16bb21a29139a2ddf88627f4a7c33dfc854ce0e8d8e8703510998b7afd5"
+    },
+    {
+      "path": "src/luwu/errors.py",
+      "sha256": "9418519fe3ed9a0b5592107307a31133357b14dc1222cdd1b8f3bea1ddb52cbf"
+    },
+    {
+      "path": "src/luwu/filesystem.py",
+      "sha256": "036df9c25bc6572045ccf642577bdfa36522b3d0f8ed40642e6aa47c7964a353"
+    },
+    {
+      "path": "src/luwu/m6_formats.py",
+      "sha256": "41d5a20d7597ab024055aeeed2ee81d7d95db3521d8edf99b60d84860e583d96"
+    },
+    {
+      "path": "src/luwu/m6_pilot.py",
+      "sha256": "b427fee12181622cd272ed707cc8ced9e422d43b46cf51a5df8ffb6caaa8ae83"
+    },
+    {
+      "path": "src/luwu/manifest.py",
+      "sha256": "8cfdf60b544c2a77847a72a8c823a5a16716b4249c71666807b36a9ce0fcea6e"
+    },
+    {
+      "path": "src/luwu/mutations.py",
+      "sha256": "2105e936738e932a393087805ca89b0c16f77d370aa9f22a13ec08f10d9661d6"
+    },
+    {
+      "path": "src/luwu/ownership.py",
+      "sha256": "6dc5d31017d4c8ffa5dbd3de288a672199d00d75d3aa5f5ca089add16bfce6cc"
+    },
+    {
+      "path": "src/luwu/plan_record.py",
+      "sha256": "aeaddf60b99ae83d12d0c8886bb56065705886c7aff4af58e3487dcfb731b63f"
+    },
+    {
+      "path": "src/luwu/platform_support.py",
+      "sha256": "38b641c2f132dd6c2194a049e1ba6cdebe7c155ab2c749a55011cc8e393599dc"
+    },
+    {
+      "path": "src/luwu/provider_cache.py",
+      "sha256": "eae424227b0d441e53feac46355cad7022cf8cba6d6f8d44691fec3f52fe9504"
+    },
+    {
+      "path": "src/luwu/providers.py",
+      "sha256": "a24f6ea11ccc2e695e4d4883653bfb218cee5cd976135b5cbe705fb2c5a8187e"
+    },
+    {
+      "path": "src/luwu/reconcile.py",
+      "sha256": "7724469fad51d0621f10c096bce7963a704bc2d34fc4c1a1dc188d364e3e3aa4"
+    },
+    {
+      "path": "src/luwu/rendering.py",
+      "sha256": "a84f9419a14ca26c952909208e04084e1ea4b2244c18851768e8f5904e2146e2"
+    },
+    {
+      "path": "src/luwu/reverse_sync.py",
+      "sha256": "1dd1a17c7882d4b720807fb9d4987c7160d312168717d72497f998e9f3595ffc"
+    },
+    {
+      "path": "src/luwu/secrets.py",
+      "sha256": "88d54620224f4358b72540f09dedfaefb3f3bc72ebddf3e5089926df69a3a3e4"
+    },
+    {
+      "path": "src/luwu/semantic.py",
+      "sha256": "f64ddbc538b8ce865decadf66dbbb4e34f18bbc4a2ac7b267ad2dbf97cccf306"
+    },
+    {
+      "path": "tests/test_m6_inputs_formats.py",
+      "sha256": "6d7bc4b529a7818758764a87ee1a8647f60b19f2a6cf9489ce9e6a9b168dc863"
+    },
+    {
+      "path": "tests/test_m7_comments.py",
+      "sha256": "3ac9c9f2af8875d05fd3dd3bfa455d4061a81eb4e6a04a1359e9d21fe714fc5c"
+    }
+  ],
+  "installed_final_formatting_recheck": {
+    "reason": "Test-only formatting removed redundant UTF-8 encode arguments after the full suite copy",
+    "sdist_tests_passed": 17,
+    "test_copies_match_final_checkout": true,
+    "wheel_tests_passed": 17
+  },
+  "m5": {
+    "existing_guard_ablations_rerun": true,
+    "full_matrix_remeasured_this_turn": false,
+    "retained_matrix_recomputed": true,
+    "rows": 36,
+    "timed_samples": 216
+  },
+  "repository_gates": {
+    "byte_checked_mirror": true,
+    "locked_runtime_dependencies_prepared": true,
+    "log": ".venv/m7-validation/prek.log",
+    "no_matching_file_hooks_skipped": true,
+    "status": "pass",
+    "uv_no_sync": true
+  },
+  "reviews": {
+    "astra_medium": [
+      "270d1da9-3f55-4466-a7fd-3c7605c2093e",
+      "53d947a7-d0d4-4c2c-bb0b-44b4deadadd4"
+    ],
+    "implementation_probe_report": {
+      "blockers": 0,
+      "rejection_output_cases": 28,
+      "update_delete_cases": 288
+    },
+    "luna_max": [
+      "345e0e56-11db-4a34-8e76-ad20e4d3b38b"
+    ]
+  },
+  "scope": "M7a bounded TOML inline comments; M7 overall remains partial; no live trial",
+  "suites": {
+    "sdist": {
+      "all_20_source_module_bytes_match": true,
+      "all_luwu_modules_in_site_packages": true,
+      "dependencies": {
+        "Jinja2": "3.1.6",
+        "MarkupSafe": "3.0.4"
+      },
+      "errors": 0,
+      "failures": 0,
+      "m7_cases": [
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_cli_bidirectional_loop_preserves_inline_comments"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_conflicting_source_and_live_model_fail_closed"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_invalid_toml_tokens_fail_closed (token='trailing-token')"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_invalid_toml_tokens_fail_closed (token='non-scalar-token')"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_invalid_toml_tokens_fail_closed"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_post_replace_sync_uncertainty_keeps_commit_and_comment_evidence"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_reverse_rejects_stale_plan_after_input_comment_change"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_sensitive_key_is_rejected_without_disclosing_its_value"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_source_owned_delete_removes_assignment_and_inline_comment"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_undeclared_live_key_blocks_apply_without_rewriting_comments"
+        }
+      ],
+      "python_version": "3.13.15",
+      "skipped": 0,
+      "successful": true,
+      "tests_run": 446
+    },
+    "source": {
+      "all_luwu_modules_in_site_packages": false,
+      "dependencies": {
+        "Jinja2": "3.1.6",
+        "MarkupSafe": "3.0.3"
+      },
+      "errors": 0,
+      "failures": 0,
+      "m7_cases": [
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_cli_bidirectional_loop_preserves_inline_comments"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_conflicting_source_and_live_model_fail_closed"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_invalid_toml_tokens_fail_closed (token='trailing-token')"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_invalid_toml_tokens_fail_closed (token='non-scalar-token')"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_invalid_toml_tokens_fail_closed"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_post_replace_sync_uncertainty_keeps_commit_and_comment_evidence"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_reverse_rejects_stale_plan_after_input_comment_change"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_sensitive_key_is_rejected_without_disclosing_its_value"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_source_owned_delete_removes_assignment_and_inline_comment"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_undeclared_live_key_blocks_apply_without_rewriting_comments"
+        }
+      ],
+      "python_version": "3.13.15",
+      "skipped": 0,
+      "successful": true,
+      "tests_run": 446
+    },
+    "wheel": {
+      "all_20_source_module_bytes_match": true,
+      "all_luwu_modules_in_site_packages": true,
+      "dependencies": {
+        "Jinja2": "3.1.6",
+        "MarkupSafe": "3.0.4"
+      },
+      "errors": 0,
+      "failures": 0,
+      "m7_cases": [
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_cli_bidirectional_loop_preserves_inline_comments"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_conflicting_source_and_live_model_fail_closed"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_invalid_toml_tokens_fail_closed (token='trailing-token')"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_invalid_toml_tokens_fail_closed (token='non-scalar-token')"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_invalid_toml_tokens_fail_closed"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_post_replace_sync_uncertainty_keeps_commit_and_comment_evidence"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_reverse_rejects_stale_plan_after_input_comment_change"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_sensitive_key_is_rejected_without_disclosing_its_value"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_source_owned_delete_removes_assignment_and_inline_comment"
+        },
+        {
+          "status": "pass",
+          "test": "test_m7_comments.M7CommentsAcceptanceTests.test_undeclared_live_key_blocks_apply_without_rewriting_comments"
+        }
+      ],
+      "python_version": "3.13.15",
+      "skipped": 0,
+      "successful": true,
+      "tests_run": 446
+    }
+  },
+  "unrun": [
+    "real application loading",
+    "real Dotter handoff",
+    "user trial",
+    "new M5 full timing matrix"
+  ],
+  "verified_date": "2026-10-14"
+}

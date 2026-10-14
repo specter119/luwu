@@ -1,0 +1,5 @@
+copy_profile
+nested_toml
+settings
+assets:defaults.conf
+assets:nested/keymap.jsonc

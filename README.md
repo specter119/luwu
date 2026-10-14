@@ -43,6 +43,11 @@ For the public Pi JSON and Codex TOML bidirectional loop, use the
 The trial uses a small field allowlist and requires the complete target and
 input flow to be public. It does not qualify a whole dotfiles migration.
 
+For the complete M7 entry point, start with the
+[version 8 reference](docs/reference.md#m7-full-dotfiles-coverage-manifest-version-8),
+check [current implementation status](docs/status.md), and use the
+[isolated M7 fixture guide](tests/fixtures/m7/README.md).
+
 Run the deterministic test suite with:
 
 ```text

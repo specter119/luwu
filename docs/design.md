@@ -96,10 +96,10 @@ The implementation deliberately avoids a general transaction engine, a
 second durable ledger, or a recovery mutation layer. The public partial
 success and recovery meanings are defined in [reference.md](reference.md).
 
-## M6 pilot extension mechanism
+## Version 7 pilot mechanism
 
-This section describes the implemented mechanism for the version 7 pilot. The
-public behavior is owned by [the M6 pilot extension section in reference.md](reference.md#m6-pilot-extension-manifest-version-7).
+This section describes the implemented mechanism for the version 7 pilot. Its
+public behavior is owned by the [version 7 contract in reference.md](reference.md#m6-pilot-extension-manifest-version-7).
 
 ### Resolve roots and declared inputs
 
@@ -128,17 +128,23 @@ cannot disagree about a field's state. Any newly observed undeclared live
 key/change in a pilot target becomes a review stop before a writer for that
 target is entered.
 
-Use the bounded format routines to parse the pilot's selected configuration shapes
-and patch the chosen fields. JSON uses strict parsing plus member-span patching
-so unchanged bytes survive. TOML accepts only top-level scalar assignments and
-preserves comments and unselected bytes; tables, inline comments, duplicates,
-and unsupported values are rejected. Do not parse and re-encode a complete
-file for a field mutation.
+Use the bounded format routines to parse the pilot's selected configuration
+shapes and patch chosen fields. JSON uses strict parsing plus member-span
+patching so unchanged bytes survive. TOML syntax is first validated by
+`tomllib`, using `Decimal` for floating-point values. The bounded line scanner
+then accepts only top-level bare-key scalar assignments and finds the end of
+each scalar token with quote-aware handling of single- and double-quoted
+strings, including basic-string escapes. An inline comment outside the token
+is retained as part of the untouched line suffix; `#` inside a quoted string
+stays within the token.
 
-TOML syntax is validated with `tomllib` using `Decimal` for floating-point
-values before the bounded scanner locates assignment spans. The scanner
-requires a complete scalar token, so an inline comment cannot become part of
-a replacement span. Public-key checks reuse the manifest's normalized
+For an update, the patcher replaces only the selected value span. For a
+permitted deletion, it removes the complete assignment line. It applies spans
+from right to left, reparses the result, and verifies selected values and
+unselected semantics. Full-line comments, inline comments, spacing, line
+endings, and unselected source bytes survive updates. Tables, arrays, quoted
+or dotted keys, multiline strings, duplicates, and unsupported values remain
+outside the scanner subset. Public-key checks reuse the manifest's normalized
 sensitive-name predicate while retaining the pilot's additional exclusions.
 
 ### Confirm, write, and recover
@@ -172,6 +178,107 @@ The Dotter handoff is an external precondition for each allowlisted target.
 Keep Dotter configuration changes and return-to-Dotter steps in the explicit
 operator procedure; inspection, planning, confirmation, and recovery do not
 perform that handoff themselves.
+
+## Version 8 full-coverage mechanism
+
+This section describes the implementation boundaries for version 8. The
+technical core is implemented; overall M7 closure remains subject to the
+remaining application-schema evidence linked from
+[status.md](status.md). The exact public behavior belongs to the
+[version 8 contract](reference.md#m7-full-dotfiles-coverage-manifest-version-8);
+current implementation evidence belongs to [status.md](status.md).
+
+The current module responsibilities are:
+
+- `luwu/m7_manifest.py` loads the version 8 declaration, validates roots and
+  path relationships, resolves the explicitly selected profile, computes
+  stable package dependency closure and exclusions, and expands declared
+  directory resources. It retains input-layer and expansion provenance so a
+  later confirmation can reload and compare the same selection. Excluded
+  resources and inputs used only by them are removed before payload metadata
+  observation; declaration validation alone does not inspect their contents.
+- `luwu/m7_inputs.py` resolves only the selected resource's declared input
+  bindings, applies ordered layers, and keeps value provenance and file
+  observations in memory for rendering and freshness checks. Reverse mutation
+  must confirm that its destination wins the overlay and simulate the patch
+  across every consumer in the selected profile before grouping writes by file.
+- `luwu/m7_formats.py` parses complete JSON, JSONC, and TOML documents while
+  retaining their original bytes. Literal tuple paths identify scalar leaves
+  across formats. The format layer owns duplicate/sensitive-key checks,
+  semantic equality, selected-span edits, reparsing, and verification that
+  unselected document regions retain their meaning and bytes. It masks only
+  selected leaves and absent mapping/table ancestors required by those edits;
+  existing unknown containers, arrays, and type changes stay observable.
+- `luwu/m7_baseline.py` validates schema-2 baselines against the declared
+  roots, profile, resource paths, field mapping, input bindings, and directory
+  expansion. Its closed payload variants persist selected public field values
+  or an explicitly accepted copy digest as public content evidence, never the
+  complete source or target document. The target copy payload records the
+  digest algorithm and accepted digest, with mode evidence separately. Durable
+  binding identity uses resolved root paths; root device/inode identity belongs
+  to execution freshness, not baseline identity. The corrected identity
+  encoding and its focused evidence are recorded in the
+  [M7 record](milestones/m7.md).
+- `luwu/m7_filesystem.py` provides no-follow regular-file observations,
+  missing-parent inspection, one-directory-at-a-time parent creation, and
+  staged file replacement; content and mode-only changes use that same staged
+  file path. The selected parent-creation flow creates the final
+  child name with exclusive `mkdir` at initial mode 0o700, then immediately
+  opens it with no-follow directory flags and holds the descriptor. It applies
+  the requested exact mode with `fchmod`, verifies descriptor and named-entry
+  type, identity, and mode, syncs the child and parent, and rechecks the full
+  ancestor chain. `FileExistsError` is handled at the `mkdir` call; errors
+  after successful creation preserve committed/uncertain evidence. It returns
+  an observed identity, not proof of creation provenance. This path does not
+  use staged-directory publication, `ctypes`, or `renameat2`. The public
+  mode, identity, outcome, and actor guarantees are in the [version 8 resource
+  contract](reference.md#resources-and-declared-scope); current verification
+  evidence is summarized in [status](status.md).
+- `luwu/m7_plan_evidence.py` captures the engine's one complete plan projection
+  into detached immutable evidence records and compares later projections
+  against every recorded edge and scalar. It preserves exact scalar types and
+  Decimal representation, rejects unsupported and cyclic graphs, and keeps
+  no mutable plan references or persistent identity cache. Equivalent graphs
+  may split or merge shared subnodes; topology alone is not authorization.
+  Changed values, types, Decimal representation, document spans, or bytes do
+  not match. The public authorization behavior is owned by the
+  [version 8 contract](reference.md#m7-full-dotfiles-coverage-manifest-version-8).
+- `luwu/m7_engine.py` composes read-only plan, explicit baseline accept,
+  whole-file copy adopt, selected reverse sync, and profile-wide apply. It
+  uses a finite-batch flow: complete preflight, shared and current-action
+  complete-byte freshness checks before staging and again in the publication
+  callback, then a fresh whole-batch observation. Reverse sync rechecks all
+  shared consumers; per-action results retain earlier commits if a later
+  resource or parent creation fails. This flow creates no simultaneous
+  snapshot, generic transaction, replay layer, or durable execution journal. The
+  [version 8 finite-batch contract](reference.md#finite-batch-freshness-and-verification)
+  owns the exact checks and outcomes. At mutation entry, the caller plan is
+  checked against its captured evidence; a fresh verify-observe-verify cycle
+  then rederives the selected profile and must match the same evidence before
+  execution. Freshly derived resources, parsed documents, inputs, observations,
+  baselines, ownership, and write bytes drive the authorized operation. The
+  engine no longer retains caller-origin pointers or repeats the origin-graph
+  check after authorization; shared declarations still pass the independent
+  registry check at each action. Complete current-action dependencies are
+  re-read before staging and in the publication callback, with whole-batch
+  preflight, shared-consumer verification, expected own-write identities,
+  final no-op observation, and honest partial outcomes retained. Expected
+  filesystem facts advance only from identities returned by successful Luwu
+  actions. Current acceptance evidence and remaining scope limits are tracked in
+  [status](status.md).
+
+The CLI integrates these capabilities behind explicit profile and mutation
+selection. Directory enumeration is rechecked at the write boundary so a new
+or rebound leaf cannot silently enter the authorized set. The release evidence
+for the current implementation is summarized in [status](status.md); overall
+M7 closure remains pending the items recorded there and in the [M7
+milestone](milestones/m7.md).
+Application-shaped configuration uses the same declared-path and ownership
+mechanism. The fixed-version targets and opaque live-owned Codex hook state
+are defined in [reference.md](reference.md#m7-full-dotfiles-coverage-manifest-version-8);
+the implementation does not infer mappings or grant application trust.
+Droid workspace-trust SDK calls do not provide a file-schema mechanism, so no
+workspace-trust file mapping is implied.
 
 ## Provider and secret path
 

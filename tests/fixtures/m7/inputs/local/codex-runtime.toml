@@ -1,0 +1,5 @@
+# Synthetic local values for the fixed-version Codex shape.
+[official]
+project_trust = "untrusted"
+hook_enabled = false
+hook_trusted_hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"

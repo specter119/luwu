@@ -1,0 +1,4 @@
+# Local nested TOML input layer overrides the global worker name.
+[overrides.automation.worker]
+name = "synthetic-worker-app-v2"
+retained = "synthetic-retained-local-worker"

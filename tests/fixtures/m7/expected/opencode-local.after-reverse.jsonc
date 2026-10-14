@@ -1,0 +1,9 @@
+{
+  // Synthetic local values for the fixed-version OpenCode shape.
+  "model": "opencode/test-model-v2",
+  "autoupdate": false,
+  "server": {
+    "port": 4321,
+    "hostname": "localhost"
+  }
+}

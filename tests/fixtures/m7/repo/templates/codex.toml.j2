@@ -1,0 +1,6 @@
+[projects."/synthetic/luwu-m7/project.a"]
+trust_level = {{ inputs.codex_project_trust | tojson }}
+
+[hooks.state."/synthetic/luwu-m7/hooks.json:pre_tool_use:0:0"]
+enabled = {{ inputs.codex_hook_enabled | tojson }}
+trusted_hash = {{ inputs.codex_hook_trusted_hash | tojson }}

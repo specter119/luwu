@@ -1,0 +1,7 @@
+{
+  // Local layer overrides the global theme and is the explicit reverse target.
+  "overrides": {
+    "theme": "synthetic-theme-overlay-v1"
+  },
+  "retained": "synthetic-retained-local"
+}

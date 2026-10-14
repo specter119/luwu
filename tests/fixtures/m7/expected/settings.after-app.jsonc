@@ -1,0 +1,8 @@
+{
+  // Synthetic JSONC comment retained as part of the exact byte oracle.
+  "ui": {
+    "theme": "synthetic-theme-app-v2",
+    "brand": "synthetic-output-secret-sentinel-v1"
+  },
+  "unmanaged": "synthetic-unmanaged-value"
+}

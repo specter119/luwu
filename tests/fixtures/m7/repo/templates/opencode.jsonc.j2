@@ -1,0 +1,9 @@
+{
+  "$schema": {{ inputs.opencode_schema | tojson }},
+  "model": {{ inputs.opencode_model | tojson }},
+  "autoupdate": {{ inputs.opencode_autoupdate | tojson }},
+  "server": {
+    "port": {{ inputs.opencode_port | tojson }},
+    "hostname": {{ inputs.opencode_hostname | tojson }}
+  }
+}

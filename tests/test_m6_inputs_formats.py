@@ -322,24 +322,76 @@ class M6InputsAndFormatsTests(unittest.TestCase):
             b'model = "say \\"hi\\" # \\U0001F642"\nprovider = "new"\n',
         )
 
-    def test_toml_inline_comment_cannot_extend_a_string_token(self) -> None:
-        source = b'model = "old" # "keep"\n'
+    def test_toml_inline_comments_preserve_exact_non_value_bytes(self) -> None:
+        source = (
+            b'# header\r\nmodel = "say \\"hi\\" # inside" \t# "keep"\r\n'
+            b"provider = 'old#value' # literal comment"
+        )
 
-        with self.assertRaises(MutationError) as parse_error:
-            parse_m6_document(source, format="toml")
-        self.assertEqual(parse_error.exception.code, "m6_format")
+        parsed = parse_m6_document(source, format="toml")
+        changed = patch_m6_document(
+            source,
+            format="toml",
+            updates={"model": "updated", "provider": "next"},
+        )
 
-        with self.assertRaises(MutationError) as patch_error:
-            patch_m6_document(source, format="toml", updates={"model": "new"})
-        self.assertEqual(patch_error.exception.code, "m6_format")
+        self.assertEqual(parsed["model"], 'say "hi" # inside')
+        self.assertEqual(parsed["provider"], "old#value")
+        self.assertEqual(
+            changed,
+            b'# header\r\nmodel = "updated" \t# "keep"\r\n'
+            b'provider = "next" # literal comment',
+        )
+
+    def test_toml_inline_comments_preserve_bool_int_decimal_bytes(self) -> None:
+        cases = (
+            (
+                "bool",
+                "enabled",
+                "enabled = true# 开关注释  ".encode(),
+                True,
+                False,
+                "enabled = false# 开关注释  ".encode(),
+            ),
+            (
+                "int",
+                "count",
+                "count = 7  # 计数注释\t  ".encode(),
+                7,
+                12,
+                "count = 12  # 计数注释\t  ".encode(),
+            ),
+            (
+                "Decimal",
+                "ratio",
+                "ratio = 0.25# 小数注释  ".encode(),
+                Decimal("0.25"),
+                Decimal("1.125"),
+                "ratio = 1.125# 小数注释  ".encode(),
+            ),
+        )
+
+        for label, field, source, original, updated, expected in cases:
+            with self.subTest(value_type=label):
+                parsed = parse_m6_document(source, format="toml")
+                changed = patch_m6_document(
+                    source, format="toml", updates={field: updated}
+                )
+
+                self.assertEqual(parsed[field], original)
+                self.assertIs(type(parsed[field]), type(original))
+                self.assertEqual(changed, expected)
 
     def test_toml_unsupported_lexical_forms_fail_closed(self) -> None:
         cases = (
             b'"model" = "x"\n',
-            b'model = """x\n',
-            b'model = "x" # inline\n',
+            b'model = """x\ny"""\n',
+            b'model = "x" trailing\n',
             b'model = "x"\nnot-an-assignment\n',
             b'model = ["x"]\n',
+            b"model = 1\nmodel = 2\n",
+            b"model = inf\n",
+            b"model = nan\n",
         )
         for source in cases:
             with self.subTest(source=source), self.assertRaises(MutationError):
@@ -349,7 +401,9 @@ class M6InputsAndFormatsTests(unittest.TestCase):
         self,
     ) -> None:
         source = (
-            b'# keep\r\nmodel = "old"\r\nremove = "gone"\r\nkeep = 12345678901234567890'
+            b'# keep\r\nmodel = "old"\r\n'
+            b'remove = "gone" # deleted with its assignment\r\n'
+            b"keep = 12345678901234567890"
         )
 
         changed = patch_m6_document(
