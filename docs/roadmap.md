@@ -1,8 +1,11 @@
 # Luwu Delivery Roadmap
 
 Status: M1-M5 are closed within their recorded scopes, including current M5
-revalidation. M6 technical acceptance is complete and awaits user-trial
-feedback; M7-M9 remain planned.
+revalidation. M6 technical acceptance is complete and its user trial remains
+pending. The complete M7 scope is explicitly authorized and its technical core
+is implemented and technically verified; the Droid workspace-trust schema
+boundary remains open. M7a evidence remains a closed historical part of that
+work. M8-M9 remain planned.
 
 This document turns the product seed into a small number of delivery
 milestones. It defines sequence and boundaries, not detailed contracts or the
@@ -15,17 +18,17 @@ The roadmap is allowed to change when evidence changes the product direction. A 
 
 ## Milestone map
 
-| Milestone | Focus                                        | Completion outcome                                                                                                                      |
-| --------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| M1        | Developer confidence preview                 | Closed: a safe, forward-only single-resource loop is observable, explainable, and explicitly applicable.                                |
-| M2        | Resource and semantic drift foundation       | Closed: declared resources and supported format experiments are compared without claiming unsupported equivalence.                      |
-| M3        | Ownership and auditable reconciliation       | Closed: baselines, ownership, conflicts, controlled reverse sync, and recoverable plans have explicit contracts.                        |
-| M4        | Providers, secrets, and operational maturity | Closed: external providers, secret boundaries, persistence, portability, and release behavior are verified without hidden capabilities. |
-| M5        | Batch performance and interruption safety    | Revalidated: complete installed-artifact timing, profiling, interruption, and safety evidence is retained in the M5 record.             |
-| M6        | First usable bidirectional pilot             | Technical acceptance complete: the bounded Pi/Codex loop and trial handoff are ready; collect user feedback before expanding scope.     |
-| M7        | Feedback-led dotfiles coverage               | Provisional: expand the proven workflow to more resources, profiles and formats after M6 user feedback.                                 |
-| M8        | Real provider and mixed-input integration    | Planned: public/local/provider inputs work together without persistent secret intermediates.                                            |
-| M9        | Real-project migration qualification         | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies.                       |
+| Milestone | Focus                                        | Completion outcome                                                                                                                                     |
+| --------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| M1        | Developer confidence preview                 | Closed: a safe, forward-only single-resource loop is observable, explainable, and explicitly applicable.                                               |
+| M2        | Resource and semantic drift foundation       | Closed: declared resources and supported format experiments are compared without claiming unsupported equivalence.                                     |
+| M3        | Ownership and auditable reconciliation       | Closed: baselines, ownership, conflicts, controlled reverse sync, and recoverable plans have explicit contracts.                                       |
+| M4        | Providers, secrets, and operational maturity | Closed: external providers, secret boundaries, persistence, portability, and release behavior are verified without hidden capabilities.                |
+| M5        | Batch performance and interruption safety    | Revalidated: complete installed-artifact timing, profiling, interruption, and safety evidence is retained in the M5 record.                            |
+| M6        | First usable bidirectional pilot             | Technical acceptance complete: the bounded Pi/Codex loop and trial handoff are ready; user trial remains pending.                                      |
+| M7        | Full dotfiles coverage                       | Technical core implemented and verified; overall closure remains open on Droid workspace-trust schema evidence; see the [M7 record](milestones/m7.md). |
+| M8        | Real provider and mixed-input integration    | Planned: public/local/provider inputs work together without persistent secret intermediates.                                                           |
+| M9        | Real-project migration qualification         | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies.                                      |
 
 ## M1: Developer confidence preview
 
@@ -64,12 +67,13 @@ remaining four milestones. This is a dependency sequence, not a
 calendar estimate or a promise of feature parity with every Dotter
 installation. M5 revalidation and M6 technical acceptance are recorded in
 their milestone records.
-Deliver M6 for the user's first trial and wait for their feedback before
-starting M7-M9 implementation. M7-M9 are provisional directions: revise their
-scope and acceptance cases from that feedback before proceeding. M8 integrates
-with the resulting ownership rules; M9 qualifies the combined workflow. Do not
-advance automatically from passing M6 tests to later implementation or to live
-deployment.
+The M6 user trial remains pending, but it is no longer a start condition for
+the complete M7 scope. The user authorized M7 version 8 development as one
+whole milestone; M7a's isolated implementation evidence remains intact and
+does not turn the remaining work into feedback-gated slices. This authorization
+does not close the M6 trial checkpoint or authorize a live deployment. See the
+[M7 record](milestones/m7.md). M8 and M9 remain separately planned under their
+existing scope and sequencing.
 
 The milestone identifiers do not allocate manifest versions. Before changing
 public behavior, define the compatible extension or version transition in
@@ -101,25 +105,37 @@ an artificial literal-JSON demonstration.
 M6 is the first user-trial delivery. It does not imply that the entire
 dotfiles repository can migrate. Deliver an installed artifact, explicit
 target allowlist, ownership handoff instructions and known limitations, then
-collect user feedback before expanding the product.
+collect user feedback for later work. The full M7 scope is separately
+authorized and proceeds under the M7 section below.
 
-## M7: Feedback-led dotfiles coverage
+## M7: Full dotfiles coverage
 
-Provisional scope, to be revised after M6 user feedback:
+The complete M7 scope is authorized; its technical core is implemented as manifest version 8.
+It is one milestone, not a sequence of slices waiting for M6 trial
+feedback. Its scope includes explicit profiles and package closure/exclusion,
+layered public inputs with provenance, template/copy/directory resources,
+declared parent and file modes, explicit adoption, JSONC and nested TOML paths,
+and selected multi-resource mutation. The authorized application-mapping
+acceptance scope targets OpenCode v1.19.0 JSONC, Codex v0.162.1 project and
+hook configuration, and Droid 0.240.0 settings. Exact paths, values, and
+ownership limits belong to the [version 8 contract](reference.md#m7-full-dotfiles-coverage-manifest-version-8).
+The isolated fixture now exercises those fixed-version shapes with synthetic
+files, without establishing application runtime compatibility. The [M7
+record](milestones/m7.md) holds current coverage and verification evidence.
 
-- named profiles, deterministic package selection and global/local overlays;
-- inspectable directory expansion, literal copy, explicit parent/mode handling
-  and adoption support beyond the pilot;
-- JSONC/OpenCode and additional structured mappings such as Codex project/hook
-  trust state and Droid trust state, prioritized by observed usage;
-- better handling and explanations for the undeclared-change and conflict
-  cases encountered in the trial, without silent adoption or data loss.
+The version 8 contract in [reference](reference.md#m7-full-dotfiles-coverage-manifest-version-8)
+owns exact public behavior. The [M7 record](milestones/m7.md) owns the fixed
+milestone scope, acceptance gates, and dated evidence; [status](status.md)
+owns what is implemented now. The release source, package, and applicable code
+checks and installed performance budgets have passed. The remaining Droid
+workspace-trust schema boundary is tracked in [status](status.md) and the
+[M7 record](milestones/m7.md). It prevents an unconditional M7 completion
+claim.
 
-Exit criteria will select the next concrete workflow set from that feedback.
-Every added format or resource must retain the M6 bidirectional guarantees
-where applicable and M5 performance budgets. Include machine exclusions such
-as WSL mihomo non-ownership. A universal Dotter importer, broad YAML support
-and all historical reverse-sync slots are not automatic scope commitments.
+The applicable M6 bidirectional guarantees and M5 budgets remain acceptance
+constraints. Machine exclusions such as WSL mihomo non-ownership are explicit
+profile data. A universal Dotter importer, broad YAML support, and all
+historical reverse-sync slots remain outside automatic scope commitments.
 
 ## M8: Real provider and mixed-input integration
 

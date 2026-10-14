@@ -1,0 +1,7 @@
+# Synthetic nested TOML template; both nested tables are intentional.
+[display]
+theme = "synthetic-runtime-theme-v1"
+
+[automation.worker]
+name = "synthetic-worker-source-v2"
+unmanaged = "synthetic-unmanaged-worker"

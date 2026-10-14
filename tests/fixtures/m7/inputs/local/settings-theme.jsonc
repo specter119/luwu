@@ -1,0 +1,5 @@
+{
+  // Independent reverse leaf for the ordinary settings happy loop.
+  "theme": "synthetic-theme-overlay-v1",
+  "retained": "synthetic-independent-settings-theme-v1"
+}

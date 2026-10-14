@@ -1,0 +1,3 @@
+.codex/config.toml
+.factory/settings.json
+.config/opencode/opencode.jsonc

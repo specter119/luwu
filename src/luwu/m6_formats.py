@@ -286,19 +286,26 @@ def _scan_toml(
         key = match.group("key")
         if key in spans:
             raise M6FormatError("duplicate TOML field", code="m6_format")
-        raw_value = match.group("value").strip(" \t")
-        if not raw_value:
+        raw_value = match.group("value")
+        value_start_in_match = len(raw_value) - len(raw_value.lstrip(" \t"))
+        value_text = raw_value[value_start_in_match:]
+        value_end_in_match = value_start_in_match + _toml_value_token_length(value_text)
+        raw_token = raw_value[value_start_in_match:value_end_in_match]
+        tail = raw_value[value_end_in_match:]
+        comment = tail.lstrip(" \t")
+        if not raw_token:
             raise M6FormatError("M6 TOML assignment has no value", code="m6_format")
+        if comment and not comment.startswith("#"):
+            raise M6FormatError(
+                "M6 TOML contains unsupported or ambiguous syntax", code="m6_format"
+            )
         value = values.get(key, _MISSING)
-        if value is _MISSING or not _is_supported_toml_scalar(raw_value, value):
+        if value is _MISSING or not _is_supported_toml_scalar(raw_token, value):
             raise M6FormatError(
                 "M6 TOML value is outside the scalar subset", code="m6_format"
             )
-        value_start = offset + match.start("value")
-        value_start += len(match.group("value")) - len(
-            match.group("value").lstrip(" \t")
-        )
-        value_end = value_start + len(raw_value)
+        value_start = offset + match.start("value") + value_start_in_match
+        value_end = offset + match.start("value") + value_end_in_match
         spans[key] = (offset, offset + len(line), value_start, value_end)
         offset += len(line)
     if offset < len(text):
@@ -314,6 +321,31 @@ def _scan_toml(
     return values, spans
 
 
+def _toml_value_token_length(value: str) -> int:
+    """Return the end of one quote-aware TOML scalar token."""
+
+    if not value:
+        return 0
+    quote = value[0] if value[0] in {'"', "'"} else None
+    if quote is not None:
+        if value.startswith(quote * 3):
+            return 0
+        index = 1
+        while index < len(value):
+            character = value[index]
+            if quote == '"' and character == "\\":
+                index += 2
+                continue
+            if character == quote:
+                return index + 1
+            index += 1
+        return 0
+    for index, character in enumerate(value):
+        if character in " \t#":
+            return index
+    return len(value)
+
+
 def _load_toml_values(text: str) -> dict[str, object]:
     try:
         return tomllib.loads(text, parse_float=Decimal)
@@ -322,17 +354,9 @@ def _load_toml_values(text: str) -> dict[str, object]:
 
 
 def _is_supported_toml_scalar(raw_value: str, value: object) -> bool:
-    if raw_value.startswith('"'):
-        return (
-            not raw_value.startswith('"""')
-            and _is_single_line_toml_string_token(raw_value, '"')
-            and isinstance(value, str)
-        )
-    if raw_value.startswith("'"):
-        return (
-            not raw_value.startswith("'''")
-            and _is_single_line_toml_string_token(raw_value, "'")
-            and isinstance(value, str)
+    if raw_value.startswith(('"', "'")):
+        return _toml_value_token_length(raw_value) == len(raw_value) and isinstance(
+            value, str
         )
     if raw_value in {"true", "false"}:
         return isinstance(value, bool)
@@ -341,26 +365,6 @@ def _is_supported_toml_scalar(raw_value: str, value: object) -> bool:
         return isinstance(value, int) and not isinstance(value, bool)
     if re.fullmatch(r"[+-]?(?:\d+\.\d*|\d*\.\d+|\d+)(?:[eE][+-]?\d+)?", numeric):
         return isinstance(value, Decimal) and value.is_finite()
-    return False
-
-
-def _is_single_line_toml_string_token(raw_value: str, quote: str) -> bool:
-    """Require one complete, single-line TOML string token."""
-
-    if len(raw_value) < 2 or raw_value[0] != quote:
-        return False
-    if quote == "'":
-        return raw_value.find(quote, 1) == len(raw_value) - 1
-
-    index = 1
-    while index < len(raw_value):
-        character = raw_value[index]
-        if character == "\\":
-            index += 2
-            continue
-        if character == '"':
-            return index == len(raw_value) - 1
-        index += 1
     return False
 
 

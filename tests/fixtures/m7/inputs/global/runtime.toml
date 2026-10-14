@@ -1,0 +1,7 @@
+# Global nested TOML input layer.
+[display]
+theme = "synthetic-runtime-theme-v1"
+
+[automation.worker]
+name = "synthetic-worker-global-v1"
+retained = "synthetic-retained-global-worker"

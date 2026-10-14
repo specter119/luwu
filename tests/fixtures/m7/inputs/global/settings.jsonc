@@ -1,0 +1,8 @@
+{
+  // Global layer; comments and unrelated data are part of the byte oracle.
+  "values": {
+    "theme": "synthetic-theme-global-v1",
+    "brand": "synthetic-output-secret-sentinel-v1",
+    "retained": "synthetic-retained-global"
+  }
+}

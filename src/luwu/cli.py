@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tomllib
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from . import __version__, provider_cache
 from .errors import LuwuError, MutationError
+from .filesystem import (
+    capture_directory_boundary,
+    open_parent_directory,
+    read_regular_file_at,
+)
 from .m6_pilot import (
     M6MutationResult,
     M6Plan,
@@ -20,6 +27,7 @@ from .m6_pilot import (
     reverse_m6_inputs,
 )
 from .manifest import (
+    Manifest,
     is_execution_manifest,
     is_m6_manifest,
     is_provider_manifest,
@@ -143,6 +151,13 @@ def build_parser() -> argparse.ArgumentParser:
     accept.add_argument("--field", action="append", required=True)
     accept.add_argument("--yes", action="store_true")
 
+    adopt = commands.add_parser(
+        "adopt", help="explicitly accept a declared version-8 copy resource"
+    )
+    _add_common_arguments(adopt)
+    adopt.add_argument("--resource", required=True)
+    adopt.add_argument("--yes", action="store_true")
+
     reverse = commands.add_parser(
         "reverse-sync", help="explicitly write selected live-owned fields to source"
     )
@@ -180,7 +195,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else 2
             )
 
-        manifest = load_manifest(args.manifest)
+        manifest, is_m7_manifest = _load_cli_manifest(args)
+        if is_m7_manifest:
+            return _run_m7_command(args, manifest)
+
+        manifest = cast(Manifest, manifest)
         authority = _authority_from_args(args)
         if is_m6_manifest(manifest):
             if args.command in {"accept", "reverse-sync"}:
@@ -372,7 +391,160 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="emit metadata-only JSON for agents and scripts",
     )
+    parser.add_argument(
+        "--profile",
+        help="select a version-8 manifest profile",
+    )
     _add_authority_arguments(parser)
+
+
+def _load_cli_manifest(args: argparse.Namespace) -> tuple[object, bool]:
+    """Load v8 through its profile-aware loader and preserve legacy loading."""
+
+    if _manifest_version_hint(args.manifest) == 8:
+        _reject_m7_legacy_options(args)
+        if args.profile is None:
+            raise LuwuError(
+                "--profile is required for a version 8 manifest",
+                code="profile_required",
+            )
+        from .m7_manifest import load_manifest as load_m7_manifest
+
+        return load_m7_manifest(args.manifest, profile=args.profile), True
+
+    manifest = load_manifest(args.manifest)
+    if args.profile is not None:
+        raise LuwuError(
+            "--profile is supported only for version 8 manifests",
+            code="profile_unsupported",
+        )
+    if args.command == "adopt":
+        raise LuwuError(
+            "adopt is supported only for version 8 manifests",
+            code="adopt_unsupported",
+        )
+    return manifest, False
+
+
+def _manifest_version_hint(path: Path) -> int | None:
+    """Read only a version hint through a no-follow descriptor boundary.
+
+    The selected manifest loader always reads and validates the manifest again.
+    Probe and TOML errors are deliberately suppressed so parser details never
+    cross the CLI boundary.
+    """
+
+    try:
+        absolute_path = Path(os.path.abspath(path.expanduser()))
+        parent_boundary = capture_directory_boundary(absolute_path.parent)
+        parent_descriptor, name = open_parent_directory(
+            parent_boundary.path, absolute_path
+        )
+        try:
+            raw, _ = read_regular_file_at(parent_descriptor, name)
+        finally:
+            os.close(parent_descriptor)
+        parent_boundary.verify()
+        document = tomllib.loads(raw.decode("utf-8"))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    if not isinstance(document, dict):
+        return None
+    version = document.get("version")
+    return version if type(version) is int else None
+
+
+def _reject_m7_legacy_options(args: argparse.Namespace) -> None:
+    if getattr(args, "record", None) is not None:
+        raise LuwuError(
+            "--record is not supported with version 8 manifests",
+            code="record_unsupported",
+        )
+    if (
+        getattr(args, "allow_subprocess", False)
+        or getattr(args, "rbw_executable", None) is not None
+    ):
+        raise LuwuError(
+            "provider authority options are not supported with version 8 manifests",
+            code="authority_unsupported",
+        )
+
+
+def _run_m7_command(args: argparse.Namespace, manifest: object) -> int:
+    """Translate version-8 CLI input into the process-local engine API."""
+
+    from . import m7_engine
+    from .m7_manifest import Manifest as M7Manifest
+
+    m7_manifest = cast(M7Manifest, manifest)
+    plan = m7_engine.build_plan(m7_manifest)
+    if args.command in {"inspect", "plan"}:
+        _emit_m7_plan(plan, command=args.command, as_json=args.json)
+        return 0
+
+    if args.command == "apply":
+        result = m7_engine.apply_plan(plan, confirm=args.yes)
+    elif args.command == "accept":
+        result = m7_engine.accept_baseline(
+            plan,
+            resource=args.resource,
+            fields=tuple(args.field),
+            value_from=args.value_from,
+            confirm=args.yes,
+        )
+    elif args.command == "adopt":
+        result = m7_engine.adopt_resource(
+            plan,
+            resource=args.resource,
+            confirm=args.yes,
+        )
+    elif args.command == "reverse-sync":
+        result = m7_engine.reverse_inputs(
+            plan,
+            resource=args.resource,
+            fields=tuple(args.field),
+            confirm=args.yes,
+        )
+    else:
+        raise LuwuError(
+            "command is not supported for version 8", code="command_unsupported"
+        )
+
+    _emit_m7_result(result, as_json=args.json)
+    return 0 if result.outcome in {"committed", "no_changes"} else 2
+
+
+def _emit_m7_plan(plan: object, *, command: str, as_json: bool) -> None:
+    payload = _m7_metadata(plan)
+    payload["command"] = command
+    _emit_m7_metadata(payload, as_json=as_json, heading=f"M7 {command}")
+
+
+def _emit_m7_result(result: object, *, as_json: bool) -> None:
+    payload = _m7_metadata(result)
+    operation = payload.get("operation")
+    heading = f"M7 {operation}" if isinstance(operation, str) else "M7 result"
+    _emit_m7_metadata(payload, as_json=as_json, heading=heading)
+
+
+def _m7_metadata(value: object) -> dict[str, object]:
+    payload = cast(Any, value).to_dict()
+    if not isinstance(payload, dict):
+        raise TypeError("version 8 engine metadata must be an object")
+    return cast(dict[str, object], payload)
+
+
+def _emit_m7_metadata(
+    payload: dict[str, object], *, as_json: bool, heading: str
+) -> None:
+    if as_json:
+        _print_json(payload)
+        return
+    print(_display(heading))
+    for key, value in payload.items():
+        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        print(f"{_display(key)}: {rendered}")
 
 
 def _add_authority_arguments(parser: argparse.ArgumentParser) -> None:

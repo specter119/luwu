@@ -99,10 +99,16 @@ Inspect the whole target file, every associated global/local input file, and
 the existing baseline (or the public values that would create a new baseline).
 Admission of only the selected scalar fields is insufficient. Exclude
 credentials, authentication state, provider configuration/files, and any file
-that contains secrets. The bounded TOML input excludes tables, arrays, and
-inline comments. JSONC, JSON comments, and trailing commas are unsupported. See
-the [version 7 format and public-data contract](reference.md#m6-pilot-extension-manifest-version-7)
-for the exact accepted shape and limits.
+that contains secrets. The current version 7 TOML subset accepts the bounded
+inline-comment behavior recorded in the [version 7 contract](reference.md#m6-pilot-extension-manifest-version-7).
+Tables, arrays, quoted or dotted keys, multiline strings, JSONC, JSON comments,
+and trailing commas remain unsupported. Current implementation status and
+remaining M7 gates are recorded in the [M7 milestone](milestones/m7.md).
+The complete version 8 capability is authorized and its technical core is
+implemented. The final performance record and Droid workspace-trust schema
+boundary remain open, so overall M7 completion is not claimed. See
+[reference](reference.md#m7-full-dotfiles-coverage-manifest-version-8) and
+[status](status.md).
 
 Check access as the identity that will run Luwu: source templates and every
 input must be readable; each directory in their paths must be traversable; and
@@ -142,6 +148,70 @@ test and is not performed by inspection, planning, confirmation, or recovery.
 directories are writable. A read-only shared agent directory is an environment
 failure, not evidence that the source or tests passed. An isolated copy is
 acceptable when it is byte-checked against the working tree.
+
+## M7a TOML comment ablation
+
+Run the design ablation from the repository root:
+
+```text
+uv run --script experiments/m7_ablation.py
+```
+
+The PEP 723 script imports `patch_m6_document` from the checkout's `src/`
+tree and applies it to synthetic TOML. It compares actual patch results with
+independently specified expected bytes, then checks both `tomllib` semantics
+and the product parser. It contrasts the prior comment-rejecting scalar scan,
+naive `#` splitting, and whole-document reserialization, and checks the
+whole-line deletion boundary and unsupported syntax controls. The experiment
+is not a substitute for the focused implementation and CLI evidence recorded
+in the [M7 milestone](milestones/m7.md).
+
+## M7 full-scope implementation handoff
+
+M7 is authorized as one complete version 8 milestone. Its public behavior is
+owned by [reference](reference.md#m7-full-dotfiles-coverage-manifest-version-8),
+its mechanism by [design](design.md#version-8-full-coverage-mechanism),
+its current state by [status](status.md), and its acceptance gates by the
+[M7 record](milestones/m7.md). Do not turn the pending M6 user trial into a
+start condition for the authorized M7 scope.
+
+Keep fixtures under synthetic roots and public test data. The M7 fixture
+includes synthetic app-shaped settings workflows for the fixed OpenCode,
+Codex, and Droid targets. These exercise file-shape handling only; they do not
+launch applications, establish runtime compatibility, or authorize a live
+target handoff. The [version 8 contract](reference.md#m7-full-dotfiles-coverage-manifest-version-8)
+owns the target shapes and states that generic Luwu declarations do not
+enforce application-specific enum domains. Droid workspace-trust SDK calls do
+not establish a file schema. Current implementation status and dated evidence
+are in [status](status.md) and the [M7 record](milestones/m7.md); M7 is not
+unconditionally complete while the workspace-trust file schema remains
+unverified.
+For documentation-only changes, run relative-link and whitespace checks. Keep
+any separate product-test result in the milestone record; formatting and link
+checks do not imply that a product suite passed.
+
+To reproduce the production ablations and installed timing matrix from the
+checkout, use an explicit interpreter and keep benchmark scratch on the same
+filesystem as the measured worktree (Btrfs in the retained run):
+
+```sh
+uv run --script experiments/m7_full_ablation.py --python .venv/bin/python
+uv build --out-dir .venv/m7-dist
+uv venv .venv/m7-installed
+uv pip install --python .venv/m7-installed/bin/python .venv/m7-dist/luwu-0.1.0-py3-none-any.whl
+uv run --script experiments/m7_full_benchmark.py \
+  --python .venv/m7-installed/bin/python --installed \
+  --scratch .venv --resources 100 200 --repeats 5 \
+  --scenarios plan noop onechange allchanged \
+  --output .venv/m7-benchmark.json
+```
+
+Run timing without concurrent test suites. Inspect the recorded postconditions,
+interpreter/module provenance, median budget and maximum guard fields; a zero
+exit code or `complete=true` alone is not budget acceptance. Preserve failed
+candidate reports and associate each result with its source hashes. The
+[full acceptance record](milestones/m7-full-acceptance-2026-10-14.json) retains
+the final and preceding candidate matrices and the applicable limits.
 
 ## Provider and secret operations
 

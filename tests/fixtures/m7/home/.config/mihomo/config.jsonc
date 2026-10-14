@@ -1,0 +1,2 @@
+// Public synthetic excluded target sentinel; tests recreate its broken link.
+{"sentinel":"excluded-target"}

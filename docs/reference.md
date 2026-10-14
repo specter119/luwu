@@ -1,12 +1,12 @@
 # Luwu Public Reference
 
-Status: current preview contract
+Status: current versioned contracts, including the complete M7 version 8 public contract.
 
-This document owns the stable manifest, CLI, JSON, error, and compatibility contract for the developer-confidence preview and its M2, M3a, narrow single-resource M3b, explicit M3c execution, M4 provider extension, and additive M6 version 7 pilot extension. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
+This document owns the manifest, CLI, JSON, error, and compatibility contracts for the developer-confidence preview and its M2, M3a, narrow single-resource M3b, explicit M3c execution, M4 provider extension, additive M6 version 7 pilot extension, and additive M7 version 8 extension. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
 
 ## Manifest
 
-The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source, target, and baseline. M1 uses manifest version `1`; M2 supports versions `1` and `2`; M3a adds version `3`; M3b adds version `4`; the M3c execution slice adds version `5`; M4 adds the independent provider execution version `6`; the M6 pilot adds the opt-in version `7` contract.
+The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source, target, and baseline. M1 uses manifest version `1`; M2 supports versions `1` and `2`; M3a adds version `3`; M3b adds version `4`; the M3c execution slice adds version `5`; M4 adds the independent provider execution version `6`; the M6 pilot adds the opt-in version `7` contract; M7 defines the additive version `8` contract below.
 
 ```toml
 version = 1
@@ -224,16 +224,19 @@ value and may be reverse-synchronized when the declared template preserves
 its type. Successful reverse verification requires both the mapped input and
 the recalculated desired field to match the live value with strict semantics.
 
-TOML support is limited to a UTF-8 top-level table of bare-key scalar
-assignments. Tables, arrays, quoted keys, multiline strings, inline comments,
-duplicate fields, unsupported values, and ambiguous syntax block mutation.
-Strings containing `#` are supported when the character is inside the quoted
-string; the scanner must not treat it as an inline comment. Every non-empty,
-non-comment line must be fully recognized as one supported assignment or the
-document is rejected. TOML absence is distinct from a present value; TOML has
-no `null` value. A supported patch preserves comments, line endings, and
-unselected bytes. Unsupported syntax is not normalized or rewritten as a
-complete document.
+TOML input is UTF-8 and limited to a top-level table of bare-key, single-line
+scalar assignments in the existing public scalar subset. M7a accepts inline
+comments after a scalar; `#` inside a quoted string remains part of the value.
+Updating a selected value replaces only its token and preserves assignment
+spacing, whitespace before the comment, the comment, line endings, full-line
+comments, and all unselected bytes. Deleting a selected field removes its
+complete physical assignment line, including a same-line comment and line
+terminator, where that deletion is otherwise allowed. Reverse deletion of a
+mapped input field remains rejected. M7a keeps manifest version `7` and the
+JSON output schema unchanged. Tables, arrays, quoted or dotted keys, multiline
+strings, duplicate fields, unsupported scalar values, and ambiguous syntax
+remain rejected. TOML absence is distinct from a present value; TOML has no
+`null` value.
 
 Any newly observed undeclared live key or undeclared live-side change in a
 pilot target is an actionable review stop before writing that target. The
@@ -291,9 +294,12 @@ labels, provenance labels, safe states, and actionable reasons. They do not
 contain configuration values, rendered/source/target bytes, diffs, content
 hashes, secrets, raw parser excerpts, or exception payloads. Declared public
 input, target, and baseline files may persist the public values required by
-their contracts; scalar shape and field-name checks do not prove that an
-arbitrary string is not a secret. A complete public-only admission check is
-required before a file or baseline is staged.
+their contracts. Version 8 copy adoption is an explicit public-content
+admission: its baseline may persist the accepted byte digest as content
+evidence, but the digest never appears in a preview, output, repr, or log.
+Declaring content public does not redact or prove the absence of secrets; a
+complete public-only admission check is required before a file or baseline is
+staged.
 
 ### Dotter handoff
 
@@ -304,15 +310,352 @@ Dotter configuration, remove or create links, or adopt targets implicitly.
 The repeatable handoff and return procedure belongs in
 [maintenance.md](maintenance.md) and the M6 pilot record.
 
+## M7 full dotfiles coverage (manifest version 8)
+
+This additive contract preserves versions 1 through 7, including the M7a
+version 7 extension. It defines the complete authorized M7 scope; M7 is not
+split into feedback-gated delivery slices. Current implementation status and
+remaining verification are owned by [status.md](status.md) and the [M7
+record](milestones/m7.md).
+
+### Manifest, profiles, and package closure
+
+A version 8 manifest has version = 8 and declares [roots] with source, inputs,
+and target paths; named [profiles.NAME]; named [packages.NAME]; named inputs;
+and named resources. Source and inputs are relative to the manifest directory;
+target may be relative to it or an explicit absolute path. All three roots must
+already exist as safe directories.
+Source and inputs roots must be distinct and non-overlapping. The target root
+may be separate or may contain either authority root, but cannot alias or lie
+inside either. The loader rejects unsafe aliases and conflicting declared
+manifest, source, input, target, baseline, and directory paths, including
+ancestor conflicts across resources. Each directory leaf remains within its
+declared directory scope. No undeclared path gains authority from a profile or
+from a configuration value.
+
+Every version 8 command requires an explicit --profile NAME. A profile
+declares package names and an exclude list, which may be empty. A package
+declares its dependencies and resource names. Luwu computes the transitive
+dependency closure, orders included packages by a stable topological order,
+and expands their resources deterministically. Exclusions take precedence
+over selection;
+if an included package depends on an excluded package, the profile is invalid
+and planning stops. Exclusion is applied before any stat, open, or directory
+walk of excluded resources or inputs used only by them; validating their
+declarations does not grant permission to inspect their content. Only inputs
+referenced by selected resources are read. Plans identify included and
+excluded packages. Selection never depends on implicit platform detection;
+platform-specific non-ownership is expressed by the selected profile's
+exclusions.
+
+### Declared inputs and overlays
+
+Each named input binding declares an ordered layers list. A layer contains a
+file path relative to the inputs root and under its global or local directory,
+a literal path expressed as a list of string segments, a format (json, jsonc,
+or toml), and an optional flag. The path selects one scalar value. A missing
+layer or value is ignored only when that layer is optional; otherwise it blocks
+the binding. Among present layers, the later declared value takes precedence
+and the result retains metadata-only provenance for the winning layer. This
+supports explicit global/local overlays without scanning for files or
+inferring aliases.
+
+Bindings may share one input file only when they declare the same format and
+distinct, non-overlapping paths. Cross-role aliases between input, target,
+and baseline paths are invalid. A reverse destination must be the winning
+layer for its binding after the selected write; reverse sync cannot write a
+shadowed layer and rely on another layer to keep taking precedence.
+
+A binding may declare one reverse_to destination as a non-optional input
+layer. Reverse sync can write only that declared file and literal path for a
+field that names the binding. The destination's filesystem parent must exist.
+Luwu may create the selected declared destination value or file as required by
+the supported format patch; it does not create arbitrary input directories or
+write other keys. Before writing, reverse sync simulates the change across all
+consumers in the selected profile. It blocks if an unselected consumer's
+desired value would change semantically, shared consumers require inconsistent
+values, or paths overlap. It groups edits to each file into one patch, then
+verifies every consumer and preserved unselected content after writing.
+Source-owned fields may omit an input binding. Live- and merge-owned fields
+require one; ignored fields do not create a write destination. Version 8
+inputs are public scalar data and have no provider or secret-value path.
+
+For a shared input, if resources A and B consume the same leaf `x = 1` and
+both have live value `2`, reversing either one alone is blocked because
+changing `x` to `2` would change the other, unselected consumer's desired
+value. Matching live values do not authorize a joint change. The operator can
+split the binding or input leaf into separate declared destinations, or
+manually change the shared public input and run a new plan.
+When this simulation blocks reverse sync because the proposed write would
+change another declared consumer, the fixed error code is
+`m7_reverse_consumer_change` with the message `M7 reverse sync would change another declared consumer`.
+
+### Resources and declared scope
+
+A resource declares kind, source and target relative to their respective roots,
+baseline relative to the inputs root, content_sensitivity = public, parents,
+and parent_mode. Template resources additionally declare a supported
+structured format, scope = fields,
+and a non-empty field map. Each field alias maps to a literal path, an owner
+(source, live, merge, or ignore), and, where required, a named input binding.
+Mapped paths may not overlap. Dots, slashes, and array positions have no
+special path syntax; a path is the exact ordered tuple of its declared string
+segments. There are no built-in application schemas or inferred field
+mappings; application configuration is handled only through these declarations.
+
+Copy and directory resources declare scope = whole-file and owner = source;
+neither has a structured field map or format. Copy resources own their complete
+regular-file bytes. An existing copy target is not authorized by observation
+or by apply: it requires
+an explicit adopt operation before source deployment. The copy baseline uses
+its closed payload variant to store the digest algorithm and accepted public
+byte digest as content evidence; accepted file mode is represented separately.
+It does not persist file bytes. Explicit public admission does not redact
+secrets. Subsequent source/live disagreement requires review; there is no
+force or implicit overwrite rule.
+
+Directory resources explicitly enumerate a source directory into a
+deterministic set of copy leaves. Recursive traversal is enabled by default
+and may be narrowed by declared relative exclusion globs. Symlinks are not
+followed, undeclared entries are not silently added, and an empty directory
+does not create a target directory. The expanded leaf set and its identities
+are part of the observed manifest selection and are rechecked before a write;
+an added, removed, or rebound leaf makes the plan stale or blocked. Each leaf
+has a deterministic, collision-free baseline identity formed from the
+directory declaration identity and relative leaf path, never enumeration
+order.
+
+Every resource explicitly declares whether target and baseline parents must
+already exist or may be created, and supplies parent_mode for directories
+created under that resource. This policy does not create reverse-input
+destination parents; those filesystem parents must already exist. parent_mode
+and mode values are plain permission bits from 0o000 through 0o777; setuid,
+setgid, and sticky bits are invalid. Final modes are exact and do not inherit
+the process umask. A new parent_mode with group-write or world-write bits is
+rejected during full preflight before any write. Existing directory modes are
+never changed. The optional file mode applies to a new or replaced regular
+file; when omitted, an existing target's mode is preserved and a new file
+uses mode 0644. Each resource projection reports `mode` as the declared mode
+string or `null`. It reports `effective_mode` as the same mode string when an
+explicit mode is declared; when mode is omitted, it reports `0o0644` for a
+missing target or the observed mode for an existing target. Both fields use
+octal strings such as `0o0644`; `effective_mode` is `null` when no explicit
+mode is declared and the target state or existing mode cannot be observed. The
+projection also reports every required parent creation.
+
+For version 8 writes, each actual namespace root used for a target or
+input/baseline destination, and every existing directory beneath it through
+that destination, must be owned by the current user or root and must not be
+group- or world-writable. This rule does not apply to ancestors above the
+selected root, so a private root below a sticky `/tmp` remains usable. The
+write namespace must not be controlled by untrusted users. Symlink components
+and hard-linked files remain refused. Cooperating Luwu writers must honor the
+same advisory lock. These checks do not protect against a malicious process
+running as the same user, privileged actors, or a malicious filesystem; Luwu
+makes no race-free guarantee against them.
+
+Plans bind each existing directory ancestor by identity and record every
+missing parent in order. Shared parent creation is deduplicated; conflicting
+requested modes for one parent block the batch before its first write. Writes
+recheck the complete recorded ancestry and missing chain before staging and
+immediately before publication. A parent-creation result carries the observed
+and rechecked identity at its exact planned path; that observation does not
+prove exclusive creation provenance. Matching path or mode alone does not
+authorize adopting a replacement. A detected substitution is refused, or
+reported as uncertain when the namespace may already have changed. If a
+parent has been created and a later verification, recheck, or sync fails, the
+creation remains committed and its result is uncertain, with the observed
+identity when available. The [design](design.md#version-8-full-coverage-mechanism)
+owns the syscall and descriptor-check sequence.
+
+### Structured formats and field comparison
+
+The supported structured formats are strict JSON, JSONC, and nested TOML.
+Luwu parses the complete document before comparing or patching it. Duplicate
+keys, non-finite numbers, invalid encoding, unsupported syntax, and decoded
+sensitive key names anywhere in the document block the operation. JSONC
+supports comments and trailing commas. TOML uses its full nested table
+structure. Arrays can be observed and retained, but array members cannot be
+selected or edited.
+
+Declared paths select scalar leaves only: strings, booleans, integers,
+Decimal numbers, and null for JSON formats. Missing values remain distinct
+from present null; a path selecting a container is rejected. Equality is
+recursive and type-strict, so booleans and integers are not interchangeable.
+Ancestors needed to reach selected leaves do not create undeclared drift.
+Version 8 leaf paths contain one to 256 literal string segments. Numeric
+literals emitted by a structured patch are limited to 4096 characters. TOML
+multiline values may be observed but cannot be selected for editing.
+
+A structured patch changes only selected scalar spans and the syntax required
+to add or remove those selected values. It may create mapping/object or TOML
+table ancestors only when a selected path is missing; an existing scalar or
+array ancestor blocks insertion. Selected edit paths may not overlap, including
+update/delete combinations. It preserves unselected bytes and unknown
+containers, reparses the result, and verifies the postcondition. Comparison
+masks selected leaves and only mapping ancestors that the selected insertion
+necessarily creates because they were absent. Existing empty containers,
+arrays, and type changes remain observable. Accept and adopt may resolve the
+selected baseline state but never accept undeclared content; unknown mismatch
+blocks until the declaration or content is explicitly corrected. If a safe
+patch or its unchanged document regions cannot be proven, mutation stops before
+writing. No general configuration-tree rewrite or format plugin is implied.
+When undeclared content changes for a resource, its plan projection has
+`status = "review"`, `action = "blocked"`, `undeclared_changed = true`, and the
+existing `m7_review_required` error code. Its fixed `reason` is `undeclared content changed; inspect declared scope or correct it manually, then re-plan`.
+This message gives an action without disclosing undeclared keys or values.
+
+### Fixed-version application-shaped mapping targets
+
+The following fixed-version shapes are explicit version 8 acceptance targets.
+They are ordinary declared literal paths, not built-in schemas or inferred
+mappings. Every field still requires an explicit resource declaration and
+ownership decision.
+The listed values describe the fixed application versions' shapes; generic
+Luwu declarations do not include application-specific enum validation, so
+these lists do not imply that Luwu enforces those value domains.
+
+- **OpenCode v1.19.0**: the config is JSONC-capable. The supported declared
+  paths are `["model"]`, `["server", "port"]`, `["server", "hostname"]`,
+  and `["autoupdate"]`. The fixed-version parser and config reference are
+  [parse.ts](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/opencode/src/config/parse.ts)
+  and [config.mdx](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/web/src/content/docs/config.mdx).
+- **Codex v0.162.1**: in `config.toml`, `projects` is keyed by the literal
+  project-path string. The declared trust path is
+  `["projects", "<literal project path>", "trust_level"]`, where the
+  placeholder is one key segment and the accepted values are `trusted` and
+  `untrusted`. Hook-state paths use the full hook ID as one key segment:
+  `["hooks", "state", "<full hook ID>", "enabled"]` and
+  `["hooks", "state", "<full hook ID>", "trusted_hash"]`. The latter is an
+  opaque, live-owned value that Luwu preserves without calculating or writing
+  it to grant trust. Codex determines whether a hook definition changed and
+  whether its trust remains valid. See the fixed-version
+  [project config](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/config/src/config_toml.rs),
+  [hook config](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/config/src/hook_config.rs),
+  and [hook discovery](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/hooks/src/engine/discovery.rs#L768).
+- **Droid 0.240.0**: for `~/.factory/settings.json`, the declared paths are
+  `["sessionDefaultSettings", "interactionMode"]` with values `auto` or
+  `spec`, and `["sessionDefaultSettings", "autonomyLevel"]` with values
+  `off`, `low`, `medium`, or `high`. See the official
+  [settings reference](https://docs.factory.com/droid-cli/settings). This
+  target covers settings only. No stable public file schema for Droid
+  workspace trust is claimed; SDK methods `workspace.checkTrust` and
+  `workspace.trust` do not define file compatibility.
+
+These shapes define compatibility targets, not evidence that an application
+runtime loaded them. Current implementation and runtime verification status
+remain in [status.md](status.md) and the [M7 record](milestones/m7.md).
+
+### Baselines, adoption, and explicit mutation
+
+Version 8 baselines use schema version 2 with closed structured-field and
+whole-file-copy payload variants. A structured baseline stores only declared
+accepted public scalar values. A copy baseline stores its digest algorithm and
+explicitly accepted public byte digest as content evidence, with accepted file
+mode represented separately; it never stores the copied file bytes. These
+persisted digest bytes are not metadata-only, but are explicit public baseline
+content evidence. Baselines never contain complete source, target, or input
+documents. Only explicit accept and adopt operations establish or advance
+baselines; planning, reverse sync, and apply never accept state implicitly.
+
+Durable baseline identity binds the profile, resource identity and kind, the
+resolved paths of all three roots, source and target paths, and format. For a
+template it also binds every field alias, tuple path, owner, and input binding,
+plus each referenced binding's ordered layer descriptions (file, tuple path,
+format, and optionality) and reverse destination. Directory leaf identity
+uses its declaration and relative path. Root device/inode identities are
+execution-freshness checks, not durable identity. A binding-identity mismatch
+requires explicit reacceptance; there is no baseline migration. An accepted
+copy digest and its separate mode evidence are stored only in that explicitly
+written baseline and never included in any CLI output, repr, or log.
+
+Inspect and plan are read-only. Accept requires an explicit profile, exactly
+one resource, field selection, and --from desired|live baseline side.
+Reverse-sync requires an explicit profile, exactly one resource, and selected
+eligible live/merge fields; it writes only their declared reverse_to
+destinations. Adopt requires an explicit profile and exactly one whole-file
+copy resource. These are per-resource mutations; there is no joint
+cross-resource selection for accept, adopt, or reverse-sync. Apply alone
+mutates the complete selected profile as a batch. Every mutation has a
+metadata-only preview and requires explicit --yes; confirmation
+recalculates and rechecks the manifest, selected profile and package
+expansion, source/input/baseline/target observations, directory snapshots,
+path identities, and modes. At mutation entry, Luwu verifies the complete
+caller-supplied plan projection against its issued evidence. It then verifies
+the manifest, freshly observes the selected profile, verifies the manifest
+again, and compares the newly derived complete plan projection with that same
+evidence. Both checks must pass before a writer begins. Execution uses values
+derived from this fresh authorized state, never mutable derived data from the
+caller-supplied plan. Mutating the original plan's derived objects afterward
+does not change authorized writes and is not a cancellation API. Shared
+declaration objects and actual file dependencies remain subject to the
+finite-batch and per-action checks below.
+
+### Finite-batch freshness and verification
+
+A confirmed profile mutation fixes its finite batch from the verified
+manifest, selected profile and package closure, explicit resource selection,
+and directory expansion. Before the first write, Luwu completes full-batch
+preflight across every selected resource and expanded directory leaf,
+including no-op resources. The blocked outcome includes all blockers found in
+that observation; any blocker prevents every write from starting.
+
+Before staging or creating each action, Luwu revalidates the common batch
+authority by rereading and revalidating the manifest bytes, selected
+profile/package closure, all three root identities, and directory expansion.
+It also rereads every file dependency of the current action and compares
+complete bytes and presence, along with applicable path identities and modes.
+Modification-time-only or other metadata-only freshness checks are insufficient.
+For a staged file write,
+the writer callback repeats the common and current-action checks immediately
+before publication or replacement. Dependencies include the selected
+resource's source, ordered overlay layers (including optional-layer
+presence), accepted baseline, target, and any other declared content used to
+authorize or produce that action.
+
+For reverse sync, these checks also recalculate every declared consumer in the
+selected profile that shares an affected input destination, using complete
+current bytes. No consumer may be omitted from the simulation or verification.
+
+After action processing finishes or stops at its first failure, Luwu performs
+a fresh whole-batch observation of every selected resource, including no-op
+resources and actions already written. Any mismatch in this final observation, including
+a changed no-op, fails final verification; the batch must not be reported as
+verified. Known commits and uncertain writes remain represented in the
+partial outcome, with no rollback.
+
+These checks define a finite rolling freshness boundary, not one simultaneous
+snapshot for every resource at each write. An unrelated later resource may
+change after initial preflight and be discovered only at its own action
+boundary. Earlier writes remain committed and the result is partial; Luwu does
+not roll them back. The batch also has no replay, durable plan, or execution
+journal. A fresh plan is required after an interruption or uncertain result.
+
+All version 8 results use metadata-only schema_version = 8 projections and
+fixed safe LuwuError messages. An inspect or plan result contains
+schema_version, command, profile, the ordered included package list, the
+excluded package list, and resource projections. A mutation result contains
+schema_version, operation, command, outcome, ordered actions,
+verification_status, and an error_code when applicable. Each action identifies
+its kind, resource, relative path, state, and selected field labels.
+CLI mutation commands return exit code 0 only for committed or no-change
+outcomes; other outcomes return 2. Results and errors never expose values,
+document bytes, diffs, content hashes, secret material, raw parser messages,
+filesystem exception text, or exception payloads. Only allowlisted version 8
+codes are projected; an unknown internal code is normalized to
+`m7_resource_blocked`. The version 8 error projection and the fixed meanings
+defined in this contract are included in the release verification recorded in
+[status.md](status.md) and the [M7 record](milestones/m7.md).
+
 ## Commands
 
 All manifest commands accept `--manifest PATH` (default `luwu.toml`) and `--json`. Version-6 manifest commands additionally accept `--allow-subprocess` and `--rbw-executable ABSOLUTE_PATH`; both are required to run the provider. `inspect` and `plan` never write the manifest, source, target, or any state file. `record-inspect --record PATH` and `recover --record PATH` read only the named execution journal; neither requires a manifest argument or writes state. `cache-inspect`, `cache-refresh`, and `platform-check` are separate diagnostic commands; only `cache-refresh` writes, and it writes a metadata-only owner-only cache.
 
 `inspect` reports the current state. `plan` reports the same observation together with the action an explicit apply could take. Both commands return exit code `0` after successfully calculating a plan, including when a resource is reported as `blocked`.
 
-`apply` always calculates a plan first. In human output, a confirmed version 1 apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. Version 1 with `--yes` rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. Versions 5 and 6 use their independent execution journal contracts and require `--record PATH` for a confirmed apply. Version 7 uses no execution record: it writes only a declared source-owned field patch or an absent target created from the rendered declared content, then recalculates the field plan. A version 7 no-op returns `no_changes`; a blocked, stale, unsupported, or uncertain result returns exit code `2`. Version 6 additionally requires explicit subprocess authority and writes only the external secret target after owner-only preflight. JSON mode keeps stdout as one result document and excludes values, bytes, diffs, and hashes. A blocked, stale, or version 2/3/4 read-only plan returns exit code `2` and does not begin a write. A version 2 `apply` preview reports `m2_read_only`; a version 3 or 4 preview reports `m3_read_only`; a plan containing an unsafe resource reports `plan_blocked`.
+`apply` always calculates a plan first. In human output, a confirmed version 1 apply prints that plan before writing. Without `--yes`, it is only a preview, writes nothing, and returns exit code `2`. Version 1 with `--yes` rechecks every target against the calculated state, writes only `create` or `replace` actions, and recalculates the current plan after writing. Versions 5 and 6 use their independent execution journal contracts and require `--record PATH` for a confirmed apply. Version 7 uses no execution record: it writes only a declared source-owned field patch or an absent target created from the rendered declared content, then recalculates the field plan. Version 8 requires `--profile NAME`, performs complete profile preflight, and uses no execution record. A version 7 no-op returns `no_changes`; a blocked, stale, unsupported, or uncertain result returns exit code `2`. Version 6 additionally requires explicit subprocess authority and writes only the external secret target after owner-only preflight. JSON mode keeps stdout as one result document and excludes values, bytes, diffs, and hashes. A blocked, stale, or version 2/3/4 read-only plan returns exit code `2` and does not begin a write. A version 2 `apply` preview reports `m2_read_only`; a version 3 or 4 preview reports `m3_read_only`; a plan containing an unsafe resource reports `plan_blocked`.
 
-`accept` and `reverse-sync` require `--resource`, one or more `--field` values, and explicit `--yes` confirmation for mutation. For version 7, `accept` establishes or advances selected baseline fields from the desired or live object, while `reverse-sync` patches the selected live-owned input destinations. Without `--yes`, both return exit code `2` and emit a metadata-only preview. The preview is explanatory and is not a persisted plan token; `--yes` recalculates the current inputs and then performs the documented stale checks. Successful mutation returns exit code `0` and includes a fresh verification plan. The result never contains accepted values, rendered content, diffs, or hashes.
+`accept` and `reverse-sync` require `--resource`, one or more `--field` values, and explicit `--yes` confirmation for mutation. For version 7, `accept` establishes or advances selected baseline fields from the desired or live object, while `reverse-sync` patches the selected live-owned input destinations. Version 8 also requires `--profile NAME`; `accept` selects the baseline side and explicit fields, `reverse-sync` selects eligible fields and their declared input bindings, and `adopt` selects whole-file copy resources. Without `--yes`, a mutation command returns exit code `2` and emits a metadata-only preview. The preview is explanatory and is not a persisted plan token; `--yes` recalculates the current inputs and then performs the documented stale checks. Successful mutation returns exit code `0` and includes a fresh verification plan. The result never contains accepted values, rendered content, diffs, or hashes.
 
 Writes use a temporary file or temporary symlink in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved for template targets; a new regular template target starts with mode `0644`. A template target symlink is refused rather than followed or replaced. A symbolic target symlink is accepted only when it resolves to the declared source; a different existing symlink is blocked. The current implementation uses descriptor-relative no-follow operations, records source/target identities, and takes a non-blocking advisory lock for cooperating Luwu writers on POSIX. It fails closed when those filesystem primitives are unavailable. An advisory lock does not control unrelated writers that ignore it, so M1 does not claim protection against those races; a stronger kernel compare-and-swap boundary is future work. M1 does not create parent directories, keep a baseline, or make a backup containing configuration content.
 
@@ -419,12 +762,13 @@ Error messages identify the failing boundary but never print rendered content or
 
 ## Compatibility
 
-The manifest `version` and JSON `schema_version` are independent explicit contracts. M1 uses version `1` for both; M2 uses version `2`; M3a uses version `3`; M3b uses manifest and mutation result version `4`; M3c execution and re-observation use version `5`; M4 provider execution and re-observation use version `6`; the M6 pilot uses version `7` for manifests and pilot mutation results. A future incompatible change must introduce a new version or a deliberate migration. There is no migration or automatic recovery mutation command.
+The manifest `version` and JSON `schema_version` are independent explicit contracts. M1 uses version `1` for both; M2 uses version `2`; M3a uses version `3`; M3b uses manifest and mutation result version `4`; M3c execution and re-observation use version `5`; M4 provider execution and re-observation use version `6`; the M6 pilot uses version `7` for manifests and pilot mutation results; M7 uses version `8` for manifests and metadata results. A future incompatible change must introduce a new version or a deliberate migration. There is no migration or automatic recovery mutation command.
 
-The M6 pilot is an additive, opt-in extension alongside those contracts. It
-neither broadens nor reinterprets versions `1`–`6`, and their existing inputs
-and outputs retain their current meanings. Version `7` is selected only by
-`version = 7`; its commands use the existing CLI command names and its
-metadata results use `schema_version = 7`. There is no migration from an
-earlier manifest and no automatic conversion of an existing Dotter or v1-v6
-configuration.
+The M6 pilot and M7 full-coverage contract are additive, opt-in extensions
+alongside those contracts. Version `7` is selected only by `version = 7`; its
+commands use the existing CLI command names and its metadata results use
+`schema_version = 7`. Version `8` is selected only by `version = 8`, requires
+an explicit profile, and uses metadata results with `schema_version = 8`.
+Neither version broadens or reinterprets earlier contracts. There is no
+migration from an earlier manifest and no automatic conversion of an existing
+Dotter or v1-v6 configuration.

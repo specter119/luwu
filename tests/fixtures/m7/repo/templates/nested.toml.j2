@@ -1,0 +1,7 @@
+# Synthetic nested TOML template; both nested tables are intentional.
+[display]
+theme = {{ inputs.runtime_theme | tojson }}
+
+[automation.worker]
+name = {{ inputs.worker_name | tojson }}
+unmanaged = "synthetic-unmanaged-worker"
