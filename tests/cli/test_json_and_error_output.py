@@ -17,42 +17,7 @@ from luwu import mutations
 from luwu.cli import main
 from luwu.errors import MutationError
 from luwu.reconcile import build_plan, execute_execution_plan
-from tests.support.projects import ExecutionProject, FieldProject
-
-
-class _CliProject:
-    def __init__(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary_directory.name)
-        (self.root / "templates").mkdir()
-        (self.root / "live").mkdir()
-        (self.root / "templates/settings.conf.j2").write_text(
-            'profile = "{{ profile }}"\n',
-            encoding="utf-8",
-        )
-        self.target = self.root / "live/settings.conf"
-        self.manifest_path = self.root / "luwu.toml"
-        self.manifest_path.write_text(
-            """version = 1
-
-[resources.settings]
-source = "templates/settings.conf.j2"
-target = "live/settings.conf"
-owner = "source"
-scope = "whole-file"
-variables_sensitivity = "public"
-
-[resources.settings.variables]
-profile = "developer"
-""",
-            encoding="utf-8",
-        )
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.temporary_directory.cleanup()
+from tests.support.projects import CliTemplateProject, ExecutionProject, FieldProject
 
 
 class _MutationCliProject:
@@ -109,7 +74,7 @@ runtime = "runtime"
 
 class ErrorOutputTests(unittest.TestCase):
     def test_human_manifest_errors_escape_control_characters(self) -> None:
-        with _CliProject() as project:
+        with CliTemplateProject() as project:
             missing = project.root / "missing\n\x1b[31mmanifest"
             stderr = io.StringIO()
             with redirect_stdout(io.StringIO()), redirect_stderr(stderr):

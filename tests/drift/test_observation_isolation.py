@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Self, cast
+from typing import cast
 from unittest.mock import patch
 
 from luwu.cli import main
@@ -25,49 +25,7 @@ from luwu.reconcile import (
     plan_to_dict,
 )
 from luwu.semantic import ComparisonStatus
-
-
-class _M2Project:
-    def __init__(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary_directory.name)
-        (self.root / "templates").mkdir()
-        (self.root / "live").mkdir()
-        self.manifest_path = self.root / "luwu.toml"
-        self.alpha_target = self.root / "live/alpha.json"
-        self.zeta_target = self.root / "live/zeta.json"
-        self.settings_target = self.root / "live/settings.json"
-
-    def _write_source(self, name: str, content: str) -> None:
-        (self.root / f"templates/{name}.j2").write_text(
-            content,
-            encoding="utf-8",
-        )
-
-    def _write_manifest(self, content: str) -> None:
-        self.manifest_path.write_text(content, encoding="utf-8")
-
-    def _two_resource_manifest(self) -> str:
-        return """version = 2
-
-[resources.alpha]
-source = "templates/alpha.j2"
-target = "live/alpha.json"
-owner = "source"
-scope = "whole-file"
-
-[resources.zeta]
-source = "templates/zeta.j2"
-target = "live/zeta.json"
-owner = "source"
-scope = "whole-file"
-"""
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.temporary_directory.cleanup()
+from tests.support.projects import TwoResourceProject
 
 
 def _create_m1_project(root: Path) -> tuple[Path, Path]:
@@ -149,7 +107,7 @@ class ObservationV2Tests(unittest.TestCase):
     def test_v2_observes_all_resources_in_stable_order_without_becoming_applyable(
         self,
     ) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             project._write_source("alpha", '{"name": "alpha"}\n')
             project._write_source("zeta", '{"name": "zeta"}\n')
             project._write_manifest(
@@ -184,7 +142,7 @@ scope = "whole-file"
             self.assertFalse(project.zeta_target.exists())
 
     def test_v2_apply_refuses_before_writing_any_resource(self) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             project._write_source("alpha", '{"name": "alpha"}\n')
             project._write_source("zeta", '{"name": "zeta"}\n')
             project._write_manifest(project._two_resource_manifest())
@@ -198,7 +156,7 @@ scope = "whole-file"
             self.assertFalse(project.zeta_target.exists())
 
     def test_v2_read_only_capability_survives_manifest_object_tampering(self) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             project._write_source("settings", '{"profile": "developer"}\n')
             project._write_manifest(
                 """version = 2
@@ -241,7 +199,7 @@ scope = "whole-file"
     def test_v2_copy_resource_is_observed_without_implicit_template_rendering(
         self,
     ) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             source = project.root / "files/settings.conf"
             source.parent.mkdir()
             source.write_bytes(b"literal {{ not_a_variable }}\n")
@@ -267,7 +225,7 @@ scope = "whole-file"
     def test_json_comparison_reports_formatting_and_semantic_drift_without_replace(
         self,
     ) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             project._write_source("settings", '{"profile": "developer"}\n')
             project._write_manifest(
                 """version = 2
@@ -312,7 +270,7 @@ comparison = "json"
             )
 
     def test_invalid_live_json_is_blocked_without_replace(self) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             project._write_source("settings", '{"profile": "developer"}\n')
             project._write_manifest(
                 """version = 2
@@ -340,7 +298,7 @@ comparison = "json"
     def test_json_parse_failure_is_blocked_while_other_resources_are_observed(
         self,
     ) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             project._write_source("broken", '{"profile":}\n')
             project._write_source("healthy", '{"profile": "developer"}\n')
             project._write_manifest(
@@ -391,7 +349,7 @@ comparison = "json"
     def test_json_nesting_limit_blocks_one_resource_without_hiding_another(
         self,
     ) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             project._write_source("deep", "[" * 129 + "0" + "]" * 129)
             project._write_source("healthy", '{"profile": "developer"}\n')
             project._write_manifest(
@@ -423,7 +381,7 @@ comparison = "json"
             self.assertEqual(plan.observations[1].status, Status.MISSING)
 
     def test_v2_render_error_does_not_hide_other_resource(self) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             project._write_source("broken", "{{ missing }}\n")
             project._write_source("healthy", "healthy\n")
             project._write_manifest(

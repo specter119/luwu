@@ -8,8 +8,8 @@ and what is open or planned is in [roadmap](roadmap.md).
 Delivery names (M1-M7) are labels for sequence. They do not allocate manifest
 versions and do not organize tests, fixtures, or documents. Per-delivery
 review notes, benchmark samples, and acceptance reports from before this
-changelog existed are preserved in the local tag `archive/milestone-records`.
-For example: `git show archive/milestone-records:docs/milestones/m3.md`.
+changelog existed are preserved in commit `bb80335` (the last commit before they were removed).
+For example: `git show bb80335:docs/milestones/m3.md`.
 
 ## M1: Preview (manifest version 1)
 

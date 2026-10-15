@@ -13,54 +13,10 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from typing import Self, cast
+from typing import cast
 
 from luwu.cli import main
-from tests.support.projects import LegacyCliProject
-
-
-class _M2Project:
-    def __init__(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary_directory.name)
-        (self.root / "templates").mkdir()
-        (self.root / "live").mkdir()
-        self.manifest_path = self.root / "luwu.toml"
-        self.alpha_target = self.root / "live/alpha.json"
-        self.zeta_target = self.root / "live/zeta.json"
-        self.settings_target = self.root / "live/settings.json"
-
-    def _write_source(self, name: str, content: str) -> None:
-        (self.root / f"templates/{name}.j2").write_text(
-            content,
-            encoding="utf-8",
-        )
-
-    def _write_manifest(self, content: str) -> None:
-        self.manifest_path.write_text(content, encoding="utf-8")
-
-    def _two_resource_manifest(self) -> str:
-        return """version = 2
-
-[resources.alpha]
-source = "templates/alpha.j2"
-target = "live/alpha.json"
-owner = "source"
-scope = "whole-file"
-
-[resources.zeta]
-source = "templates/zeta.j2"
-target = "live/zeta.json"
-owner = "source"
-scope = "whole-file"
-"""
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.temporary_directory.cleanup()
-
+from tests.support.projects import LegacyCliProject, TwoResourceProject
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -238,7 +194,7 @@ class ApplyRoutingV1V4Tests(unittest.TestCase):
 
 class ObservationCliV2Tests(unittest.TestCase):
     def test_rendered_encoding_error_keeps_other_resources_visible(self) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             project._write_source("alpha", '{{ "\\ud800" }}')
             project._write_source("zeta", "healthy-output-sentinel")
             project._write_manifest(project._two_resource_manifest())
@@ -280,7 +236,7 @@ class ObservationCliV2Tests(unittest.TestCase):
             self.assertEqual(before, after)
 
     def test_v2_human_plan_explains_read_only_capability(self) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             project._write_source("settings", '{"profile": "developer"}\n')
             project._write_manifest(
                 """version = 2
@@ -304,7 +260,7 @@ comparison = "json"
             self.assertIn("M2 writes nothing", output)
 
     def test_v2_confirmed_apply_explains_read_only_boundary(self) -> None:
-        with _M2Project() as project:
+        with TwoResourceProject() as project:
             project._write_source("settings", '{"profile": "developer"}\n')
             project._write_manifest(
                 """version = 2

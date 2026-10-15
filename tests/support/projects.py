@@ -197,3 +197,154 @@ value = "{field_owner}"
 
     def __exit__(self, *exc_info: object) -> None:
         self.temporary_directory.cleanup()
+
+
+class TemplateProject:
+    def __init__(self, *, target: str = "live/settings.conf") -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        self.source = self.root / "templates/settings.conf.j2"
+        self.target = self.root / target
+        self.target.parent.mkdir(parents=True, exist_ok=True)
+        self.source.parent.mkdir(parents=True, exist_ok=True)
+        self.source.write_text('profile = "{{ profile }}"\n', encoding="utf-8")
+        self.manifest_path = self.root / "luwu.toml"
+        self.manifest_path.write_text(
+            f'''version = 1
+
+[resources.settings]
+source = "templates/settings.conf.j2"
+target = "{target}"
+owner = "source"
+scope = "whole-file"
+variables_sensitivity = "public"
+
+[resources.settings.variables]
+profile = "developer"
+''',
+            encoding="utf-8",
+        )
+        self.manifest = load_manifest(self.manifest_path)
+        self.desired = b'profile = "developer"\n'
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.temporary_directory.cleanup()
+
+
+class TwoResourceProject:
+    def __init__(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        (self.root / "templates").mkdir()
+        (self.root / "live").mkdir()
+        self.manifest_path = self.root / "luwu.toml"
+        self.alpha_target = self.root / "live/alpha.json"
+        self.zeta_target = self.root / "live/zeta.json"
+        self.settings_target = self.root / "live/settings.json"
+
+    def _write_source(self, name: str, content: str) -> None:
+        (self.root / f"templates/{name}.j2").write_text(
+            content,
+            encoding="utf-8",
+        )
+
+    def _write_manifest(self, content: str) -> None:
+        self.manifest_path.write_text(content, encoding="utf-8")
+
+    def _two_resource_manifest(self) -> str:
+        return """version = 2
+
+[resources.alpha]
+source = "templates/alpha.j2"
+target = "live/alpha.json"
+owner = "source"
+scope = "whole-file"
+
+[resources.zeta]
+source = "templates/zeta.j2"
+target = "live/zeta.json"
+owner = "source"
+scope = "whole-file"
+"""
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.temporary_directory.cleanup()
+
+
+class CliTemplateProject:
+    def __init__(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        (self.root / "templates").mkdir()
+        (self.root / "live").mkdir()
+        (self.root / "templates/settings.conf.j2").write_text(
+            'profile = "{{ profile }}"\n',
+            encoding="utf-8",
+        )
+        self.target = self.root / "live/settings.conf"
+        self.manifest_path = self.root / "luwu.toml"
+        self.manifest_path.write_text(
+            """version = 1
+
+[resources.settings]
+source = "templates/settings.conf.j2"
+target = "live/settings.conf"
+owner = "source"
+scope = "whole-file"
+variables_sensitivity = "public"
+
+[resources.settings.variables]
+profile = "developer"
+""",
+            encoding="utf-8",
+        )
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.temporary_directory.cleanup()
+
+
+class ExecutionCliProject:
+    def __init__(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        (self.root / "sources").mkdir()
+        (self.root / "targets").mkdir()
+        self.source_value = "public-execution-value\n"
+        self.sources: dict[str, Path] = {}
+        self.targets: dict[str, Path] = {}
+        resources = []
+        for name in ("zeta", "alpha"):
+            source = self.root / "sources" / f"{name}.conf.j2"
+            target = self.root / "targets" / f"{name}.conf"
+            source.write_text(self.source_value, encoding="utf-8")
+            self.sources[name] = source
+            self.targets[name] = target
+            resources.append(
+                f"""[resources.{name}]
+kind = "template"
+source = "sources/{name}.conf.j2"
+target = "targets/{name}.conf"
+owner = "source"
+scope = "whole-file"
+content_sensitivity = "public"
+"""
+            )
+        self.manifest_path = self.root / "luwu.toml"
+        self.manifest_path.write_text(
+            "version = 5\n\n" + "\n".join(resources), encoding="utf-8"
+        )
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.temporary_directory.cleanup()

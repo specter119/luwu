@@ -4,57 +4,17 @@ from __future__ import annotations
 
 import io
 import json
-import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from pathlib import Path
-from typing import Self
 from unittest.mock import patch
 
 from luwu.cli import main
-
-
-class _ExecutionCliProject:
-    def __init__(self) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary_directory.name)
-        (self.root / "sources").mkdir()
-        (self.root / "targets").mkdir()
-        self.source_value = "public-execution-value\n"
-        self.sources: dict[str, Path] = {}
-        self.targets: dict[str, Path] = {}
-        resources = []
-        for name in ("zeta", "alpha"):
-            source = self.root / "sources" / f"{name}.conf.j2"
-            target = self.root / "targets" / f"{name}.conf"
-            source.write_text(self.source_value, encoding="utf-8")
-            self.sources[name] = source
-            self.targets[name] = target
-            resources.append(
-                f"""[resources.{name}]
-kind = "template"
-source = "sources/{name}.conf.j2"
-target = "targets/{name}.conf"
-owner = "source"
-scope = "whole-file"
-content_sensitivity = "public"
-"""
-            )
-        self.manifest_path = self.root / "luwu.toml"
-        self.manifest_path.write_text(
-            "version = 5\n\n" + "\n".join(resources), encoding="utf-8"
-        )
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.temporary_directory.cleanup()
+from tests.support.projects import ExecutionCliProject
 
 
 class RecordAndRecoverCommandTests(unittest.TestCase):
     def test_v5_plan_identifies_execution_capability_and_write_impact(self) -> None:
-        with _ExecutionCliProject() as project:
+        with ExecutionCliProject() as project:
             stdout = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
                 exit_code = main(
@@ -78,7 +38,7 @@ class RecordAndRecoverCommandTests(unittest.TestCase):
             self.assertFalse(project.targets["alpha"].exists())
 
     def test_v5_confirmed_apply_requires_record_without_writing(self) -> None:
-        with _ExecutionCliProject() as project:
+        with ExecutionCliProject() as project:
             stdout = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
                 exit_code = main(
@@ -102,7 +62,7 @@ class RecordAndRecoverCommandTests(unittest.TestCase):
             self.assertNotIn(project.source_value, stdout.getvalue())
 
     def test_v5_confirmed_apply_reports_metadata_and_writes_targets(self) -> None:
-        with _ExecutionCliProject() as project:
+        with ExecutionCliProject() as project:
             record_path = project.root / "journal.json"
             stdout = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
@@ -134,7 +94,7 @@ class RecordAndRecoverCommandTests(unittest.TestCase):
             self.assertNotIn(project.source_value, stdout.getvalue())
 
     def test_v5_failed_apply_reports_recovery_journal_metadata(self) -> None:
-        with _ExecutionCliProject() as project:
+        with ExecutionCliProject() as project:
             record_path = project.root / "journal.json"
             stdout = io.StringIO()
             with (
@@ -172,7 +132,7 @@ class RecordAndRecoverCommandTests(unittest.TestCase):
             self.assertNotIn(project.source_value, stdout.getvalue())
 
     def test_record_inspect_is_read_only_and_metadata_only(self) -> None:
-        with _ExecutionCliProject() as project:
+        with ExecutionCliProject() as project:
             record_path = project.root / "journal.json"
             main(
                 [
@@ -211,7 +171,7 @@ class RecordAndRecoverCommandTests(unittest.TestCase):
             self.assertIn("State: committed", human.getvalue())
 
     def test_recover_reobserves_committed_record_without_writing(self) -> None:
-        with _ExecutionCliProject() as project:
+        with ExecutionCliProject() as project:
             record_path = project.root / "journal.json"
             self.assertEqual(
                 main(
@@ -267,7 +227,7 @@ class RecordAndRecoverCommandTests(unittest.TestCase):
             self.assertNotIn(project.source_value, output)
 
     def test_recover_reports_changed_target_and_never_writes_it(self) -> None:
-        with _ExecutionCliProject() as project:
+        with ExecutionCliProject() as project:
             record_path = project.root / "journal.json"
             self.assertEqual(
                 main(
@@ -306,7 +266,7 @@ class RecordAndRecoverCommandTests(unittest.TestCase):
             self.assertNotIn(sentinel, output)
 
     def test_recover_reports_manifest_stale_and_supports_human_alias(self) -> None:
-        with _ExecutionCliProject() as project:
+        with ExecutionCliProject() as project:
             record_path = project.root / "journal.json"
             self.assertEqual(
                 main(

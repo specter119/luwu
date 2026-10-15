@@ -76,7 +76,7 @@ the reference compatibility process, not as a side effect of tidying.
 
 - Add `test_<delivery>_*.py` beside the capability's existing module, or a
   `tests/fixtures/<delivery>/` tree. Evidence: the earlier layout is visible
-  with `git ls-tree -r --name-only archive/milestone-records tests`.
+  with `git ls-tree -r --name-only bb80335 tests`.
 - Commit benchmark, profile, or acceptance output under a delivery directory.
   The output is a snapshot of one machine, goes stale, and cannot be reviewed
   as a check. Keep the command, not the capture.

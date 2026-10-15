@@ -63,6 +63,7 @@ tmpfs for the acceptance matrix. Use the same recorded host, filesystem,
 Python version, fixture and sandbox mode for before/after comparisons:
 
 ```text
+mkdir -p .evidence
 uv run experiments/batch_benchmark.py --scratch /path/on/durable-fs/luwu-scratch --output .evidence/batch-benchmark.json
 uv run experiments/batch_cprofile.py --scratch /path/on/durable-fs/luwu-profile --output-dir .evidence/batch-profile
 uv run experiments/provider_latency.py --output .evidence/provider-latency.json
@@ -88,8 +89,8 @@ overhead from structural growth. Timing excludes setup but includes process
 startup, preflight, journal writes, target durability and verification. The
 complete 176-file fixture must finish apply, unchanged reapply and recovery;
 missing or blocked resources cannot be omitted to improve timing. The budgets
-apply to version 8 workloads as well, but not to v5 journal recovery or
-provider latency.
+apply to version 8 workloads as well. Provider latency has no budget; it
+is measured with synthetic delays only.
 
 Do not relax a budget without measured evidence, remove durability, or report
 only a relative speedup. Keep a failed run rather than averaging it away. Do
@@ -315,7 +316,7 @@ pattern catalog merely to avoid choosing an owner.
 ## Release gates
 
 Before release, test a wheel and an sdist in fresh virtual environments. Each
-environment must run `luwu --version`, the v1-v6 smoke tests, and the complete
+environment must run `luwu --version` and the complete
 test suite without importing from the source checkout. The CI workflow keeps
 the declared Linux/Python matrix visible and exercises the unsupported-platform
 branch. Do not claim a platform or Python combination is supported solely
