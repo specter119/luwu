@@ -58,9 +58,10 @@ stance instead of redefining their contracts here.
 
 - Re-observe staged no-follow identity at a replace boundary and classify an
   uncertain result as unknown instead of inferring it from equal bytes.
-  Evidence: [M3 repair record](../../../docs/milestones/m3-repair-plan.md).
+  Evidence: `tests/filesystem/test_replace_boundary.py`.
 - Check journal and lock paths together before either persistent entry is
-  created. Evidence: [M3 follow-up record](../../../docs/milestones/m3-followup.md).
+  created. Evidence: `tests/records/test_record_paths.py` and
+  `tests/cli/test_json_and_error_output.py`.
 
 ## Bad patterns
 

@@ -60,7 +60,7 @@ An explicitly selected comparison adapter can report representation-only
 differences separately from semantic differences, but an adapter never grants
 write authority.
 
-The M2/M3 observation paths keep resource-level failures visible while
+The version 2–4 observation paths keep resource-level failures visible while
 continuing to explain other declared resources. The field classifier compares
 only declared fields, preserves missing values as a private sentinel, and
 returns metadata without values. Baselines are read through their declared
@@ -99,7 +99,7 @@ success and recovery meanings are defined in [reference.md](reference.md).
 ## Version 7 pilot mechanism
 
 This section describes the implemented mechanism for the version 7 pilot. Its
-public behavior is owned by the [version 7 contract in reference.md](reference.md#m6-pilot-extension-manifest-version-7).
+public behavior is owned by the [version 7 contract in reference.md](reference.md#pilot-extension-manifest-version-7).
 
 ### Resolve roots and declared inputs
 
@@ -182,10 +182,10 @@ perform that handoff themselves.
 ## Version 8 full-coverage mechanism
 
 This section describes the implementation boundaries for version 8. The
-technical core is implemented; overall M7 closure remains subject to the
+technical core is implemented; completion of the profile contract remains subject to the
 remaining application-schema evidence linked from
 [status.md](status.md). The exact public behavior belongs to the
-[version 8 contract](reference.md#m7-full-dotfiles-coverage-manifest-version-8);
+[version 8 contract](reference.md#full-dotfiles-coverage-manifest-version-8);
 current implementation evidence belongs to [status.md](status.md).
 
 The current module responsibilities are:
@@ -216,9 +216,7 @@ The current module responsibilities are:
   complete source or target document. The target copy payload records the
   digest algorithm and accepted digest, with mode evidence separately. Durable
   binding identity uses resolved root paths; root device/inode identity belongs
-  to execution freshness, not baseline identity. The corrected identity
-  encoding and its focused evidence are recorded in the
-  [M7 record](milestones/m7.md).
+  to execution freshness, not baseline identity.
 - `luwu/m7_filesystem.py` provides no-follow regular-file observations,
   missing-parent inspection, one-directory-at-a-time parent creation, and
   staged file replacement; content and mode-only changes use that same staged
@@ -242,7 +240,7 @@ The current module responsibilities are:
   may split or merge shared subnodes; topology alone is not authorization.
   Changed values, types, Decimal representation, document spans, or bytes do
   not match. The public authorization behavior is owned by the
-  [version 8 contract](reference.md#m7-full-dotfiles-coverage-manifest-version-8).
+  [version 8 contract](reference.md#full-dotfiles-coverage-manifest-version-8).
 - `luwu/m7_engine.py` composes read-only plan, explicit baseline accept,
   whole-file copy adopt, selected reverse sync, and profile-wide apply. It
   uses a finite-batch flow: complete preflight, shared and current-action
@@ -270,12 +268,11 @@ The current module responsibilities are:
 The CLI integrates these capabilities behind explicit profile and mutation
 selection. Directory enumeration is rechecked at the write boundary so a new
 or rebound leaf cannot silently enter the authorized set. The release evidence
-for the current implementation is summarized in [status](status.md); overall
-M7 closure remains pending the items recorded there and in the [M7
-milestone](milestones/m7.md).
+for the current implementation is summarized in [status](status.md); the
+remaining closure constraint is tracked in the [roadmap](roadmap.md).
 Application-shaped configuration uses the same declared-path and ownership
 mechanism. The fixed-version targets and opaque live-owned Codex hook state
-are defined in [reference.md](reference.md#m7-full-dotfiles-coverage-manifest-version-8);
+are defined in [reference.md](reference.md#full-dotfiles-coverage-manifest-version-8);
 the implementation does not infer mappings or grant application trust.
 Droid workspace-trust SDK calls do not provide a file-schema mechanism, so no
 workspace-trust file mapping is implied.
@@ -293,6 +290,47 @@ permissions. Provider records, caches, diagnostics, and errors use
 metadata-only projections. The confidentiality contract and the supported
 provider shape belong to [reference.md](reference.md); this section describes
 the separation of implementation paths.
+
+## Rejected alternatives
+
+These designs were evaluated against concrete counterexamples and rejected
+because the accepted behavior did not need them. Reopening one needs a new
+owner decision and evidence, not a convenience argument.
+
+- A generic field-path language, storage framework, or merge engine for
+  ownership. Declared literal paths and an explicit baseline were sufficient.
+- A generic JSON editor or schema registry for reverse sync. Selected
+  top-level literal spans are patched; unsupported or ambiguous spans are
+  rejected before writing.
+- A transaction engine, second ledger, or automatic replay and rollback. The
+  journal is metadata-only and recovery is read-only observation. The
+  in-memory execution context is not a durable record.
+- Treating journal publication as proof of target replacement, or equal
+  content as proof of a Luwu replacement. Replace-boundary results distinguish
+  `not_replaced`, `replaced`, and `indeterminate` from re-observed identity.
+- A provider registry, lazy providers, a network capability, secret
+  fingerprints, or cache-driven decision hooks. The cache is diagnostic only
+  and never participates in a plan decision.
+- An AST or adapter framework for TOML. A bounded lexical patcher with
+  byte-level negative controls covers the declared shapes; nested trust state
+  is deferred because it needs path identity.
+- Requiring plan-graph alias topology to be equal for authorization. Splitting
+  a shared subnode into equal copies, or merging equal copies, does not change
+  what is written. Authorization compares every projected edge and value,
+  exact scalar type, Decimal representation, parser span, and source bytes.
+  A security basis for topology equality was challenged and withdrawn.
+- Retaining caller-origin references and repeating an origin-graph check after
+  authorization. The fresh verify-observe-verify cycle and per-action
+  dependency checks already bound the write.
+- Parallel writers as a performance optimization. Concurrency must not obscure
+  ordering and partial-success boundaries.
+
+Counterexample probes for several of these live in `experiments/`:
+`ownership_observation_ablation.py` (ownership and baselines),
+`provider_secret_ablation.py` (providers and cache),
+`execution_closure_ablation.py` and `sidecar_recovery_ablation.py` (journal
+and replace boundary), `format_design_ablation.py` and
+`toml_comment_ablation.py` (format adapters).
 
 ## Deliberate limits
 

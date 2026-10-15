@@ -46,30 +46,29 @@ Every normative fact has one owner. Other documents may summarize it with a
 short sentence and a link, or record it as historical evidence, but must not
 create a second definition.
 
-| Fact type                                                                      | Sole owner                                             | Allowed elsewhere                                                                                                       |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| Product problem, direction, scope, non-goals, and value tests                  | `docs/product.md`                                      | A short rationale or link; no CLI, schema, or current-status definition                                                 |
-| Stable manifest, CLI, JSON, error, compatibility, and public safety contracts  | `docs/reference.md`                                    | Design explains mechanism; status says whether it is implemented; milestones record the historical decision or evidence |
-| Current checkout implementation facts and latest verified state                | `docs/status.md`                                       | README gives a user summary; milestones preserve dated historical snapshots                                             |
-| Internal flow, module responsibilities, and implementation mechanisms          | `docs/design.md`                                       | Link to the public contract; do not redefine public fields or states                                                    |
-| Delivery sequence and milestone boundaries                                     | `docs/roadmap.md`                                      | Milestones may expand their own historical scope; neither roadmap nor milestones redefine unrelated contracts           |
-| Development, test, release, migration, and documentation workflow              | `docs/maintenance.md`                                  | Commands may be shown as examples; their behavior is owned by `reference.md`                                            |
-| Fixed milestone scope, review decisions, counterexamples, and closure evidence | `docs/milestones/*.md`                                 | Status links to the record; after closure, stable behavior is owned by `reference.md`                                   |
-| User overview and quick start                                                  | `README.md`                                            | Link to the owner for details; do not copy internal history or contract tables                                          |
-| Review stance and attack playbook                                              | `.agents/skills/*/SKILL.md`                            | Skills inspect the owner documents and implementation; they do not own product or API contracts                         |
-| Why a high-impact cross-cutting choice was made                                | `docs/decisions/<record>.md` when such a record exists | Link from the affected owner; do not create a decision record for routine implementation history                        |
+| Fact type                                                                                     | Sole owner                                                                                          | Allowed elsewhere                                                                                    |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Product problem, direction, scope, non-goals, and value tests                                 | `docs/product.md`                                                                                   | A short rationale or link; no CLI, schema, or current-status definition                              |
+| Stable manifest, CLI, JSON, error, compatibility, and public safety contracts                 | `docs/reference.md`                                                                                 | Design explains mechanism; status says whether it is implemented; the changelog says when it arrived |
+| Current checkout implementation facts and latest verified state                               | `docs/status.md`                                                                                    | README gives a user summary; run output is not committed                                             |
+| Internal flow, module responsibilities, and implementation mechanisms                         | `docs/design.md`                                                                                    | Link to the public contract; do not redefine public fields or states                                 |
+| Delivery sequence, open exit conditions, and unfinished milestone boundaries                  | `docs/roadmap.md`                                                                                   | The changelog may name a delivery; neither redefines unrelated contracts                             |
+| Development, test layout, performance budgets, release, migration, and documentation workflow | `docs/maintenance.md`                                                                               | Commands may be shown as examples; their behavior is owned by `reference.md`                         |
+| What each delivery added and a capability-by-delivery matrix                                  | `docs/changelog.md`                                                                                 | Status and roadmap link to it; it never defines current behavior or open gates                       |
+| User overview and quick start                                                                 | `README.md`                                                                                         | Link to the owner for details; do not copy internal history or contract tables                       |
+| Review stance and attack playbook                                                             | `.agents/skills/*/SKILL.md`                                                                         | Skills inspect the owner documents and implementation; they do not own product or API contracts      |
+| Why a high-impact cross-cutting choice was made, and rejected alternatives                    | `docs/design.md` (rejected alternatives), or `docs/decisions/<record>.md` when such a record exists | Link from the affected owner; do not create a decision record for routine implementation history     |
 
 The map is a routing aid, not permission to duplicate content. A document may
 mention the same subject at a different fact type: product says why,
-reference says what, design says how, status says whether, a milestone says
-what was true at a date, and a skill says how to attack the claim. The wording
+reference says what, design says how, status says whether, the changelog says
+what a delivery added, and a skill says how to attack the claim. The wording
 must make that distinction visible.
 
 Do not use a non-owner document to repair a conflict. First identify the fact
 type and owner, then update the owner and replace the other statement with a
-link or a clearly dated historical note. Do not average conflicting
-documents. For a closed milestone, do not rewrite history to match a later
-implementation; record the later fact in the current owner.
+link. Do not average conflicting documents. The changelog is not rewritten to
+match a later implementation; record the later fact in the current owner.
 
 ## Scope and language rules
 
@@ -77,10 +76,11 @@ implementation; record the later fact in the current owner.
   `README_cn.md` mirror. Do not add a second-language normative copy without a
   separately approved owner and synchronization policy.
 - A field list, state table, error meaning, or command promise belongs in
-  `docs/reference.md`, even when a milestone originally introduced it.
-- A test count, temporary artifact path, or dated gate result belongs in the
-  relevant milestone record when it is historical. `docs/status.md` links to
-  it instead of replaying the log.
+  `docs/reference.md`, even when a delivery originally introduced it.
+- A test count, temporary artifact path, benchmark sample, or dated gate result
+  is run output, not repository content. Do not commit it. Record what a
+  delivery added in `docs/changelog.md` and keep a check as a rerunnable
+  command or test.
 - A skill pattern is evidence for review, not a new product rule. Promote a
   pattern to the relevant owner only when code, tests, or repeated maintenance
   experience justify a stable rule.
