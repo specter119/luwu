@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["Jinja2>=3.1,<4"]
 # ///
-"""Profile sanitized M5 planning and execution paths.
+"""Profile sanitized batch planning and execution paths.
 
 The report contains timing, allocation, call-count and function-name metadata
 only. Fixture contents are synthetic and are removed after each row.

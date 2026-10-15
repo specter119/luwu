@@ -2,10 +2,10 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Fast pre-implementation ablation for the reviewed M4 contract.
+"""Fast pre-implementation ablation for the reviewed provider contract.
 
 This probe checks the contract's smallest state model before implementation.
-The post-implementation M4 gate must exercise the real provider, renderer,
+The post-implementation provider gate must exercise the real provider, renderer,
 record, writer, CLI, and cache paths with the same counterexamples.
 """
 

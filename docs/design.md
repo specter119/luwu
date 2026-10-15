@@ -60,7 +60,7 @@ An explicitly selected comparison adapter can report representation-only
 differences separately from semantic differences, but an adapter never grants
 write authority.
 
-The M2/M3 observation paths keep resource-level failures visible while
+The version 2–4 observation paths keep resource-level failures visible while
 continuing to explain other declared resources. The field classifier compares
 only declared fields, preserves missing values as a private sentinel, and
 returns metadata without values. Baselines are read through their declared
@@ -182,7 +182,7 @@ perform that handoff themselves.
 ## Version 8 full-coverage mechanism
 
 This section describes the implementation boundaries for version 8. The
-technical core is implemented; overall M7 closure remains subject to the
+technical core is implemented; completion of the profile contract remains subject to the
 remaining application-schema evidence linked from
 [status.md](status.md). The exact public behavior belongs to the
 [version 8 contract](reference.md#full-dotfiles-coverage-manifest-version-8);
@@ -324,6 +324,13 @@ owner decision and evidence, not a convenience argument.
   dependency checks already bound the write.
 - Parallel writers as a performance optimization. Concurrency must not obscure
   ordering and partial-success boundaries.
+
+Counterexample probes for several of these live in `experiments/`:
+`ownership_observation_ablation.py` (ownership and baselines),
+`provider_secret_ablation.py` (providers and cache),
+`execution_closure_ablation.py` and `sidecar_recovery_ablation.py` (journal
+and replace boundary), `format_design_ablation.py` and
+`toml_comment_ablation.py` (format adapters).
 
 ## Deliberate limits
 

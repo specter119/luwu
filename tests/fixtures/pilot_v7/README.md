@@ -1,7 +1,7 @@
-# M6 public Pi and Codex fixtures
+# Public Pi and Codex pilot fixtures
 
 These fixtures use synthetic public values and the local application field
-names selected for the M6 pilot:
+names selected for the pilot:
 
 - Pi JSON: `defaultModel`, `defaultProvider`, and `lastChangelogVersion`, at
   `$HOME/.pi/agent/settings.json`.

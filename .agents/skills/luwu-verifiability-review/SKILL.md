@@ -18,7 +18,7 @@ partial success, migration, rollback, or platform behavior is undefined.
 
 The stable value is: **a future actor must be able to know what happened, why,
 and what safe action can continue the work.** Manifest versions, JSON shapes,
-status labels, documentation ownership, and M1 scope are contract expressions
+status labels, documentation ownership, and version 1 scope are contract expressions
 for a stage; they may change when evidence supports a better rule.
 
 When the contract changes, compare what the old and new rules let a person or
@@ -40,7 +40,7 @@ documentation. Ask:
 
 Attack happy-path-only tests, status inflation, duplicated conflicting docs,
 unstated defaults, unstable error contracts, multi-file partial writes,
-unversioned schema changes, and M1 limitations accidentally treated as eternal
+unversioned schema changes, and version 1 limitations accidentally treated as eternal
 architecture. Evidence is a command or test that can be rerun, plus a commit;
 a captured result from one machine goes stale and cannot be re-checked.
 

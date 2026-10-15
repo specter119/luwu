@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["Jinja2>=3.1,<4"]
 # ///
-"""Ablate the M5 batch-interruption guards against real temporary projects.
+"""Ablate the batch-interruption guards against real temporary projects.
 
 Each probe runs the real planner, executor, journal, and read-only recovery
 view on a temporary project, then contrasts the production guard with an

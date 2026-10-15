@@ -59,7 +59,7 @@ verifiability stance.
 
 - Treat an absent baseline as `unbased` and a change outside declared fields
   as a separate undeclared signal; neither silently grants a candidate.
-  Evidence: the M3 contract in `docs/reference.md`.
+  Evidence: the manifest version 3 contract in `docs/reference.md`.
 - Permit reverse sync only through an explicit declared literal mapping and
   preserve unselected or undeclared source content. Evidence:
   `tests/formats/test_json_patch.py` and

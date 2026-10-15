@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["Jinja2>=3.1,<4"]
 # ///
-"""Run M6 format design probes with metadata-only JSON output.
+"""Run format design probes with metadata-only JSON output.
 
 Run from the repository root with ``uv run --script experiments/format_design_ablation.py``.
 """

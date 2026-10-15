@@ -769,7 +769,7 @@ def _probe_runtime(
     )
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()
-        raise RuntimeError(f"target Python cannot import the M7 runtime: {detail}")
+        raise RuntimeError(f"target Python cannot import the profile runtime: {detail}")
     try:
         runtime = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
@@ -914,7 +914,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--installed",
         action="store_true",
-        help="require all M7 imports from target site-packages",
+        help="require all profile imports from target site-packages",
     )
     parser.add_argument(
         "--python",
@@ -953,7 +953,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime = _probe_runtime(python, scratch, source_root, args.installed)
     except RuntimeError as error:
         parser.error(
-            f"M7 production runtime is incomplete; focused run is pending: {error}"
+            f"profile production runtime is incomplete; focused run is pending: {error}"
         )
     filesystem = _filesystem_metadata(scratch)
     m5_eligible = not bool(filesystem["tmpfs_detected"])
@@ -983,7 +983,7 @@ def main(argv: list[str] | None = None) -> int:
             "filesystem": filesystem,
             "m5_absolute_budget_environment_eligible": m5_eligible,
             "m5_eligibility_note": (
-                "tmpfs is excluded by the M5 baseline"
+                "tmpfs is excluded by the performance acceptance rules"
                 if not m5_eligible
                 else "filesystem is not detected as tmpfs; locality and durability remain environment facts"
             ),

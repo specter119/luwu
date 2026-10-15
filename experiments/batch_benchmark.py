@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["Jinja2>=3.1,<4"]
 # ///
-"""Measure the latest M5 batch scenarios on a sanitized fixture.
+"""Measure the batch execution scenarios on a sanitized fixture.
 
 The harness deliberately uses the real CLI and excludes fixture construction
 from timed samples.  It is a baseline/acceptance aid, not a public command and
@@ -794,14 +794,14 @@ def main(argv: list[str] | None = None) -> int:
         dest="sizes",
         action="append",
         default=None,
-        help="resource count (repeatable; defaults to the M5 size matrix)",
+        help="resource count (repeatable; defaults to the standard size matrix)",
     )
     parser.add_argument(
         "--scenario",
         choices=SCENARIOS,
         action="append",
         default=None,
-        help="scenario (repeatable; defaults to all M5 scenarios)",
+        help="scenario (repeatable; defaults to all batch scenarios)",
     )
     parser.add_argument("--output", type=Path, help="optional JSON result path")
     args = parser.parse_args(argv)

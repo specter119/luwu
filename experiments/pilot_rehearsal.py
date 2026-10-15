@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["Jinja2>=3.1,<4"]
 # ///
-"""Run an isolated, sanitized M6 CLI rehearsal and Dotter handoff simulation.
+"""Run an isolated, sanitized pilot CLI rehearsal and Dotter handoff simulation.
 
 The runner copies public synthetic fixtures beneath a temporary HOME-shaped
 directory. It invokes ``python -m luwu`` for the forward/reverse CLI loop and
@@ -767,7 +767,7 @@ def _file_signature(path: Path) -> tuple[int, int, int, int, int]:
 
 def _require(condition: bool, check: str) -> None:
     if not condition:
-        raise AssertionError(f"M6 rehearsal check failed: {check}")
+        raise AssertionError(f"pilot rehearsal check failed: {check}")
 
 
 def main(argv: list[str] | None = None) -> int:

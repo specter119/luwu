@@ -59,7 +59,7 @@ consent, boundary, confidentiality, or verifiability stance.
 
 - Define a narrow strict-JSON equivalence relation that preserves object
   members and array order, distinguishes booleans from numbers, and reports
-  unsupported syntax as blocked. Evidence: the M2 contract in
+  unsupported syntax as blocked. Evidence: the manifest version 2 contract in
   `docs/reference.md`.
 - Patch only selected literal-JSON spans so unselected and undeclared bytes are
   preserved. Evidence: `tests/formats/test_json_patch.py`.

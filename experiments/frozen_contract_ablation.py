@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Fast guard-on/off probes for the final M3 repair plan.
+"""Fast guard-on/off probes for the frozen mutation contract.
 
 These are design probes over temporary data.  The production regression suite
 must still exercise the real writers, journal, CLI, and recovery paths.

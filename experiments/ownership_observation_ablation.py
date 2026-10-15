@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Small pre-implementation counterexamples for the M3a design choices.
+"""Small pre-implementation counterexamples for the ownership-observation design choices.
 
 Run with ``uv run experiments/ownership_observation_ablation.py``. This is a design experiment,
 not evidence that the production classifier or a future writer is correct.

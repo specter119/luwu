@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["Jinja2>=3.1,<4"]
 # ///
-"""Measure synthetic provider resolution latency separately from M5 I/O."""
+"""Measure synthetic provider resolution latency separately from batch I/O."""
 
 from __future__ import annotations
 

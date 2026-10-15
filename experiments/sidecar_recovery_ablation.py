@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["Jinja2>=3.1,<4"]
 # ///
-"""Temporary-directory probes for the M3 follow-up, never user configuration."""
+"""Temporary-directory probes for sidecar recovery, never user configuration."""
 
 from __future__ import annotations
 

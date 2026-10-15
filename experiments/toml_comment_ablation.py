@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Ablate M7a TOML comment handling through the production patcher.
+"""Ablate TOML comment handling through the production patcher.
 
 Run from the repository root with ``uv run --script experiments/toml_comment_ablation.py``.
 """

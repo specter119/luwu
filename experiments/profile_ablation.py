@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["Jinja2>=3.1,<4"]
 # ///
-"""Ablate M7 v8 boundaries through the production modules and real writer.
+"""Ablate version 8 profile boundaries through the production modules and real writer.
 
 The expected values and bytes below are specified independently of the
 production parser, renderer, and writer. Counterexamples model the removed
@@ -554,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
             importlib.import_module(name)
     except ImportError as error:
         parser.error(
-            f"M7 production runtime is incomplete; engine ablation is pending: {error}"
+            f"profile production runtime is incomplete; engine ablation is pending: {error}"
         )
     from luwu import m7_baseline, m7_engine, m7_filesystem, m7_formats, m7_manifest
 

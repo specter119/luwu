@@ -6,7 +6,7 @@ This document owns the manifest, CLI, JSON, error, and compatibility contracts f
 
 ## Manifest
 
-The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source, target, and baseline. M1 uses manifest version `1`; M2 supports versions `1` and `2`; M3a adds version `3`; M3b adds version `4`; the M3c execution slice adds version `5`; M4 adds the independent provider execution version `6`; the M6 pilot adds the opt-in version `7` contract; M7 defines the additive version `8` contract below.
+The manifest is a UTF-8 TOML file. Its root is the directory that scopes every declared source, target, and baseline. Version `1` is the single-resource contract; version `2` adds read-only observation of multiple resources; version `3` adds field ownership observation; version `4` adds explicit field-level mutation; version `5` adds journaled batch execution of whole-file resources; version `6` adds independent provider execution; version `7` is the opt-in pilot contract; version `8` is the additive profile contract below.
 
 ```toml
 version = 1
@@ -22,26 +22,26 @@ variables_sensitivity = "public"
 profile = "developer"
 ```
 
-M1 accepts exactly one resource. It is intentionally single-resource so that the first apply contract has no multi-file partial-success semantics. That resource must declare:
+Version 1 accepts exactly one resource. It is intentionally single-resource so that the first apply contract has no multi-file partial-success semantics. That resource must declare:
 
 - `kind` (optional): when omitted, a `.j2` source is inferred as `template` and every other source is inferred as `symbolic`; an explicit value overrides that inference, including `kind = "symbolic"` for an exceptional `.j2` source;
 - `source`: a relative path to a regular file inside the manifest directory;
 - `target`: a relative path without `..` inside the manifest directory;
 - `owner = "source"`: the declared source resource is the owner of the target;
 - `scope = "whole-file"`: the resource owns the complete target file;
-- `variables_sensitivity = "public"` (required when template variables are present): explicitly classifies those manifest literals as public M1 inputs;
-- `variables` (optional for templates): TOML scalar, array, or table values. The loader classifies these manifest literals as public M1 inputs; obvious secret-bearing field names are rejected, and there is no provider or secret-value path into rendering. This is a closed capability boundary, not a scanner that can prove an arbitrary string is non-secret. Symbolic resources cannot have variables.
+- `variables_sensitivity = "public"` (required when template variables are present): explicitly classifies those manifest literals as public version 1 inputs;
+- `variables` (optional for templates): TOML scalar, array, or table values. The loader classifies these manifest literals as public version 1 inputs; obvious secret-bearing field names are rejected, and there is no provider or secret-value path into rendering. This is a closed capability boundary, not a scanner that can prove an arbitrary string is non-secret. Symbolic resources cannot have variables.
 
-`template` renders the source as Jinja; `symbolic` makes the target a symlink to the declared source. Explicit `kind = "template"` requires a `.j2` source. Unknown kinds, source/target overlap, absolute paths, path traversal, and provider/secret fields fail validation. A target's parent directory must already exist and must not contain a symlink. M1 does not infer resources from existing files.
+`template` renders the source as Jinja; `symbolic` makes the target a symlink to the declared source. Explicit `kind = "template"` requires a `.j2` source. Unknown kinds, source/target overlap, absolute paths, path traversal, and provider/secret fields fail validation. A target's parent directory must already exist and must not contain a symlink. Version 1 does not infer resources from existing files.
 
 ### Manifest version 2
 
-Version `2` is the read-only observation contract. It accepts multiple declared resources, orders them by resource name, and rejects duplicate targets, source/target path conflicts, and ancestor-overlapping declared paths before planning. It adds the explicitly observed `kind = "copy"`, which reads a regular source file as literal bytes; copy resources are not template-rendered and are not applyable in M2. A version 2 resource supports the same ownership, scope, source, target, and public-variable rules as M1, plus an optional explicit `comparison`:
+Version `2` is the read-only observation contract. It accepts multiple declared resources, orders them by resource name, and rejects duplicate targets, source/target path conflicts, and ancestor-overlapping declared paths before planning. It adds the explicitly observed `kind = "copy"`, which reads a regular source file as literal bytes; copy resources are not template-rendered and are not applyable in version 2. A version 2 resource supports the same ownership, scope, source, target, and public-variable rules as version 1, plus an optional explicit `comparison`:
 
-- `comparison = "exact-bytes"` (default): the conservative byte comparison used by M1;
+- `comparison = "exact-bytes"` (default): the conservative byte comparison used by version 1;
 - `comparison = "json"`: a strict UTF-8 JSON comparison for template resources only.
 
-Version 2 does not expand ownership, field scope, baseline, reverse sync, or provider capabilities. It is an observation experiment: `inspect` and `plan` are supported, while `apply` is rejected with `m2_read_only` before any target write. Version 1 remains the only applyable manifest contract in M2.
+Version 2 does not expand ownership, field scope, baseline, reverse sync, or provider capabilities. It is an observation experiment: `inspect` and `plan` are supported, while `apply` is rejected with `m2_read_only` before any target write. Version 1 is the only applyable manifest contract among versions 1–3.
 
 ### Manifest version 3
 
@@ -49,7 +49,7 @@ Version `3` is a read-only field ownership experiment. It accepts multiple expli
 
 The baseline file is a strict JSON envelope with exactly `schema_version`, `resource`, `source`, `target`, `owners`, and `values`. `schema_version` is numeric `1`; `owners` must exactly match all declared fields, including ignored fields; `values` is an object containing only non-ignored declared fields. An absent value means that field was absent from the accepted comparison input, while a JSON `null` is a value. Baselines are read through the declared path with no-follow descriptor operations; symlinks, non-regular files, invalid envelopes, identity mismatches, and missing files block that resource. Desired and live JSON documents must both be objects, and live must already exist.
 
-For a supplied baseline, each field is classified as `unchanged`, `converged`, `source_changed`, `live_changed`, `conflict`, or `ignored`. Ownership determines whether a one-sided change is a `forward_candidate` or `reverse_candidate`; unsupported directions and two-sided changes remain `review`. Without a baseline, non-ignored fields are `unbased` and produce no candidate. Undeclared desired/live changes are reported by a boolean signal without exposing their names or values. Candidates are observations only. Version 3 `apply` is rejected with `m3_read_only` before any write, and M3a does not accept, reverse-sync, persist, or roll back configuration.
+For a supplied baseline, each field is classified as `unchanged`, `converged`, `source_changed`, `live_changed`, `conflict`, or `ignored`. Ownership determines whether a one-sided change is a `forward_candidate` or `reverse_candidate`; unsupported directions and two-sided changes remain `review`. Without a baseline, non-ignored fields are `unbased` and produce no candidate. Undeclared desired/live changes are reported by a boolean signal without exposing their names or values. Candidates are observations only. Version 3 `apply` is rejected with `m3_read_only` before any write, and version 3 does not accept, reverse-sync, persist, or roll back configuration.
 
 ### Manifest version 4
 
@@ -225,14 +225,14 @@ its type. Successful reverse verification requires both the mapped input and
 the recalculated desired field to match the live value with strict semantics.
 
 TOML input is UTF-8 and limited to a top-level table of bare-key, single-line
-scalar assignments in the existing public scalar subset. M7a accepts inline
+scalar assignments in the existing public scalar subset. The TOML input format accepts inline
 comments after a scalar; `#` inside a quoted string remains part of the value.
 Updating a selected value replaces only its token and preserves assignment
 spacing, whitespace before the comment, the comment, line endings, full-line
 comments, and all unselected bytes. Deleting a selected field removes its
 complete physical assignment line, including a same-line comment and line
 terminator, where that deletion is otherwise allowed. Reverse deletion of a
-mapped input field remains rejected. M7a keeps manifest version `7` and the
+mapped input field remains rejected. This extension keeps manifest version `7` and the
 JSON output schema unchanged. Tables, arrays, quoted or dotted keys, multiline
 strings, duplicate fields, unsupported scalar values, and ambiguous syntax
 remain rejected. TOML absence is distinct from a present value; TOML has no
@@ -657,7 +657,7 @@ All manifest commands accept `--manifest PATH` (default `luwu.toml`) and `--json
 
 `accept` and `reverse-sync` require `--resource`, one or more `--field` values, and explicit `--yes` confirmation for mutation. For version 7, `accept` establishes or advances selected baseline fields from the desired or live object, while `reverse-sync` patches the selected live-owned input destinations. Version 8 also requires `--profile NAME`; `accept` selects the baseline side and explicit fields, `reverse-sync` selects eligible fields and their declared input bindings, and `adopt` selects whole-file copy resources. Without `--yes`, a mutation command returns exit code `2` and emits a metadata-only preview. The preview is explanatory and is not a persisted plan token; `--yes` recalculates the current inputs and then performs the documented stale checks. Successful mutation returns exit code `0` and includes a fresh verification plan. The result never contains accepted values, rendered content, diffs, or hashes.
 
-Writes use a temporary file or temporary symlink in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved for template targets; a new regular template target starts with mode `0644`. A template target symlink is refused rather than followed or replaced. A symbolic target symlink is accepted only when it resolves to the declared source; a different existing symlink is blocked. The current implementation uses descriptor-relative no-follow operations, records source/target identities, and takes a non-blocking advisory lock for cooperating Luwu writers on POSIX. It fails closed when those filesystem primitives are unavailable. An advisory lock does not control unrelated writers that ignore it, so M1 does not claim protection against those races; a stronger kernel compare-and-swap boundary is future work. M1 does not create parent directories, keep a baseline, or make a backup containing configuration content.
+Writes use a temporary file or temporary symlink in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved for template targets; a new regular template target starts with mode `0644`. A template target symlink is refused rather than followed or replaced. A symbolic target symlink is accepted only when it resolves to the declared source; a different existing symlink is blocked. The current implementation uses descriptor-relative no-follow operations, records source/target identities, and takes a non-blocking advisory lock for cooperating Luwu writers on POSIX. It fails closed when those filesystem primitives are unavailable. An advisory lock does not control unrelated writers that ignore it, so version 1 does not claim protection against those races; a stronger kernel compare-and-swap boundary is future work. Version 1 does not create parent directories, keep a baseline, or make a backup containing configuration content.
 
 Version 6 uses the same recoverable atomic replacement boundary only after
 stricter secret-target checks. It never creates a parent directory, follows a
@@ -671,13 +671,13 @@ separate from the version-5 path-condition record.
 | ------------ | ----------------------------------------------------------------------------------- | -------------- |
 | `in_sync`    | rendered bytes equal a template target, or a symbolic target resolves to its source | `noop`         |
 | `missing`    | target is absent                                                                    | `create`       |
-| `formatting` | reserved for a future format adapter; M1 does not emit it                           | not applicable |
+| `formatting` | reserved for a future format adapter; version 1 does not emit it                           | not applicable |
 | `drifted`    | rendered content differs, or a symbolic target is a regular file                    | `replace`      |
 | `blocked`    | the target boundary or declared input cannot be handled safely                      | `block`        |
 
-M1 has no formatting equivalence. Without a format adapter or parser evidence, any byte difference—including line endings, trailing whitespace, and final-newline differences—is `drifted` and may be `replace`d. The reserved `formatting` value is not emitted by M1.
+Version 1 has no formatting equivalence. Without a format adapter or parser evidence, any byte difference—including line endings, trailing whitespace, and final-newline differences—is `drifted` and may be `replace`d. The reserved `formatting` value is not emitted by version 1.
 
-The table above is the M1 exact-byte action table. In M2, `comparison = "json"` uses this additional observation table:
+The table above is the version 1 exact-byte action table. In version 2, `comparison = "json"` uses this additional observation table:
 
 | State        | Meaning                                                   | Action              |
 | ------------ | --------------------------------------------------------- | ------------------- |
@@ -729,7 +729,7 @@ Successful `inspect` and `plan` output has this shape:
 
 `apply` adds `applied`, `mutated`, `outcome`, `changed_targets`, `verification`, and `verification_error`. A confirmation preview has `applied = false` and `reason = "confirmation_required"`; a blocked apply uses `reason = "plan_blocked"`. A successful write has `outcome = "committed"`; a successful no-op has `outcome = "no_changes"`; both return exit code `0`, with `mutated` distinguishing whether a target was written. If a target was committed but verification could not recalculate a clean plan, the result has `outcome = "committed_but_verification_failed"`; if commit happened but durability or cleanup could not be confirmed, it has `outcome = "committed_state_unknown"`. If no target was written and verification failed, the outcome is `verification_failed`. All failure outcomes return exit code `2`; committed outcomes include every known changed target and callers must inspect before retrying. Rendered bytes, variable values, diffs, and hashes are intentionally absent from machine-readable output.
 
-Version 2 successful observation output uses `schema_version = 2`, includes `manifest_version = 2`, `applyable = false`, and `apply_block_reason`. Version 2 summaries additionally include `reported`; resource entries may include metadata-only `comparison` results with `strategy`, `status`, `code`, `reason`, and `equivalent`. Version 3 and 4 observations use their matching schema and manifest versions, remain `applyable = false`, and include metadata-only field ownership. M3b mutation results use `schema_version = 4`, identify the operation/resource/selected fields/write path, and never include field values, rendered content, diffs, or hashes.
+Version 2 successful observation output uses `schema_version = 2`, includes `manifest_version = 2`, `applyable = false`, and `apply_block_reason`. Version 2 summaries additionally include `reported`; resource entries may include metadata-only `comparison` results with `strategy`, `status`, `code`, `reason`, and `equivalent`. Version 3 and 4 observations use their matching schema and manifest versions, remain `applyable = false`, and include metadata-only field ownership. Version 4 mutation results use `schema_version = 4`, identify the operation/resource/selected fields/write path, and never include field values, rendered content, diffs, or hashes.
 
 Version 5 apply output has `preview`, `journal`, `target_names`, `state`, `outcome`, and `changed_targets`; a preview has `journal.created = false`, and a failed confirmed execution includes the readable journal state so partial success is not hidden. `record-inspect` emits the same journal metadata without path conditions or transition history. `recover --record PATH --json` emits `schema_version`, `command = "recover"`, `mode = "reobserve-only"`, `plan_id`, `record_state`, `outcome`, and metadata-only per-resource/path observations; human output reports the same state and outcome without configuration values. The version-5 journal condition domain is closed: condition types are `missing`, `unsafe`, `regular`, `symlink`, or `other`; `mode` is `0..0o777`, sizes and file identities are non-negative integers, and timestamps may be signed integers. Empty resources, ordinal gaps, and a non-contiguous `next_ordinal` are invalid.
 
@@ -758,13 +758,13 @@ Expected failures use exit code `2`. With `--json`, they are emitted as:
 }
 ```
 
-Error messages identify the failing boundary but never print rendered content or variable values. No other output format is a compatibility promise in M1.
+Error messages identify the failing boundary but never print rendered content or variable values. No other output format is a compatibility promise in version 1.
 
 ## Compatibility
 
-The manifest `version` and JSON `schema_version` are independent explicit contracts. M1 uses version `1` for both; M2 uses version `2`; M3a uses version `3`; M3b uses manifest and mutation result version `4`; M3c execution and re-observation use version `5`; M4 provider execution and re-observation use version `6`; the M6 pilot uses version `7` for manifests and pilot mutation results; M7 uses version `8` for manifests and metadata results. A future incompatible change must introduce a new version or a deliberate migration. There is no migration or automatic recovery mutation command.
+The manifest `version` and JSON `schema_version` are independent explicit contracts. Each manifest version pairs with the schema version of the same number for its observation and result output: versions `1`–`3` observe, version `4` also covers mutation results, version `5` journaled execution and re-observation, version `6` provider execution and re-observation, version `7` pilot manifests and mutation results, and version `8` profile manifests and metadata results. A future incompatible change must introduce a new version or a deliberate migration. There is no migration or automatic recovery mutation command.
 
-The M6 pilot and M7 full-coverage contract are additive, opt-in extensions
+The version 7 pilot and version 8 profile contracts are additive, opt-in extensions
 alongside those contracts. Version `7` is selected only by `version = 7`; its
 commands use the existing CLI command names and its metadata results use
 `schema_version = 7`. Version `8` is selected only by `version = 8`, requires

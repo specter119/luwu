@@ -1,4 +1,4 @@
-# M7 synthetic acceptance fixture
+# Synthetic profile acceptance fixture
 
 This fixture exercises manifest v8 profiles, package dependencies, exclusions,
 layered public inputs, nested JSONC and TOML fields, whole-file copies, and

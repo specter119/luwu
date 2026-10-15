@@ -46,6 +46,11 @@ delivery that needed them, and documents that restate dated outcomes as if
 they were current. Also attack the opposite failure: a merge that hides a
 real compatibility difference. Behavior that differs by manifest version is a
 genuine dimension of the capability and stays visible; a delivery label is not.
+A version number can hide a delivery label: if a file or class is named for a
+version only because one delivery shipped it, and it mixes several
+capabilities (planning, authorization, reverse sync, write failures), the
+version is acting as the milestone. Split it by capability and keep the version
+as a dimension inside each.
 
 Report the capability, the places a reader has to visit, the chronology they
 must know, and the smallest reorganization that lets one place answer the

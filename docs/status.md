@@ -36,10 +36,12 @@ The rows above are status claims, not a second contract.
 
 ## Verified scope and limits
 
-Verification is the test suite under `tests/`, the ablations and benchmarks in
-`experiments/`, and the commands in [maintenance](maintenance.md). Their
-output is not committed; rerun them against the checkout and installed
-artifact before relying on a result.
+Verification is the test suite under `tests/` plus the ablations in
+`experiments/`, which disable selected guards in production modules and check
+that a test or probe notices. Benchmarks in `experiments/` measure
+performance only; they do not verify correctness. The commands are in
+[maintenance](maintenance.md). Their output is not committed; rerun them
+against the checkout and installed artifact before relying on a result.
 
 The implementation does not claim:
 

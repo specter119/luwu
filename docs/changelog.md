@@ -63,7 +63,7 @@ For example: `git show bb80335:docs/milestones/m3.md`.
   configuration; reverse sync into declared inputs.
 - Isolated rehearsal and a Dotter handoff procedure; the user trial is still
   pending (see [roadmap](roadmap.md)).
-- Inline TOML comments (M7a) extend version 7 without a new version.
+- Inline TOML comments extend version 7 without a new version.
 
 ## M7: Full dotfiles coverage (version 8, PR #18)
 

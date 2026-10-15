@@ -41,7 +41,8 @@ the test module for its capability under `tests/<capability>/`; it does not
 create a parallel file named after a delivery, ticket, or version. Where one
 capability has behavior that differs by manifest version, keep each version's
 tests in its own `V<n>` test class in the same module, and never merge two
-implementations into one class. Shared builders and fakes live in
+implementations into one class. A version-named class that spans several
+capabilities is split by capability instead. Shared builders and fakes live in
 `tests/support/`, whose module names do not start with `test`. Fixtures are
 named by scenario, not by delivery.
 

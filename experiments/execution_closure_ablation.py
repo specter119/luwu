@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = ["Jinja2>=3.1,<4"]
 # ///
-"""Ablate M3 closure guards against real operations in temporary projects.
+"""Ablate execution-closure guards against real operations in temporary projects.
 
 Small wrappers exercise the proposed contract before implementation. Removing
 each guard also bypasses its later production equivalent. This experiment is
