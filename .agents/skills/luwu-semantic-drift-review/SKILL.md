@@ -62,8 +62,7 @@ consent, boundary, confidentiality, or verifiability stance.
   unsupported syntax as blocked. Evidence: the M2 contract in
   `docs/reference.md`.
 - Patch only selected literal-JSON spans so unselected and undeclared bytes are
-  preserved. Evidence:
-  [M3 repair record](../../../docs/milestones/m3-repair-plan.md).
+  preserved. Evidence: `tests/formats/test_json_patch.py`.
 
 ## Bad patterns
 

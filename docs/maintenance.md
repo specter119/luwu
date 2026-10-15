@@ -12,7 +12,7 @@ Use the checkout's supported Python and the locked environment:
 
 ```text
 uv sync --locked
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -B -m unittest discover -s tests -t .
 ruff check src tests
 ruff format --check src tests
 python3 -m compileall -q src tests

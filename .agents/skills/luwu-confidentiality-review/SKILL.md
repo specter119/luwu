@@ -59,11 +59,13 @@ semantic-drift, or verifiability stance.
 ## Good patterns
 
 - Require explicit runtime authority, a bounded provider adapter, and fixed
-  safe error projections before a provider can run. Evidence: the M4 closure
-  record and the v6 contract in `docs/reference.md`.
+  safe error projections before a provider can run. Evidence:
+  `tests/providers/test_provider_runner.py` and the v6 contract in
+  `docs/reference.md`.
 - Keep journals and caches metadata-only, and use a fake provider or injected
   resolver for tests rather than a real vault. Evidence:
-  [M4 closure record](../../../docs/milestones/m4.md).
+  `tests/records/test_secret_record.py` and
+  `tests/providers/test_provider_cache.py`.
 
 ## Bad patterns
 

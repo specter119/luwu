@@ -51,7 +51,7 @@ check [current implementation status](docs/status.md), and use the
 Run the deterministic test suite with:
 
 ```text
-uv run --locked python -m unittest discover -s tests -v
+uv run --locked python -m unittest discover -s tests -t . -v
 ```
 
 ## Documentation

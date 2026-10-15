@@ -59,7 +59,8 @@ boundary, confidentiality, ownership, semantic-drift, or verifiability stance.
   and recalculate after the write. Evidence: the command contract in
   `docs/reference.md`.
 - Complete preflight before the first writer and keep recovery observation
-  read-only. Evidence: the M3 execution closure and v5 reference contract.
+  read-only. Evidence: `tests/apply/test_batch_execution.py` and the v5 reference
+  contract.
 
 ## Bad patterns
 
@@ -67,7 +68,7 @@ boundary, confidentiality, ownership, semantic-drift, or verifiability stance.
   write or refresh.
 - Allow a selected reverse-sync field to proceed while another field in the
   same resource requires conflict review. Evidence:
-  [M3 execution closure](../../../docs/milestones/m3-execution-closure.md).
+  `tests/reverse/test_conflict_review.py`.
 
 Patterns do not define confirmation flags or exit codes. Those remain owned by
 the public CLI and reference contract.

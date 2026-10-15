@@ -97,7 +97,7 @@ def run_rehearsal(artifact_dir: Path) -> dict[str, object]:
 
 def _run_case(case: Path, *, name: str, work_values: list[str]) -> dict[str, object]:
     config = _CASES[name]
-    fixture = ROOT / "tests" / "fixtures" / "m6" / name
+    fixture = ROOT / "tests" / "fixtures" / "pilot_v7" / name
     shutil.copytree(fixture, case)
     manifest_path = case / "luwu.toml"
     home = case / "home"
@@ -458,7 +458,7 @@ def _run_uncertain_write_observation(
 
 
 def _run_dotter_handoff(case: Path) -> dict[str, object]:
-    fixture = ROOT / "tests" / "fixtures" / "m6" / "pi"
+    fixture = ROOT / "tests" / "fixtures" / "pilot_v7" / "pi"
     shutil.copytree(fixture, case)
     manifest_path = case / "luwu.toml"
     manifest = load_manifest(manifest_path)

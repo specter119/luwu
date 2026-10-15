@@ -62,7 +62,8 @@ verifiability stance.
   Evidence: the M3 contract in `docs/reference.md`.
 - Permit reverse sync only through an explicit declared literal mapping and
   preserve unselected or undeclared source content. Evidence:
-  [M3 repair record](../../../docs/milestones/m3-repair-plan.md).
+  `tests/formats/test_json_patch.py` and
+  `tests/reverse/test_accept_and_reverse_sync.py`.
 
 ## Bad patterns
 
@@ -70,7 +71,8 @@ verifiability stance.
   to erase a conflict.
 - Re-read a convenient baseline and use it as authorization when the planner
   classified a different baseline. Evidence:
-  [M3 follow-up record](../../../docs/milestones/m3-followup.md).
+  `tests/reverse/test_reverse_input_binding.py` and
+  `tests/cli/test_json_and_error_output.py`.
 
 Patterns explain how to attack authority mistakes; the resource and field
 contract remains owned by `docs/product.md` and `docs/reference.md`.

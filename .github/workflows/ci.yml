@@ -18,7 +18,7 @@ jobs:
           version: latest
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
-      - run: uv run python -B -m unittest discover -s tests
+      - run: uv run python -B -m unittest discover -s tests -t .
       - run: uvx ruff check src tests
       - run: uvx ruff format --check src tests
       - run: uv run python -m compileall -q src tests
@@ -37,8 +37,8 @@ jobs:
       - run: uv venv --python 3.12 .venv-wheel
       - run: uv pip install --python .venv-wheel/bin/python dist/*.whl
       - run: .venv-wheel/bin/luwu --version
-      - run: .venv-wheel/bin/python -B -m unittest discover -s tests
+      - run: .venv-wheel/bin/python -B -m unittest discover -s tests -t .
       - run: uv venv --python 3.12 .venv-sdist
       - run: uv pip install --python .venv-sdist/bin/python dist/*.tar.gz
       - run: .venv-sdist/bin/luwu --version
-      - run: .venv-sdist/bin/python -B -m unittest discover -s tests
+      - run: .venv-sdist/bin/python -B -m unittest discover -s tests -t .
