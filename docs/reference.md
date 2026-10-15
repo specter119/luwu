@@ -671,7 +671,7 @@ separate from the version-5 path-condition record.
 | ------------ | ----------------------------------------------------------------------------------- | -------------- |
 | `in_sync`    | rendered bytes equal a template target, or a symbolic target resolves to its source | `noop`         |
 | `missing`    | target is absent                                                                    | `create`       |
-| `formatting` | reserved for a future format adapter; version 1 does not emit it                           | not applicable |
+| `formatting` | reserved for a future format adapter; version 1 does not emit it                    | not applicable |
 | `drifted`    | rendered content differs, or a symbolic target is a regular file                    | `replace`      |
 | `blocked`    | the target boundary or declared input cannot be handled safely                      | `block`        |
 

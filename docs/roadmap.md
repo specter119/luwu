@@ -17,13 +17,13 @@ to an active milestone's scope should be explicit.
 
 ## Milestone map
 
-| Milestone | Focus                                        | Outcome                                                                                                                           |
-| --------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| M1-M5     | Preview through batch performance            | Delivered; see the [changelog](changelog.md).                                                                                     |
-| M6        | First usable bidirectional pilot             | Technical acceptance complete: the bounded Pi/Codex loop and trial handoff are ready; the user trial is pending.                  |
-| M7        | Full dotfiles coverage                       | Technical core implemented and verified; closure open on Droid workspace-trust schema evidence.                                   |
-| M8        | Real provider and mixed-input integration    | Planned: public, local, and provider inputs work together without persistent secret intermediates.                                |
-| M9        | Real-project migration qualification         | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies.                 |
+| Milestone | Focus                                     | Outcome                                                                                                           |
+| --------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| M1-M5     | Preview through batch performance         | Delivered; see the [changelog](changelog.md).                                                                     |
+| M6        | First usable bidirectional pilot          | Technical acceptance complete: the bounded Pi/Codex loop and trial handoff are ready; the user trial is pending.  |
+| M7        | Full dotfiles coverage                    | Technical core implemented and verified; closure open on Droid workspace-trust schema evidence.                   |
+| M8        | Real provider and mixed-input integration | Planned: public, local, and provider inputs work together without persistent secret intermediates.                |
+| M9        | Real-project migration qualification      | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies. |
 
 The milestone identifiers do not allocate manifest versions. Before changing
 public behavior, define the compatible extension or version transition in
