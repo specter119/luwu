@@ -2,6 +2,11 @@
 # Hook repositories are pinned to immutable commits for reviewable updates.
 minimum_prek_version = "0.4.12"
 
+# uv.lock points at public PyPI. Without this, a machine whose uv default index
+# is a private mirror reports the lock as out of date in the uv-lock and ty
+# hooks. `uv check` starts its own uv subprocess, so a flag would not reach it.
+default_env = { UV_DEFAULT_INDEX = "https://pypi.org/simple" }
+
 [[repos]]
 repo = "builtin"
 

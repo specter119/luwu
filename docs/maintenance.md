@@ -59,6 +59,9 @@ On a machine whose default index is not PyPI, `uv sync --locked` and
 so `uv` does not rewrite the file. Do not commit a lock produced by a bare
 `uv lock` on such a machine.
 
+The `uv-lock` and `ty` hooks in `prek.toml` set `UV_DEFAULT_INDEX` to PyPI for
+this reason, so `prek run --all-files` needs no extra flags.
+
 ## Test layout
 
 Tests are organized by capability, not by delivery. A new behavior appends to
