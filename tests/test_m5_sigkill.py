@@ -19,7 +19,7 @@ from luwu.reconcile import (
     execute_execution_plan,
     inspect_execution_record,
 )
-from tests.test_m3c_execution import _ExecutionProject
+from tests.support.projects import ExecutionProject
 
 
 def _child_execute(root: str, mode: str, ready: Connection) -> None:
@@ -110,7 +110,7 @@ def _child_execute(root: str, mode: str, ready: Connection) -> None:
 
 
 class M5SigkillTests(unittest.TestCase):
-    def _kill_at_boundary(self, project: _ExecutionProject, mode: str) -> None:
+    def _kill_at_boundary(self, project: ExecutionProject, mode: str) -> None:
         context = get_context("fork")
         receiver, sender = context.Pipe(duplex=False)
         process = context.Process(
@@ -141,7 +141,7 @@ class M5SigkillTests(unittest.TestCase):
             receiver.close()
 
     def test_sigkill_before_journal_leaves_no_mutation(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             before = project.targets["alpha"].read_bytes()
             self._kill_at_boundary(project, "pre-journal")
 
@@ -149,7 +149,7 @@ class M5SigkillTests(unittest.TestCase):
             self.assertFalse((project.root / "journal.json").exists())
 
     def test_sigkill_before_replace_keeps_journal_and_target_unmodified(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             self._kill_at_boundary(project, "before-replace")
 
             journal = inspect_execution_record(project.root / "journal.json")
@@ -157,7 +157,7 @@ class M5SigkillTests(unittest.TestCase):
             self.assertEqual(project.targets["alpha"].read_text(), "alpha-old\n")
 
     def test_sigkill_after_replace_reports_uncommitted_journal_state(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             self._kill_at_boundary(project, "after-replace")
 
             journal = inspect_execution_record(project.root / "journal.json")
@@ -167,7 +167,7 @@ class M5SigkillTests(unittest.TestCase):
             self.assertEqual(project.targets["alpha"].read_text(), "alpha-desired\n")
 
     def test_sigkill_between_resources_preserves_partial_commit_boundary(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("beta", "alpha"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:

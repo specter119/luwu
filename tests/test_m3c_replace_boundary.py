@@ -18,14 +18,14 @@ from luwu.reconcile import (
     inspect_execution_record,
     reobserve_execution_record,
 )
-from tests.test_m3c_execution import _ExecutionProject
+from tests.support.projects import ExecutionProject
 
 
 class M3cReplaceBoundaryTests(unittest.TestCase):
     def test_real_replace_then_raise_preserves_known_target_and_recovery_state(
         self,
     ) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "journal.json"
             real_replace = cast(Callable[..., None], os.replace)
 
@@ -70,7 +70,7 @@ class M3cReplaceBoundaryTests(unittest.TestCase):
     def test_equal_external_target_is_indeterminate_and_not_a_changed_target(
         self,
     ) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "journal.json"
             real_replace = os.replace
 
@@ -133,7 +133,7 @@ class M3cReplaceBoundaryTests(unittest.TestCase):
     def test_three_resources_stop_after_indeterminate_and_recover_read_only(
         self,
     ) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta", "zeta"),
             targets={
                 "alpha": "alpha-old\n",
@@ -231,7 +231,7 @@ class M3cReplaceBoundaryTests(unittest.TestCase):
             self.assertEqual(calls, 2)
 
     def test_indeterminate_boundary_is_visible_in_json_and_human_cli(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "json-journal.json"
             with patch(
                 "luwu.reconcile.os.replace",
@@ -248,7 +248,7 @@ class M3cReplaceBoundaryTests(unittest.TestCase):
             self.assertEqual(stderr, "")
             self.assertNotIn(project.source_values["alpha"], stdout)
 
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "human-journal.json"
             with patch(
                 "luwu.reconcile.os.replace",
@@ -330,7 +330,7 @@ def _read_at(parent: int, name: str) -> bytes:
 
 
 def _run_cli(
-    project: _ExecutionProject,
+    project: ExecutionProject,
     record_path: Path,
     *,
     as_json: bool,

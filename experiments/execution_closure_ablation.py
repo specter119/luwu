@@ -22,12 +22,11 @@ from luwu import mutations, reconcile
 from luwu.errors import ApplyError, MutationError
 from luwu.manifest import load_manifest
 from luwu.plan_record import PlanRecord, PlanRecordError
-from tests.test_m3b import _Project
-from tests.test_m3c_execution import _ExecutionProject
+from tests.support.projects import ExecutionProject, FieldProject
 
 
 def publication_probe(*, guard: bool, phase: str) -> bool:
-    with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+    with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
         original_write = PlanRecord.write
         original_writer = reconcile._write_observation
         completed_targets: list[str] = []
@@ -77,7 +76,7 @@ def publication_probe(*, guard: bool, phase: str) -> bool:
 
 
 def recovery_probe(*, guard: bool) -> bool:
-    with _ExecutionProject(("alpha",), targets={"alpha": "alpha-desired\n"}) as project:
+    with ExecutionProject(("alpha",), targets={"alpha": "alpha-desired\n"}) as project:
         record = reconcile._execution_record(reconcile.build_plan(project.manifest))
         record = (
             record.transition("preflighted")
@@ -103,7 +102,7 @@ def recovery_probe(*, guard: bool) -> bool:
 
 
 def conflict_probe(*, guard: bool) -> bool:
-    with _Project() as project:
+    with FieldProject() as project:
         project.write_baseline({"setting": 0, "runtime": 1})
         project.target.write_text('{"setting": 3, "runtime": 2, "undeclared": "live"}')
         manifest = load_manifest(project.manifest)

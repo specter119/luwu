@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from luwu.plan_record import PlanRecord, PlanRecordError
 from luwu.reconcile import build_plan, execute_execution_plan, inspect_execution_record
-from tests.test_m3c_execution import _ExecutionProject
+from tests.support.projects import ExecutionProject
 
 
 class M3cRecordSchemaClosureTests(unittest.TestCase):
@@ -147,7 +147,7 @@ class M3cRecordSchemaClosureTests(unittest.TestCase):
                 ):
                     PlanRecord.read(path)
 
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "journal.json"
             execute_execution_plan(
                 build_plan(project.manifest), record_path, confirm=True

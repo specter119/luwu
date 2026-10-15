@@ -44,20 +44,21 @@ from luwu.reconcile import (
     inspect_execution_record,
     reobserve_execution_record,
 )
-from tests.test_m3c_execution import _ExecutionProject, _snapshot
+from tests.support.projects import ExecutionProject
+from tests.support.snapshots import project_bytes
 
 
 class M5InterruptionHonestyTests(unittest.TestCase):
     maxDiff = None
 
     def test_writer_failure_before_first_target_writer(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
             plan = build_plan(project.manifest)
             record_path = project.root / "journal.json"
-            before = _snapshot(project)
+            before = project_bytes(project)
             failure = ApplyError(
                 "writer failed before any replacement",
                 code="write_failed",
@@ -73,7 +74,7 @@ class M5InterruptionHonestyTests(unittest.TestCase):
             error = raised.exception
             self.assertEqual(error.code, "execution_failed")
             self.assertFalse(error.committed)
-            self.assertEqual(_snapshot(project), before)
+            self.assertEqual(project_bytes(project), before)
             journal = inspect_execution_record(record_path)
             self.assertEqual(journal["state"], "unknown")
             self.assertEqual(_resource_states(journal), ["unknown", "not-attempted"])
@@ -91,7 +92,7 @@ class M5InterruptionHonestyTests(unittest.TestCase):
             )
 
     def test_writer_failure_after_one_committed_target(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("gamma", "beta", "alpha"),  # execution order: alpha, beta, gamma
             targets={
                 "alpha": "alpha-old\n",
@@ -154,7 +155,7 @@ class M5InterruptionHonestyTests(unittest.TestCase):
             )
 
     def test_failure_after_replacement_before_journal_publication(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("beta", "alpha"),  # execution order: alpha, beta
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
@@ -195,13 +196,13 @@ class M5InterruptionHonestyTests(unittest.TestCase):
             )
 
     def test_journal_publication_failure_before_any_target_write(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
             plan = build_plan(project.manifest)
             record_path = project.root / "journal.json"
-            before = _snapshot(project)
+            before = project_bytes(project)
 
             def fail_publication(
                 self: PlanRecord,
@@ -222,7 +223,7 @@ class M5InterruptionHonestyTests(unittest.TestCase):
             error = raised.exception
             self.assertEqual(error.code, "recovery_required")
             self.assertFalse(error.committed)
-            self.assertEqual(_snapshot(project), before)
+            self.assertEqual(project_bytes(project), before)
             self.assertFalse(record_path.exists())
             context = error.execution
             assert isinstance(context, dict)
@@ -237,14 +238,14 @@ class M5InterruptionHonestyTests(unittest.TestCase):
             )
 
     def test_journal_cas_conflict_before_any_target_write(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             plan = build_plan(project.manifest)
             record_path = project.root / "journal.json"
             competing = reconcile._execution_record(build_plan(project.manifest))
             competing.write(record_path)
             competing_bytes = record_path.read_bytes()
             competing_plan_id = str(competing.to_dict()["plan_id"])
-            before = _snapshot(project)
+            before = project_bytes(project)
 
             with self.assertRaises(ApplyError) as raised:
                 execute_execution_plan(plan, record_path, confirm=True)
@@ -252,7 +253,7 @@ class M5InterruptionHonestyTests(unittest.TestCase):
             error = raised.exception
             self.assertEqual(error.code, "recovery_required")
             self.assertFalse(error.committed)
-            self.assertEqual(_snapshot(project), before)
+            self.assertEqual(project_bytes(project), before)
             # The CAS guard refused the create; the competing journal survives.
             self.assertEqual(record_path.read_bytes(), competing_bytes)
             context = error.execution
@@ -276,13 +277,13 @@ class M5InterruptionHonestyTests(unittest.TestCase):
     def test_unprocessed_noop_stays_not_attempted_after_earlier_writer_failure(
         self,
     ) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("beta", "alpha"),  # execution order: alpha (replace), beta (noop)
             targets={"alpha": "alpha-old\n", "beta": "beta-desired\n"},
         ) as project:
             plan = build_plan(project.manifest)
             record_path = project.root / "journal.json"
-            before = _snapshot(project)
+            before = project_bytes(project)
             failure = ApplyError(
                 "writer failed before replacement",
                 code="write_failed",
@@ -295,7 +296,7 @@ class M5InterruptionHonestyTests(unittest.TestCase):
             ):
                 execute_execution_plan(plan, record_path, confirm=True)
 
-            self.assertEqual(_snapshot(project), before)
+            self.assertEqual(project_bytes(project), before)
             journal = inspect_execution_record(record_path)
             self.assertEqual(_resource_states(journal), ["unknown", "not-attempted"])
             self._assert_recovery_views(
@@ -305,10 +306,10 @@ class M5InterruptionHonestyTests(unittest.TestCase):
             )
 
     def test_parent_rebinding_is_reported_as_concurrent_change(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             plan = build_plan(project.manifest)
             record_path = project.root / "journal.json"
-            before = _snapshot(project)
+            before = project_bytes(project)
 
             with (
                 patch(
@@ -326,7 +327,7 @@ class M5InterruptionHonestyTests(unittest.TestCase):
             self.assertIsInstance(cause, ApplyError)
             assert isinstance(cause, ApplyError)
             self.assertEqual(cause.code, "concurrent_change")
-            self.assertEqual(_snapshot(project), before)
+            self.assertEqual(project_bytes(project), before)
             journal = inspect_execution_record(record_path)
             self.assertEqual(journal["state"], "unknown")
             self.assertEqual(_resource_states(journal), ["unknown"])

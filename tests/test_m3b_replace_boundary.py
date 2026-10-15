@@ -14,12 +14,12 @@ from luwu.errors import MutationError
 from luwu.manifest import load_manifest
 from luwu.mutations import accept_baseline, reverse_sync
 from luwu.reverse_sync import SourcePatch
-from tests.test_m3b import _Project
+from tests.support.projects import FieldProject
 
 
 class M3bReplaceBoundaryTests(unittest.TestCase):
     def test_baseline_replace_failure_before_publish_is_not_committed(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             with (
                 patch(
                     "luwu.baseline.os.replace",
@@ -45,7 +45,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
             self.assertEqual(self._temporary_entries(project.baseline), [])
 
     def test_baseline_replace_then_raise_uses_staged_identity(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             staged: dict[str, bytes] = {}
             real_replace = cast(Callable[..., None], os.replace)
 
@@ -87,7 +87,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
             self.assertEqual(self._temporary_entries(project.baseline), [])
 
     def test_baseline_equal_independent_target_is_indeterminate(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             staged: dict[str, object] = {}
 
             def replace_with_equal_independent_target(
@@ -137,7 +137,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
             self.assertEqual(self._temporary_entries(project.baseline), [])
 
     def test_baseline_same_old_bytes_with_consumed_temp_is_indeterminate(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             resource = load_manifest(project.manifest).resources[0]
             project.write_baseline({"setting": 1})
             before = project.baseline.read_bytes()
@@ -178,7 +178,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
     def test_baseline_unobservable_parent_after_replace_then_raise_is_indeterminate(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             original_parent = project.root
             detached_parent = project.root.parent / f"{project.root.name}-detached"
             real_replace = cast(Callable[..., None], os.replace)
@@ -228,7 +228,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
     def test_baseline_unlock_failure_after_replace_then_raise_keeps_commit_fact(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             real_replace = cast(Callable[..., None], os.replace)
 
             def replace_then_raise(*args: object, **kwargs: object) -> None:
@@ -263,7 +263,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
     def test_baseline_close_failure_after_replace_then_raise_keeps_commit_fact(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             resource = load_manifest(project.manifest).resources[0]
             real_open_parent = baseline.open_parent_directory
             real_close = os.close
@@ -309,7 +309,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
             self.assertTrue(project.baseline.exists())
 
     def test_source_replace_failure_before_publish_is_not_committed(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             before = project.source.read_bytes()
             with (
@@ -336,7 +336,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
             self.assertEqual(self._temporary_entries(project.source), [])
 
     def test_source_replace_then_raise_uses_staged_identity(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             staged: dict[str, bytes] = {}
             real_replace = cast(Callable[..., None], os.replace)
@@ -378,7 +378,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
             self.assertEqual(self._temporary_entries(project.source), [])
 
     def test_source_equal_independent_target_is_indeterminate(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             staged: dict[str, object] = {}
 
@@ -426,7 +426,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
             self.assertEqual(self._temporary_entries(project.source), [])
 
     def test_source_same_old_bytes_with_consumed_temp_is_indeterminate(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             resource = load_manifest(project.manifest).resources[0]
             before = project.source.read_bytes()
             source_identity = project.source.stat()
@@ -474,7 +474,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
     def test_source_cleanup_failure_after_indeterminate_does_not_become_not_committed(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
 
             def independent_target_with_temp_left(
@@ -518,7 +518,7 @@ class M3bReplaceBoundaryTests(unittest.TestCase):
     def test_source_unlock_failure_after_replace_then_raise_keeps_commit_fact(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             real_replace = cast(Callable[..., None], os.replace)
 

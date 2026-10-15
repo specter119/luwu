@@ -3,13 +3,12 @@ from __future__ import annotations
 import io
 import json
 import os
-import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Self, cast
+from typing import Any, cast
 from unittest.mock import patch
 
 from luwu import mutations
@@ -22,6 +21,7 @@ from luwu.mutations import accept_baseline, reverse_sync
 from luwu.reconcile import _read_target as reconcile_read_target
 from luwu.rendering import render_template as render_template_impl
 from luwu.reverse_sync import build_source_patch
+from tests.support.projects import FieldProject
 
 
 class M3bMutationTests(unittest.TestCase):
@@ -32,14 +32,14 @@ class M3bMutationTests(unittest.TestCase):
             encode_public_json({1: "not-a-json-key"})
 
     def test_v4_manifest_is_explicit_and_reverse_mapping_is_frozen(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             resource = load_manifest(project.manifest).resources[0]
             self.assertEqual(resource.reverse_sync["runtime"], "runtime")
             with self.assertRaises(TypeError):
                 cast(Any, resource.reverse_sync)["new"] = "new"
 
     def test_manifest_rejects_reverse_mapping_to_another_declared_field(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.manifest.write_text(
                 project.manifest.read_text(encoding="utf-8").replace(
                     'runtime = "runtime"', 'runtime = "setting"'
@@ -53,7 +53,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertEqual(context.exception.code, "reverse_sync_owner")
 
     def test_manifest_rejects_reverse_mapping_to_undeclared_source_key(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.manifest.write_text(
                 project.manifest.read_text(encoding="utf-8").replace(
                     'runtime = "runtime"', 'runtime = "new_undeclared_key"'
@@ -86,7 +86,7 @@ class M3bMutationTests(unittest.TestCase):
     def test_accept_preview_does_not_create_baseline_and_confirmed_accept_writes_it(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             before = project.baseline.exists()
             preview = _invoke(
                 [
@@ -130,7 +130,7 @@ class M3bMutationTests(unittest.TestCase):
     def test_reverse_sync_changes_only_selected_source_key_and_recalculates(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline(
                 {
                     "setting": 1,
@@ -178,7 +178,7 @@ class M3bMutationTests(unittest.TestCase):
             )
 
     def test_reverse_sync_blocks_strictly_changed_undeclared_content(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.source.write_text(
                 '{"setting": 1, "runtime": 1, "undeclared": "source", "outside": true}',
                 encoding="utf-8",
@@ -202,7 +202,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertEqual(project.source.read_bytes(), before)
 
     def test_v4_apply_remains_read_only(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             code, payload = _invoke(
                 [
@@ -217,7 +217,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertEqual(payload["reason"], "m3_read_only")
 
     def test_mutations_reject_multi_resource_manifest_before_planning(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             loaded = load_manifest(project.manifest)
             manifest = replace(
                 loaded,
@@ -237,7 +237,7 @@ class M3bMutationTests(unittest.TestCase):
     def test_field_selection_is_unique_and_declared_at_the_public_boundary(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             for fields in (("setting", "setting"), ("missing",)):
                 with self.subTest(fields=fields):
                     with self.assertRaises(MutationError) as context:
@@ -256,7 +256,7 @@ class M3bMutationTests(unittest.TestCase):
                     )
 
     def test_post_write_verification_failure_reports_known_commit(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             with patch(
                 "luwu.mutations._verify",
                 side_effect=RuntimeError("verification unavailable"),
@@ -277,7 +277,7 @@ class M3bMutationTests(unittest.TestCase):
             )
 
     def test_accept_rechecks_the_baseline_snapshot_under_the_writer_lock(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
 
             def write_with_race(
                 root: Path,
@@ -314,7 +314,7 @@ class M3bMutationTests(unittest.TestCase):
             )
 
     def test_stale_manifest_source_and_live_are_rejected(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
 
             def render_with_race(resource: Any, *, root: Path) -> Any:
                 project.source.write_text(
@@ -337,7 +337,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertEqual(source_context.exception.code, "stale_plan")
             self.assertFalse(project.baseline.exists())
 
-        with _Project() as project:
+        with FieldProject() as project:
             with (
                 patch(
                     "luwu.mutations._check_manifest_fresh",
@@ -355,7 +355,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertEqual(manifest_context.exception.code, "stale_plan")
             self.assertFalse(project.baseline.exists())
 
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             calls = 0
 
@@ -383,7 +383,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertEqual(live_context.exception.code, "stale_plan")
 
     def test_reverse_sync_reports_unknown_after_final_live_check_race(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             real_replace = os.replace
 
@@ -426,7 +426,7 @@ class M3bMutationTests(unittest.TestCase):
     def test_reverse_sync_reports_verification_failure_after_directory_sync_race(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             real_sync = mutations.sync_directory
 
@@ -451,7 +451,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertTrue(result.applied)
 
     def test_accept_reports_unknown_after_final_source_check_race(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             real_replace = os.replace
 
             def replace_with_source_race(
@@ -489,7 +489,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertTrue(project.baseline.exists())
 
     def test_accept_converts_post_replace_input_error_to_unknown(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             calls = 0
 
             def check_inputs(*args: Any, **kwargs: Any) -> None:
@@ -516,7 +516,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertTrue(project.baseline.exists())
 
     def test_baseline_cleanup_failure_is_reported(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             resource = load_manifest(project.manifest).resources[0]
 
             def fail_before_replace() -> None:
@@ -538,7 +538,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertFalse(context.exception.committed)
 
     def test_source_cleanup_failure_is_reported(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             with (
                 patch(
@@ -559,7 +559,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertFalse(context.exception.committed)
 
     def test_source_parent_rebind_after_final_check_is_unknown(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             original_parent = project.source.parent
             detached_parent = project.root / "templates-detached"
@@ -601,7 +601,7 @@ class M3bMutationTests(unittest.TestCase):
             self.assertTrue((detached_parent / project.source.name).exists())
 
     def test_baseline_parent_rebind_after_final_check_is_unknown(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             state = project.root / "state"
             state.mkdir()
             project.manifest.write_text(
@@ -657,77 +657,6 @@ def _invoke(arguments: list[str]) -> tuple[int, dict[str, object]]:
     with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
         code = main(arguments)
     return code, json.loads(stdout.getvalue())
-
-
-class _Project:
-    def __init__(self) -> None:
-        self.directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.directory.name)
-        (self.root / "templates").mkdir()
-        (self.root / "live").mkdir()
-        self.source = self.root / "templates/settings.json.j2"
-        self.target = self.root / "live/settings.json"
-        self.baseline = self.root / "baseline.json"
-        self.manifest = self.root / "luwu.toml"
-        self.source.write_text(
-            '{"setting": 1, "runtime": 1, "undeclared": "source"}',
-            encoding="utf-8",
-        )
-        self.target.write_text(
-            '{"setting": 1, "runtime": 2, "undeclared": "live"}',
-            encoding="utf-8",
-        )
-        self.manifest.write_text(
-            """version = 4
-
-[resources.settings]
-kind = "template"
-source = "templates/settings.json.j2"
-target = "live/settings.json"
-comparison = "json"
-owner = "fields"
-scope = "fields"
-content_sensitivity = "public"
-baseline = "baseline.json"
-
-[resources.settings.fields]
-setting = "source"
-runtime = "live"
-undeclared = "ignore"
-
-[resources.settings.reverse_sync]
-format = "literal-json"
-
-[resources.settings.reverse_sync.fields]
-runtime = "runtime"
-""",
-            encoding="utf-8",
-        )
-
-    def write_baseline(self, values: dict[str, object]) -> None:
-        self.baseline.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "resource": "settings",
-                    "source": "templates/settings.json.j2",
-                    "target": "live/settings.json",
-                    "owners": {
-                        "setting": "source",
-                        "runtime": "live",
-                        "undeclared": "ignore",
-                    },
-                    "values": values,
-                }
-            ),
-            encoding="utf-8",
-        )
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.directory.cleanup()
 
 
 if __name__ == "__main__":

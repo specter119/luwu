@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from experiments import m6_pilot
+from experiments import pilot_rehearsal
 from experiments.pilot_rehearsal import main
 
 
@@ -188,7 +188,7 @@ class M6RehearsalTests(unittest.TestCase):
         )
 
     def test_runner_does_not_force_a_source_checkout_on_sys_path(self) -> None:
-        source = Path(m6_pilot.__file__).read_text(encoding="utf-8")
+        source = Path(pilot_rehearsal.__file__).read_text(encoding="utf-8")
         self.assertNotIn("sys.path", source)
         self.assertNotIn('ROOT / "src"', source)
 
@@ -207,7 +207,9 @@ class M6RehearsalTests(unittest.TestCase):
                 run.return_value = subprocess.CompletedProcess(
                     args=[], returncode=0, stdout="{}", stderr=""
                 )
-                m6_pilot._cli(manifest, home, "inspect", "--json", expected_code=0)
+                pilot_rehearsal._cli(
+                    manifest, home, "inspect", "--json", expected_code=0
+                )
             command = run.call_args.args[0]
             self.assertIn("--manifest", command)
             self.assertEqual(command[command.index("--manifest") + 1], str(manifest))

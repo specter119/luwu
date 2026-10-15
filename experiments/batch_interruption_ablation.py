@@ -25,12 +25,12 @@ from luwu import reconcile
 from luwu.errors import ApplyError
 from luwu.plan_record import PlanRecordError
 from luwu.reconcile import Plan, ResourceObservation
-from tests.test_m3c_execution import _ExecutionProject
+from tests.support.projects import ExecutionProject
 
 
 def manifest_guard_probe(*, guard: bool) -> bool:
     """A stale plan must not mutate a target after the manifest changed."""
-    with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+    with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
         plan = reconcile.build_plan(project.manifest)
         # The manifest now declares a different target; the stale plan still
         # holds the old one.
@@ -73,7 +73,7 @@ def manifest_guard_probe(*, guard: bool) -> bool:
 
 def journal_cas_probe(*, guard: bool) -> bool:
     """A competing journal update must never be silently accepted."""
-    with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+    with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
         plan = reconcile.build_plan(project.manifest)
         record_path = project.root / "journal.json"
         base = reconcile._execution_record(plan)
@@ -118,7 +118,7 @@ def journal_cas_probe(*, guard: bool) -> bool:
 
 def noop_ordering_probe(*, guard: bool) -> bool:
     """An unprocessed no-op stays not-attempted when an earlier writer fails."""
-    with _ExecutionProject(
+    with ExecutionProject(
         ("beta", "alpha"),  # execution order: alpha (replace), beta (noop)
         targets={"alpha": "alpha-old\n", "beta": "beta-desired\n"},
     ) as project:

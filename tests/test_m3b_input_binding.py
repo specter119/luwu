@@ -12,12 +12,12 @@ from luwu.errors import MutationError
 from luwu.manifest import load_manifest
 from luwu.mutations import reverse_sync
 from luwu.ownership import OwnershipResult
-from tests.test_m3b import _Project
+from tests.support.projects import FieldProject
 
 
 class M3bInputBindingTests(unittest.TestCase):
     def test_observation_digest_is_bound_to_bytes_passed_to_classifier(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             manifest = load_manifest(project.manifest)
             observed: dict[str, bytes] = {}
@@ -66,7 +66,7 @@ class M3bInputBindingTests(unittest.TestCase):
             self.assertNotIn(observation.baseline_digest, serialized)
 
     def test_reverse_sync_rejects_planner_baseline_different_from_disk(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 3})
             baseline_on_disk = project.baseline.read_bytes()
             project.write_baseline({"setting": 1, "runtime": 1})
@@ -96,7 +96,7 @@ class M3bInputBindingTests(unittest.TestCase):
             self.assertEqual(project.source.read_bytes(), source_before)
 
     def test_baseline_change_before_replace_is_stale_without_source_write(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             source_before = project.source.read_bytes()
             real_create = mutations.create_temporary_file
@@ -123,7 +123,7 @@ class M3bInputBindingTests(unittest.TestCase):
     def test_baseline_missing_before_replace_is_stale_without_source_write(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             source_before = project.source.read_bytes()
             real_create = mutations.create_temporary_file
@@ -150,7 +150,7 @@ class M3bInputBindingTests(unittest.TestCase):
     def test_unsafe_baseline_before_replace_is_rejected_without_source_write(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             source_before = project.source.read_bytes()
             real_create = mutations.create_temporary_file
@@ -178,7 +178,7 @@ class M3bInputBindingTests(unittest.TestCase):
     def test_manifest_change_during_temp_write_is_stale_without_source_write(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             source_before = project.source.read_bytes()
             original_manifest = project.manifest.read_text(encoding="utf-8")
@@ -207,7 +207,7 @@ class M3bInputBindingTests(unittest.TestCase):
             self.assertEqual(project.source.read_bytes(), source_before)
 
     def test_baseline_change_after_replace_reports_unknown_commit(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             real_replace = os.replace
 
@@ -250,7 +250,7 @@ class M3bInputBindingTests(unittest.TestCase):
     def test_baseline_change_during_directory_sync_is_reported_after_commit(
         self,
     ) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             real_sync = mutations.sync_directory
 
@@ -272,7 +272,7 @@ class M3bInputBindingTests(unittest.TestCase):
             self.assertTrue(result.applied)
 
     def test_manifest_change_after_replace_reports_unknown_commit(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             original_manifest = project.manifest.read_text(encoding="utf-8")
             real_replace = os.replace

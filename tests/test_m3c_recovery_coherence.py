@@ -16,14 +16,14 @@ from luwu.reconcile import (
     inspect_execution_record,
     reobserve_execution_record,
 )
-from tests.test_m3c_execution import _ExecutionProject
+from tests.support.projects import ExecutionProject
 
 
 class M3cRecoveryCoherenceTests(unittest.TestCase):
     def test_content_drift_with_matching_metadata_blocks_committed_confirmation(
         self,
     ) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = self._execute(project)
             self._assert_confirmed(project, record_path)
 
@@ -37,7 +37,7 @@ class M3cRecoveryCoherenceTests(unittest.TestCase):
     def test_content_drift_with_matching_metadata_blocks_unchanged_confirmation(
         self,
     ) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha",), targets={"alpha": "alpha-desired\n"}
         ) as project:
             record_path = self._execute(project)
@@ -51,7 +51,7 @@ class M3cRecoveryCoherenceTests(unittest.TestCase):
             self.assertEqual(_snapshot(project.root), before)
 
     def test_content_drift_with_matching_metadata_blocks_unknown_match(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha",), targets={"alpha": "alpha-current\n"}
         ) as project:
             record_path = project.root / "journal.json"
@@ -80,7 +80,7 @@ class M3cRecoveryCoherenceTests(unittest.TestCase):
             self.assertEqual(_snapshot(project.root), before)
 
     def test_unknown_with_matching_metadata_requires_recovery(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "journal.json"
             failure = ApplyError(
                 "writer result could not be confirmed",
@@ -129,7 +129,7 @@ class M3cRecoveryCoherenceTests(unittest.TestCase):
             self.assertTrue(all(path["matches_postcondition"] for path in paths))
 
     def test_in_sync_confirms_and_not_attempted_does_not_upgrade(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta", "zeta"),
             targets={
                 "alpha": "alpha-old\n",
@@ -180,12 +180,12 @@ class M3cRecoveryCoherenceTests(unittest.TestCase):
             self.assertEqual(by_name["zeta"]["plan_status"], "in_sync")
             self.assertEqual(result["outcome"], "recovery_required")
 
-    def _execute(self, project: _ExecutionProject) -> Path:
+    def _execute(self, project: ExecutionProject) -> Path:
         record_path = project.root / "journal.json"
         execute_execution_plan(build_plan(project.manifest), record_path, confirm=True)
         return record_path
 
-    def _assert_confirmed(self, project: _ExecutionProject, record_path: Path) -> None:
+    def _assert_confirmed(self, project: ExecutionProject, record_path: Path) -> None:
         before = _snapshot(project.root)
         result = reobserve_execution_record(record_path)
         self.assertEqual(_snapshot(project.root), before)
@@ -206,7 +206,7 @@ class M3cRecoveryCoherenceTests(unittest.TestCase):
         self.assertTrue(all(path["matches_postcondition"] for path in paths))
 
     def _mutate_target_preserving_postcondition(
-        self, project: _ExecutionProject, record_path: Path
+        self, project: ExecutionProject, record_path: Path
     ) -> None:
         journal = inspect_execution_record(record_path)
         resources = cast(list[dict[str, object]], journal["resources"])

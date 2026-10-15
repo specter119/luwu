@@ -10,7 +10,8 @@ from unittest.mock import patch
 from luwu import reconcile
 from luwu.errors import ApplyError
 from luwu.plan_record import PlanRecord, PlanRecordError
-from tests.test_m3c_execution import _ExecutionProject, _snapshot
+from tests.support.projects import ExecutionProject
+from tests.support.snapshots import project_bytes
 
 
 class M3cExecutionOutcomeTests(unittest.TestCase):
@@ -26,13 +27,13 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
         self.assertEqual(ApplyError("failure", execution=context).execution, context)
 
     def test_preflight_failure_has_only_not_attempted_context(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
             plan = reconcile.build_plan(project.manifest)
             project.sources["beta"].write_text("beta-changed-after-plan\n")
-            before = _snapshot(project)
+            before = project_bytes(project)
             record_path = project.root / "journal.json"
 
             with self.assertRaises(ApplyError) as raised:
@@ -40,7 +41,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
 
             error = raised.exception
             self.assertEqual(error.code, "stale_plan")
-            self.assertEqual(_snapshot(project), before)
+            self.assertEqual(project_bytes(project), before)
             self.assertFalse(record_path.exists())
             self._assert_context(
                 error,
@@ -51,12 +52,12 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
             )
 
     def test_initial_journal_failure_before_publication_has_context(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
             plan = reconcile.build_plan(project.manifest)
-            before = _snapshot(project)
+            before = project_bytes(project)
             record_path = project.root / "journal.json"
 
             def fail_write(
@@ -77,7 +78,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
 
             error = raised.exception
             self.assertEqual(error.code, "recovery_required")
-            self.assertEqual(_snapshot(project), before)
+            self.assertEqual(project_bytes(project), before)
             self.assertFalse(record_path.exists())
             context = error.execution
             assert isinstance(context, dict)
@@ -95,7 +96,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
     def test_published_initial_journal_failure_does_not_claim_target_commit(
         self,
     ) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
@@ -141,7 +142,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
             )
 
     def test_plan_intent_journal_failure_keeps_all_targets_unattempted(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
@@ -198,7 +199,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
         for label, target_ordinal, expected_states in cases:
             with (
                 self.subTest(failure=label),
-                _ExecutionProject(
+                ExecutionProject(
                     ("alpha", "beta"),
                     targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
                 ) as project,
@@ -230,7 +231,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
                         )
                     write_record(self, path, expected=expected)
 
-                before = _snapshot(project)
+                before = project_bytes(project)
                 with (
                     patch.object(PlanRecord, "write", fail_preflight_transition),
                     self.assertRaises(ApplyError) as raised,
@@ -251,7 +252,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
                     ],
                     expected_states,
                 )
-                self.assertEqual(_snapshot(project), before)
+                self.assertEqual(project_bytes(project), before)
                 self._assert_context(
                     error,
                     plan_id=str(journal["plan_id"]),
@@ -261,7 +262,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
                 )
 
     def test_resource_intent_failure_preserves_prior_target_fact(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
@@ -306,7 +307,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
             )
 
     def test_noop_journal_failure_keeps_completed_noop_in_context(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-desired\n"},
         ) as project:
@@ -353,7 +354,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
             )
 
     def test_writer_failure_before_replacement_is_failed(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
@@ -402,7 +403,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
             )
 
     def test_writer_failure_after_replacement_is_unknown_and_changed(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
@@ -431,7 +432,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
             )
 
     def test_target_postcondition_failure_is_unknown_and_changed(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
@@ -457,7 +458,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
             )
 
     def test_unknown_writer_failure_marking_keeps_all_changed_targets(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-old\n"},
         ) as project:
@@ -519,7 +520,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
     def test_resource_commit_log_failure_does_not_downgrade_committed_context(
         self,
     ) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             plan = reconcile.build_plan(project.manifest)
             record_path = project.root / "journal.json"
             real_write = PlanRecord.write
@@ -566,7 +567,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
         for failure_step in (1, 2, 3):
             with (
                 self.subTest(failure_step=failure_step),
-                _ExecutionProject(
+                ExecutionProject(
                     ("alpha", "beta", "gamma"),
                     targets={
                         "alpha": "alpha-old\n",
@@ -647,7 +648,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
                 )
 
     def test_final_plan_commit_failure_preserves_all_noop_context(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-desired\n", "beta": "beta-desired\n"},
         ) as project:
@@ -683,7 +684,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
             )
 
     def test_final_plan_commit_failure_preserves_prior_target_context(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta"),
             targets={"alpha": "alpha-old\n", "beta": "beta-desired\n"},
         ) as project:
@@ -719,7 +720,7 @@ class M3cExecutionOutcomeTests(unittest.TestCase):
             )
 
     def test_raw_journal_cleanup_error_keeps_prior_target_context(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             plan = reconcile.build_plan(project.manifest)
             record_path = project.root / "journal.json"
             real_write = PlanRecord.write

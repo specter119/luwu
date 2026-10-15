@@ -12,13 +12,12 @@ from luwu import reconcile
 from luwu.cli import _execution_error_metadata, main
 from luwu.errors import ApplyError
 from luwu.plan_record import PlanRecord, PlanRecordError
-from tests.test_cli import _LegacyCliProject
-from tests.test_m3c_execution import _ExecutionProject
+from tests.support.projects import ExecutionProject, LegacyCliProject
 
 
 class M3cExecutionOutcomeCliTests(unittest.TestCase):
     def test_final_plan_publish_failure_keeps_committed_targets_in_json(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "journal.json"
             real_write = PlanRecord.write
 
@@ -61,7 +60,7 @@ class M3cExecutionOutcomeCliTests(unittest.TestCase):
             self.assertNotIn(project.source_values["alpha"], output)
 
     def test_initial_planned_record_publish_failure_does_not_claim_commit(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": None}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": None}) as project:
             record_path = project.root / "journal.json"
             real_write = PlanRecord.write
 
@@ -105,7 +104,7 @@ class M3cExecutionOutcomeCliTests(unittest.TestCase):
             self.assertNotIn(project.source_values["alpha"], output)
 
     def test_committed_target_survives_unreadable_journal_output(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "journal.json"
             real_write = PlanRecord.write
             faulted = False
@@ -145,7 +144,7 @@ class M3cExecutionOutcomeCliTests(unittest.TestCase):
             self.assertNotIn(project.source_values["alpha"], output)
 
     def test_record_exists_diagnostic_failure_keeps_execution_context(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "journal.json"
             real_write = PlanRecord.write
             real_exists = Path.exists
@@ -192,7 +191,7 @@ class M3cExecutionOutcomeCliTests(unittest.TestCase):
     def test_partial_writer_failure_reports_committed_and_unknown_targets_human(
         self,
     ) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta", "zeta"),
             targets={
                 "alpha": "alpha-old\n",
@@ -245,7 +244,7 @@ class M3cExecutionOutcomeCliTests(unittest.TestCase):
                 self.assertNotIn(value, error_output)
 
     def test_noop_final_record_failure_has_no_changed_targets(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "zeta"),
             targets={"alpha": "alpha-desired\n", "zeta": "zeta-desired\n"},
         ) as project:
@@ -332,7 +331,7 @@ class M3cExecutionOutcomeCliTests(unittest.TestCase):
         self.assertNotIn("state", serialized)
 
     def test_legacy_v4_apply_output_has_no_execution_context(self) -> None:
-        with _LegacyCliProject(4) as project:
+        with LegacyCliProject(4) as project:
             stdout = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
                 status = main(
@@ -352,7 +351,7 @@ class M3cExecutionOutcomeCliTests(unittest.TestCase):
 
 
 def _run_apply(
-    project: _ExecutionProject,
+    project: ExecutionProject,
     record_path: Path,
     *,
     as_json: bool,

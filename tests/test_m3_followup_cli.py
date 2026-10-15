@@ -11,13 +11,12 @@ from unittest.mock import patch
 from luwu import mutations
 from luwu.cli import main
 from luwu.reconcile import build_plan, execute_execution_plan
-from tests.test_m3b import _Project
-from tests.test_m3c_execution import _ExecutionProject
+from tests.support.projects import ExecutionProject, FieldProject
 
 
 class M3FollowupCliTests(unittest.TestCase):
     def test_lock_target_collision_reports_zero_write(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": None}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": None}) as project:
             project.manifest_path.write_text(
                 project.manifest_path.read_text().replace(
                     "targets/alpha.conf", ".journal.json.luwu-lock"
@@ -47,7 +46,7 @@ class M3FollowupCliTests(unittest.TestCase):
     def test_stale_baseline_is_redacted_in_json_and_human_errors(self) -> None:
         real_write = mutations._write_source
         for as_json in (False, True):
-            with self.subTest(as_json=as_json), _Project() as project:
+            with self.subTest(as_json=as_json), FieldProject() as project:
                 project.write_baseline({"setting": 1, "runtime": 1})
                 original_source = project.source.read_bytes()
                 baseline_digest = hashlib.sha256(
@@ -89,7 +88,7 @@ class M3FollowupCliTests(unittest.TestCase):
                     )
 
     def test_recovery_drift_returns_failure_without_writes(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": None}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": None}) as project:
             journal = project.root / "journal.json"
             execute_execution_plan(build_plan(project.manifest), journal, confirm=True)
             target = project.targets["alpha"]
@@ -108,7 +107,7 @@ class M3FollowupCliTests(unittest.TestCase):
             self.assertNotIn("x" * info.st_size, stdout.getvalue())
 
     def test_post_commit_baseline_change_reports_known_write_in_json(self) -> None:
-        with _Project() as project:
+        with FieldProject() as project:
             project.write_baseline({"setting": 1, "runtime": 1})
             real_replace = os.replace
 

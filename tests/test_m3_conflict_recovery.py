@@ -17,7 +17,7 @@ from luwu.errors import MutationError
 from luwu.manifest import load_manifest
 from luwu.mutations import accept_baseline, reverse_sync
 from luwu.reconcile import Status, build_plan, reobserve_execution_record
-from tests.test_m3c_execution import _ExecutionProject
+from tests.support.projects import ExecutionProject
 
 
 class M3ConflictRecoveryTests(unittest.TestCase):
@@ -118,7 +118,7 @@ class M3ConflictRecoveryTests(unittest.TestCase):
     def test_reobserve_standalone_not_attempted_requires_recovery_and_writes_nothing(
         self,
     ) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha",), targets={"alpha": "alpha-desired\n"}
         ) as project:
             plan = build_plan(project.manifest)

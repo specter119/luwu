@@ -21,16 +21,18 @@ from luwu.reconcile import (
     inspect_execution_record,
     reobserve_execution_record,
 )
+from tests.support.projects import ExecutionProject
+from tests.support.snapshots import project_bytes
 
 
 class M3cExecutionTests(unittest.TestCase):
     def test_preview_is_side_effect_free_and_metadata_only(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "zeta"),
             targets={"alpha": "alpha-old\n", "zeta": "zeta-desired\n"},
         ) as project:
             plan = build_plan(project.manifest)
-            before = _snapshot(project)
+            before = project_bytes(project)
             record_path = project.root / "journal.json"
 
             result = execute_execution_plan(plan, record_path, confirm=False)
@@ -46,13 +48,13 @@ class M3cExecutionTests(unittest.TestCase):
                 ],
                 ["alpha", "zeta"],
             )
-            self.assertEqual(_snapshot(project), before)
+            self.assertEqual(project_bytes(project), before)
             self.assertFalse(record_path.exists())
 
     def test_execution_uses_stable_order_and_records_committed_and_unchanged(
         self,
     ) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("zeta", "alpha"),
             targets={"alpha": None, "zeta": "zeta-desired\n"},
         ) as project:
@@ -94,38 +96,38 @@ class M3cExecutionTests(unittest.TestCase):
             )
 
     def test_failed_full_preflight_writes_no_target_or_journal(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "zeta"),
             targets={"alpha": "alpha-old\n", "zeta": "zeta-old\n"},
         ) as project:
             plan = build_plan(project.manifest)
             project.sources["zeta"].write_text("zeta-changed-after-plan\n")
-            before = _snapshot(project)
+            before = project_bytes(project)
             record_path = project.root / "journal.json"
 
             with self.assertRaises(ApplyError) as context:
                 execute_execution_plan(plan, record_path, confirm=True)
 
             self.assertEqual(context.exception.code, "stale_plan")
-            self.assertEqual(_snapshot(project), before)
+            self.assertEqual(project_bytes(project), before)
             self.assertFalse(record_path.exists())
 
     def test_record_path_cannot_overlap_a_declared_target(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "zeta"),
             targets={"alpha": "alpha-old\n", "zeta": "zeta-old\n"},
         ) as project:
-            before = _snapshot(project)
+            before = project_bytes(project)
             with self.assertRaises(ApplyError) as context:
                 execute_execution_plan(
                     build_plan(project.manifest), project.root / "targets", confirm=True
                 )
 
             self.assertEqual(context.exception.code, "record_path_conflict")
-            self.assertEqual(_snapshot(project), before)
+            self.assertEqual(project_bytes(project), before)
 
     def test_committed_journal_contains_actual_target_postcondition(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "journal.json"
             execute_execution_plan(
                 build_plan(project.manifest), record_path, confirm=True
@@ -143,7 +145,7 @@ class M3cExecutionTests(unittest.TestCase):
             self.assertGreater(postcondition["file_id"], 0)
 
     def test_journal_commit_failure_leaves_recovery_boundary(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             plan = build_plan(project.manifest)
             record_path = project.root / "journal.json"
             real_write = reconcile._write_execution_record
@@ -183,7 +185,7 @@ class M3cExecutionTests(unittest.TestCase):
             )
 
     def test_reobserve_rejects_a_rebound_parent_without_following_it(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "journal.json"
             execute_execution_plan(
                 build_plan(project.manifest), record_path, confirm=True
@@ -209,7 +211,7 @@ class M3cExecutionTests(unittest.TestCase):
     def test_replace_durability_failure_marks_unknown_and_stops_without_rollback(
         self,
     ) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("zeta", "beta", "alpha"),
             targets={
                 "alpha": "alpha-old\n",
@@ -250,7 +252,7 @@ class M3cExecutionTests(unittest.TestCase):
             )
 
     def test_journal_is_metadata_only_and_inspection_is_read_only(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "zeta"),
             targets={"alpha": None, "zeta": "zeta-desired\n"},
         ) as project:
@@ -282,7 +284,7 @@ class M3cExecutionTests(unittest.TestCase):
                 self.assertNotIn(value.casefold(), raw)
 
     def test_reobserve_rejects_journal_paths_not_bound_to_manifest(self) -> None:
-        with _ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
+        with ExecutionProject(("alpha",), targets={"alpha": "alpha-old\n"}) as project:
             record_path = project.root / "journal.json"
             execute_execution_plan(
                 build_plan(project.manifest), record_path, confirm=True
@@ -306,7 +308,7 @@ class M3cExecutionTests(unittest.TestCase):
     def test_prior_committed_resource_upgrades_later_failure_to_recovery_required(
         self,
     ) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "beta", "zeta"),
             targets={
                 "alpha": "alpha-old\n",
@@ -398,7 +400,7 @@ content_sensitivity = "public"
             )
 
     def test_execution_rejects_manual_tampered_and_v1_to_v4_plans(self) -> None:
-        with _ExecutionProject(
+        with ExecutionProject(
             ("alpha", "zeta"), targets={"alpha": None, "zeta": None}
         ) as project:
             plan = build_plan(project.manifest)
@@ -440,61 +442,6 @@ def _json_keys(value: object) -> set[str]:
     if isinstance(value, list):
         return {nested for child in value for nested in _json_keys(child)}
     return set()
-
-
-def _snapshot(project: _ExecutionProject) -> dict[str, bytes | None]:
-    return {
-        f"source:{name}": path.read_bytes() for name, path in project.sources.items()
-    } | {
-        f"target:{name}": path.read_bytes() if path.exists() else None
-        for name, path in project.targets.items()
-    }
-
-
-class _ExecutionProject:
-    def __init__(
-        self, names: tuple[str, ...], *, targets: dict[str, str | None]
-    ) -> None:
-        self.directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.directory.name)
-        (self.root / "sources").mkdir()
-        (self.root / "targets").mkdir()
-        self.sources: dict[str, Path] = {}
-        self.targets: dict[str, Path] = {}
-        self.source_values: dict[str, str] = {}
-        for name in names:
-            value = f"{name}-desired\n"
-            source = self.root / "sources" / f"{name}.conf.j2"
-            target = self.root / "targets" / f"{name}.conf"
-            source.write_text(value)
-            self.sources[name] = source
-            self.targets[name] = target
-            self.source_values[name] = value
-            target_value = targets[name]
-            if target_value is not None:
-                target.write_text(target_value)
-
-        resources = []
-        for name in reversed(names):
-            resources.append(
-                f"""[resources.{name}]
-kind = "template"
-source = "sources/{name}.conf.j2"
-target = "targets/{name}.conf"
-owner = "source"
-scope = "whole-file"
-content_sensitivity = "public"
-"""
-            )
-        self.manifest_path = self.root / "luwu.toml"
-        self.manifest_path.write_text("version = 5\n\n" + "\n".join(resources))
-        self.manifest = load_manifest(self.manifest_path)
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.directory.cleanup()
 
 
 class _LegacyProject:

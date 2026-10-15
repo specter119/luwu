@@ -17,12 +17,11 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT)]
 from luwu import mutations, reconcile
 from luwu.errors import ApplyError, MutationError
 from luwu.manifest import load_manifest
-from tests.test_m3b import _Project
-from tests.test_m3c_execution import _ExecutionProject
+from tests.support.projects import ExecutionProject, FieldProject
 
 
 def lock_probe(*, guard: bool) -> bool:
-    with _ExecutionProject(("alpha",), targets={"alpha": None}) as project:
+    with ExecutionProject(("alpha",), targets={"alpha": None}) as project:
         text = project.manifest_path.read_text().replace(
             "targets/alpha.conf", ".journal.json.luwu-lock"
         )
@@ -45,7 +44,7 @@ def lock_probe(*, guard: bool) -> bool:
 
 
 def baseline_probe(*, guard: bool) -> bool:
-    with _Project() as project:
+    with FieldProject() as project:
         project.write_baseline({"setting": 1, "runtime": 1})
         baseline = project.baseline.read_bytes()
         source = project.source.read_bytes()
@@ -73,7 +72,7 @@ def baseline_probe(*, guard: bool) -> bool:
 
 
 def recovery_probe(*, guard: bool) -> bool:
-    with _ExecutionProject(("alpha",), targets={"alpha": None}) as project:
+    with ExecutionProject(("alpha",), targets={"alpha": None}) as project:
         journal = project.root / "journal.json"
         reconcile.execute_execution_plan(
             reconcile.build_plan(project.manifest), journal, confirm=True

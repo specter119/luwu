@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from luwu.cli import main
 from luwu.errors import MutationError
+from tests.support.projects import LegacyCliProject
 
 
 class CliTests(unittest.TestCase):
@@ -407,7 +408,7 @@ class CliTests(unittest.TestCase):
 
     def test_v1_to_v4_apply_boundary_remains_unchanged(self) -> None:
         for version in range(1, 5):
-            with self.subTest(version=version), _LegacyCliProject(version) as project:
+            with self.subTest(version=version), LegacyCliProject(version) as project:
                 stdout = io.StringIO()
                 with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
                     exit_code = main(
@@ -434,7 +435,7 @@ class CliTests(unittest.TestCase):
                     self.assertEqual(project.target.read_text(), project.target_value)
 
     def test_v4_human_apply_identifies_m3b_not_m3a(self) -> None:
-        with _LegacyCliProject(4) as project:
+        with LegacyCliProject(4) as project:
             stdout = io.StringIO()
             stderr = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -768,80 +769,6 @@ content_sensitivity = "public"
         self.manifest_path = self.root / "luwu.toml"
         self.manifest_path.write_text(
             "version = 5\n\n" + "\n".join(resources), encoding="utf-8"
-        )
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self.temporary_directory.cleanup()
-
-
-class _LegacyCliProject:
-    def __init__(self, version: int) -> None:
-        self.temporary_directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary_directory.name)
-        (self.root / "templates").mkdir()
-        (self.root / "live").mkdir()
-        self.source_value = '{"value": 2}\n'
-        self.target_value = '{"value": 1}\n'
-        self.source = self.root / "templates/settings.json.j2"
-        self.target = self.root / "live/settings.json"
-        self.manifest_path = self.root / "luwu.toml"
-        self.source.write_text(self.source_value, encoding="utf-8")
-        self.target.write_text(self.target_value, encoding="utf-8")
-        if version == 1:
-            resource = """source = "templates/settings.json.j2"
-target = "live/settings.json"
-owner = "source"
-scope = "whole-file"
-"""
-        elif version == 2:
-            resource = """kind = "template"
-source = "templates/settings.json.j2"
-target = "live/settings.json"
-comparison = "json"
-owner = "source"
-scope = "whole-file"
-"""
-        else:
-            field_owner = "source" if version == 3 else "live"
-            reverse_sync = (
-                "\n[resources.settings.reverse_sync]\n"
-                'format = "literal-json"\n\n'
-                "[resources.settings.reverse_sync.fields]\n"
-                'value = "value"\n'
-                if version == 4
-                else ""
-            )
-            resource = f'''kind = "template"
-source = "templates/settings.json.j2"
-target = "live/settings.json"
-comparison = "json"
-owner = "fields"
-scope = "fields"
-content_sensitivity = "public"
-baseline = "baseline.json"
-
-[resources.settings.fields]
-value = "{field_owner}"
-{reverse_sync}'''
-            (self.root / "baseline.json").write_text(
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "resource": "settings",
-                        "source": "templates/settings.json.j2",
-                        "target": "live/settings.json",
-                        "owners": {"value": field_owner},
-                        "values": {"value": 1},
-                    }
-                ),
-                encoding="utf-8",
-            )
-        self.manifest_path.write_text(
-            f"version = {version}\n\n[resources.settings]\n{resource}",
-            encoding="utf-8",
         )
 
     def __enter__(self) -> Self:
