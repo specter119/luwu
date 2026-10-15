@@ -25,14 +25,39 @@ Provider tests use an injected resolver or a fake `rbw` executable. They do
 not access a real vault. The ablation experiments in `experiments/` are part
 of the boundary review and must run in temporary directories.
 
-For an installed-package full suite, copy `tests/` and `experiments/` into a
-private directory without `src/`, clear `PYTHONPATH`, and use the installed
+For an installed-package full suite, copy `tests/`, `experiments/`, and
+`scripts/` into a private directory without `src/`, clear `PYTHONPATH`, and use the installed
 environment's Python. The copied suite's working directory must have no
 group- or world-writable ancestors: the fake-rbw tests deliberately apply the
 same executable-ancestry checks as the real adapter, so a suite under `/tmp`
 cannot pass those tests. A private scratch directory below the checkout's
 ignored `.venv/` is suitable. Check imported `luwu` module paths to confirm
 that the suite used the selected environment's `site-packages`.
+
+## Lockfile
+
+`uv.lock` points at public PyPI (`https://pypi.org/simple` and
+`https://files.pythonhosted.org`), so CI and any contributor can use it
+without access to a private mirror. Refresh it with the wrapper, not with a
+bare `uv lock`:
+
+```text
+python3 scripts/uv_lock_pypi.py
+```
+
+The wrapper resolves through the index configured on the machine, rewrites
+every registry and file URL to PyPI, refuses to keep a lock that still names
+another host, and checks the result against PyPI. File hashes are not touched,
+so `uv` still verifies every download. The rewrite keys on the
+`aa/bb/<60 hex>/<filename>` tail that PyPI paths and mirrors share, because
+mirrors differ in the prefix before it. `--rewrite-only` converts an existing
+lock without resolving again.
+
+On a machine whose default index is not PyPI, `uv sync --locked` and
+`uv lock --check` report the lock as out of date. Add
+`--default-index https://pypi.org/simple`, or use `--frozen` for ordinary runs
+so `uv` does not rewrite the file. Do not commit a lock produced by a bare
+`uv lock` on such a machine.
 
 ## Test layout
 
