@@ -52,7 +52,7 @@ process receives the temporary `HOME`, while the caller's environment and
 directory are restored when it exits. Every CLI call uses the copied manifest
 and the `synthetic` profile; its declared target is the copied
 `project/home`. All data is public and synthetic, so this drill does not read
-or write real home configuration. See the [version 8 reference](../../../docs/reference.md#m7-full-dotfiles-coverage-manifest-version-8)
+or write real home configuration. See the [version 8 reference](../../../docs/reference.md#full-dotfiles-coverage-manifest-version-8)
 and [current implementation status](../../../docs/status.md) for the contract
 and current gate.
 

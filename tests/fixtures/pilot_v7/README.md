@@ -208,14 +208,14 @@ run_observation env HOME="$home" luwu plan --manifest "$manifest" --json
 A fresh no-op is evidence about the state observed now; it does not resolve the
 historical durability uncertainty of the earlier write. Make an explicit
 decision after reviewing the fresh observation. The [version 7 recovery
-contract](../../../docs/reference.md#m6-pilot-extension-manifest-version-7)
+contract](../../../docs/reference.md#pilot-extension-manifest-version-7)
 defines this boundary.
 
 These commands operate only on each copied fixture HOME. They do not prove
 that Pi or Codex read the file. The rehearsal simulates Dotter operator and
 fixture state; it does not call real Dotter or edit Dotter configuration. A
 real target requires the per-target operator handoff and permission checks in
-the [maintenance workflow](../../../docs/maintenance.md#m6-isolated-rehearsal-and-dotter-handoff).
+the [maintenance workflow](../../../docs/maintenance.md#isolated-rehearsal-and-dotter-handoff).
 
 ## Feedback checklist
 

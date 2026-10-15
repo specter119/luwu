@@ -99,7 +99,7 @@ success and recovery meanings are defined in [reference.md](reference.md).
 ## Version 7 pilot mechanism
 
 This section describes the implemented mechanism for the version 7 pilot. Its
-public behavior is owned by the [version 7 contract in reference.md](reference.md#m6-pilot-extension-manifest-version-7).
+public behavior is owned by the [version 7 contract in reference.md](reference.md#pilot-extension-manifest-version-7).
 
 ### Resolve roots and declared inputs
 
@@ -185,7 +185,7 @@ This section describes the implementation boundaries for version 8. The
 technical core is implemented; overall M7 closure remains subject to the
 remaining application-schema evidence linked from
 [status.md](status.md). The exact public behavior belongs to the
-[version 8 contract](reference.md#m7-full-dotfiles-coverage-manifest-version-8);
+[version 8 contract](reference.md#full-dotfiles-coverage-manifest-version-8);
 current implementation evidence belongs to [status.md](status.md).
 
 The current module responsibilities are:
@@ -240,7 +240,7 @@ The current module responsibilities are:
   may split or merge shared subnodes; topology alone is not authorization.
   Changed values, types, Decimal representation, document spans, or bytes do
   not match. The public authorization behavior is owned by the
-  [version 8 contract](reference.md#m7-full-dotfiles-coverage-manifest-version-8).
+  [version 8 contract](reference.md#full-dotfiles-coverage-manifest-version-8).
 - `luwu/m7_engine.py` composes read-only plan, explicit baseline accept,
   whole-file copy adopt, selected reverse sync, and profile-wide apply. It
   uses a finite-batch flow: complete preflight, shared and current-action
@@ -272,7 +272,7 @@ for the current implementation is summarized in [status](status.md); the
 remaining closure constraint is tracked in the [roadmap](roadmap.md).
 Application-shaped configuration uses the same declared-path and ownership
 mechanism. The fixed-version targets and opaque live-owned Codex hook state
-are defined in [reference.md](reference.md#m7-full-dotfiles-coverage-manifest-version-8);
+are defined in [reference.md](reference.md#full-dotfiles-coverage-manifest-version-8);
 the implementation does not infer mappings or grant application trust.
 Droid workspace-trust SDK calls do not provide a file-schema mechanism, so no
 workspace-trust file mapping is implied.
