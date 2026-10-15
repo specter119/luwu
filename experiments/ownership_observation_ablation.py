@@ -4,7 +4,7 @@
 # ///
 """Small pre-implementation counterexamples for the M3a design choices.
 
-Run with ``uv run experiments/m3_ablation.py``. This is a design experiment,
+Run with ``uv run experiments/ownership_observation_ablation.py``. This is a design experiment,
 not evidence that the production classifier or a future writer is correct.
 """
 

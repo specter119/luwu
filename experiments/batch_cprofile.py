@@ -25,7 +25,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT)]
 
-from experiments.m5_benchmark import _write_fixture
+from experiments.batch_benchmark import _write_fixture
 from luwu import reconcile
 from luwu.manifest import load_manifest
 from luwu.reconcile import build_plan, execute_execution_plan

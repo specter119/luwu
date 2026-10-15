@@ -3,8 +3,8 @@
 This document owns the development, documentation, testing, release, and
 migration workflow. The versioned manifest, CLI, JSON, error, provider,
 secret, journal, cache, and platform contracts are owned by
-[reference](reference.md). Milestone records own dated scope and closure
-evidence; [status](status.md) owns the current snapshot.
+[reference](reference.md). [Status](status.md) owns the current snapshot, and
+the [changelog](changelog.md) records what each delivery added.
 
 ## Local checks
 
@@ -21,9 +21,9 @@ uv build
 git diff --check
 ```
 
-M4 provider tests use an injected resolver or a fake `rbw` executable. They do
-not access a real vault. The M3 ablation experiments and the M4 ablation are
-part of the boundary review and must run in temporary directories.
+Provider tests use an injected resolver or a fake `rbw` executable. They do
+not access a real vault. The ablation experiments in `experiments/` are part
+of the boundary review and must run in temporary directories.
 
 For an installed-package full suite, copy `tests/` and `experiments/` into a
 private directory without `src/`, clear `PYTHONPATH`, and use the installed
@@ -34,18 +34,69 @@ cannot pass those tests. A private scratch directory below the checkout's
 ignored `.venv/` is suitable. Check imported `luwu` module paths to confirm
 that the suite used the selected environment's `site-packages`.
 
-## M5 benchmark and interruption evidence
+## Test layout
+
+Tests are organized by capability, not by delivery. A new behavior appends to
+the test module for its capability under `tests/<capability>/`; it does not
+create a parallel file named after a delivery, ticket, or version. Where one
+capability has behavior that differs by manifest version, keep each version's
+tests in its own `V<n>` test class in the same module, and never merge two
+implementations into one class. Shared builders and fakes live in
+`tests/support/`, whose module names do not start with `test`. Fixtures are
+named by scenario, not by delivery.
+
+A change to the layout must preserve every test: compare collected test ids
+and per-test source before and after, and run each moved module on its own.
+
+## Run output
+
+Benchmark, profile, rehearsal, and ablation output is a local, reproducible
+observation, not repository content. Write it under the ignored `.evidence/`
+directory (or another path outside the checkout). Do not commit it. What a
+delivery added belongs in the [changelog](changelog.md); a check that matters
+is a command or test that can be rerun, not a captured result.
+
+## Performance acceptance
 
 Run the performance experiments on a durable local filesystem. Do not use
-tmpfs for the acceptance matrix, and keep the output artifacts under the M5
-milestone record:
+tmpfs for the acceptance matrix. Use the same recorded host, filesystem,
+Python version, fixture and sandbox mode for before/after comparisons:
 
 ```text
-uv run experiments/m5_benchmark.py --scratch /path/on/durable-fs/luwu-m5-scratch --output docs/milestones/m5-benchmark-current-source.json
-uv run experiments/m5_profile.py --scratch /path/on/durable-fs/luwu-m5-profile --output-dir docs/milestones/m5-profile-current
-uv run experiments/m5_provider_latency.py --output docs/milestones/m5-provider-latency-current.json
-PYTHONPATH=src python3 -B -m unittest tests.test_m5_benchmark tests.test_m5_sigkill
+uv run experiments/batch_benchmark.py --scratch /path/on/durable-fs/luwu-scratch --output .evidence/batch-benchmark.json
+uv run experiments/batch_cprofile.py --scratch /path/on/durable-fs/luwu-profile --output-dir .evidence/batch-profile
+uv run experiments/provider_latency.py --output .evidence/provider-latency.json
+PYTHONPATH=src python3 -B -m unittest tests.tooling.test_benchmark_harness tests.interruption.test_sigkill
 ```
+
+For 200 public resources, the warm-run median budgets are:
+
+| Operation                  | Budget             |
+| -------------------------- | ------------------ |
+| Plan                       | At most 1 second   |
+| No-op apply                | At most 2 seconds  |
+| One-change apply           | At most 3 seconds  |
+| Fresh or all-changed apply | At most 10 seconds |
+| Read-only recovery         | At most 2 seconds  |
+
+Run at least five repetitions per scenario, report every sample, median and
+maximum, and keep the first run separate without calling it a controlled
+cold-cache measurement. Warm maxima must not exceed twice the corresponding
+budget. Doubling 100 to 200 resources must take no more than 3x the median
+command time for each scenario; inspect operation counts to separate fixed
+overhead from structural growth. Timing excludes setup but includes process
+startup, preflight, journal writes, target durability and verification. The
+complete 176-file fixture must finish apply, unchanged reapply and recovery;
+missing or blocked resources cannot be omitted to improve timing. The budgets
+apply to version 8 workloads as well, but not to v5 journal recovery or
+provider latency.
+
+Do not relax a budget without measured evidence, remove durability, or report
+only a relative speedup. Keep a failed run rather than averaging it away. Do
+not add parallel writers as an optimization, because concurrency must not
+obscure ordering and partial-success boundaries. A zero exit code or
+`complete=true` alone is not acceptance: inspect the recorded postconditions,
+interpreter and module provenance, and budget fields.
 
 The benchmark must retain sizes 1, 10, 30, 100, 176, and 200, first and five
 warm samples, exact action lists, and the environment metadata. Profile plan
@@ -55,21 +106,38 @@ synthetic latency only. Build and install the wheel and sdist in fresh
 environments before claiming the installed-artifact gate; the installed full
 suite does not replace the installed benchmark matrix.
 
-## M6 isolated rehearsal and Dotter handoff
+The version 8 profile workloads use `experiments/profile_benchmark.py` with an
+explicit interpreter and scratch on the same filesystem as the measured
+worktree:
+
+```sh
+uv build --out-dir .evidence/dist
+uv venv .evidence/installed
+uv pip install --python .evidence/installed/bin/python .evidence/dist/luwu-0.1.0-py3-none-any.whl
+uv run --script experiments/profile_benchmark.py \
+  --python .evidence/installed/bin/python --installed \
+  --scratch .evidence --resources 100 200 --repeats 5 \
+  --scenarios plan noop onechange allchanged \
+  --output .evidence/profile-benchmark.json
+```
+
+Run timing without concurrent test suites.
+
+## Isolated rehearsal and Dotter handoff
 
 Run the sanitized version 7 rehearsal from the repository root using either
 the locked checkout environment or an environment where Luwu is installed:
 
 ```text
 # Checkout/source mode
-uv run --locked --project . python -B experiments/m6_pilot.py
+uv run --locked --project . python -B experiments/pilot_rehearsal.py
 
 # Installed mode; replace this with the selected environment's Python path
-env -u PYTHONPATH /path/to/venv/bin/python -B experiments/m6_pilot.py
+env -u PYTHONPATH /path/to/venv/bin/python -B experiments/pilot_rehearsal.py
 ```
 
 The runner retains its PEP 723 metadata for standalone Python tooling. Use the
-explicit `uv run --locked --project . python -B experiments/m6_pilot.py` form
+explicit `uv run --locked --project . python -B experiments/pilot_rehearsal.py` form
 above for checkout mode so uv selects the project environment instead of
 creating an isolated script environment. `luwu` must resolve from that selected
 environment. The runner does not add `src/` to `sys.path` or fall back to a
@@ -91,7 +159,7 @@ Its metadata-only report does not authorize or attest to a real target.
 
 The reusable normal-HOME fixtures, exact copy-and-run CLI commands, and user
 feedback checklist are maintained in
-[`tests/fixtures/m6/README.md`](../tests/fixtures/m6/README.md).
+[`tests/fixtures/pilot_v7/README.md`](../tests/fixtures/pilot_v7/README.md).
 
 Before placing a real target in a version 7 manifest, admit the complete
 read/write flow as public and perform the handoff manually for that target.
@@ -100,14 +168,11 @@ the existing baseline (or the public values that would create a new baseline).
 Admission of only the selected scalar fields is insufficient. Exclude
 credentials, authentication state, provider configuration/files, and any file
 that contains secrets. The current version 7 TOML subset accepts the bounded
-inline-comment behavior recorded in the [version 7 contract](reference.md#m6-pilot-extension-manifest-version-7).
+inline-comment behavior recorded in the [version 7 contract](reference.md#pilot-extension-manifest-version-7).
 Tables, arrays, quoted or dotted keys, multiline strings, JSONC, JSON comments,
-and trailing commas remain unsupported. Current implementation status and
-remaining M7 gates are recorded in the [M7 milestone](milestones/m7.md).
-The complete version 8 capability is authorized and its technical core is
-implemented. The final performance record and Droid workspace-trust schema
-boundary remain open, so overall M7 completion is not claimed. See
-[reference](reference.md#m7-full-dotfiles-coverage-manifest-version-8) and
+and trailing commas remain unsupported in version 7; version 8 supports a
+wider set under its own contract. See
+[reference](reference.md#full-dotfiles-coverage-manifest-version-8) and
 [status](status.md).
 
 Check access as the identity that will run Luwu: source templates and every
@@ -149,69 +214,39 @@ directories are writable. A read-only shared agent directory is an environment
 failure, not evidence that the source or tests passed. An isolated copy is
 acceptable when it is byte-checked against the working tree.
 
-## M7a TOML comment ablation
+## Boundary ablations
 
-Run the design ablation from the repository root:
+Run the production-module ablations from the repository root. They write to
+temporary directories, use synthetic data, and check actual results against
+independently specified expectations:
 
 ```text
-uv run --script experiments/m7_ablation.py
+uv run --script experiments/toml_comment_ablation.py
+uv run --script experiments/profile_ablation.py --python .venv/bin/python
 ```
 
-The PEP 723 script imports `patch_m6_document` from the checkout's `src/`
-tree and applies it to synthetic TOML. It compares actual patch results with
-independently specified expected bytes, then checks both `tomllib` semantics
-and the product parser. It contrasts the prior comment-rejecting scalar scan,
-naive `#` splitting, and whole-document reserialization, and checks the
-whole-line deletion boundary and unsupported syntax controls. The experiment
-is not a substitute for the focused implementation and CLI evidence recorded
-in the [M7 milestone](milestones/m7.md).
+The TOML comment ablation applies the production patcher to synthetic TOML and
+contrasts it with a comment-rejecting scalar scan, naive `#` splitting, and
+whole-document reserialization, plus whole-line deletion and unsupported-syntax
+controls. The profile ablation exercises the version 8 boundaries through the
+production modules and the real writer. Neither substitutes for the focused
+tests under `tests/`. The older design and guard ablations in `experiments/`
+follow the same rule.
 
-## M7 full-scope implementation handoff
+## Version 8 fixtures and application shapes
 
-M7 is authorized as one complete version 8 milestone. Its public behavior is
-owned by [reference](reference.md#m7-full-dotfiles-coverage-manifest-version-8),
-its mechanism by [design](design.md#version-8-full-coverage-mechanism),
-its current state by [status](status.md), and its acceptance gates by the
-[M7 record](milestones/m7.md). Do not turn the pending M6 user trial into a
-start condition for the authorized M7 scope.
-
-Keep fixtures under synthetic roots and public test data. The M7 fixture
-includes synthetic app-shaped settings workflows for the fixed OpenCode,
-Codex, and Droid targets. These exercise file-shape handling only; they do not
-launch applications, establish runtime compatibility, or authorize a live
-target handoff. The [version 8 contract](reference.md#m7-full-dotfiles-coverage-manifest-version-8)
+Keep fixtures under synthetic roots and public test data. The version 8
+fixture includes synthetic app-shaped settings workflows for the fixed
+OpenCode, Codex, and Droid targets. These exercise file-shape handling only;
+they do not launch applications, establish runtime compatibility, or authorize
+a live target handoff. The [version 8 contract](reference.md#full-dotfiles-coverage-manifest-version-8)
 owns the target shapes and states that generic Luwu declarations do not
 enforce application-specific enum domains. Droid workspace-trust SDK calls do
-not establish a file schema. Current implementation status and dated evidence
-are in [status](status.md) and the [M7 record](milestones/m7.md); M7 is not
-unconditionally complete while the workspace-trust file schema remains
-unverified.
-For documentation-only changes, run relative-link and whitespace checks. Keep
-any separate product-test result in the milestone record; formatting and link
-checks do not imply that a product suite passed.
+not establish a file schema; the open constraint is tracked in the
+[roadmap](roadmap.md).
 
-To reproduce the production ablations and installed timing matrix from the
-checkout, use an explicit interpreter and keep benchmark scratch on the same
-filesystem as the measured worktree (Btrfs in the retained run):
-
-```sh
-uv run --script experiments/m7_full_ablation.py --python .venv/bin/python
-uv build --out-dir .venv/m7-dist
-uv venv .venv/m7-installed
-uv pip install --python .venv/m7-installed/bin/python .venv/m7-dist/luwu-0.1.0-py3-none-any.whl
-uv run --script experiments/m7_full_benchmark.py \
-  --python .venv/m7-installed/bin/python --installed \
-  --scratch .venv --resources 100 200 --repeats 5 \
-  --scenarios plan noop onechange allchanged \
-  --output .venv/m7-benchmark.json
-```
-
-Run timing without concurrent test suites. Inspect the recorded postconditions,
-interpreter/module provenance, median budget and maximum guard fields; a zero
-exit code or `complete=true` alone is not budget acceptance. Preserve failed
-candidate reports and associate each result with its source hashes. The
-[full acceptance record](milestones/m7-full-acceptance-2026-10-14.json) retains
-the final and preceding candidate matrices and the applicable limits.
+For documentation-only changes, run relative-link and whitespace checks. Link
+and formatting checks do not imply that a product suite passed.
 
 ## Provider and secret operations
 
@@ -250,14 +285,14 @@ Before editing documentation, classify the statement:
 1. internal mechanism;
 1. delivery sequence;
 1. workflow instruction;
-1. dated historical evidence; or
+1. delivery history; or
 1. review pattern.
 
 Edit the corresponding owner named in `AGENTS.md`. In every other document,
-use a short summary and a relative link. A closed milestone may retain the
-decision and evidence that existed at its date, but it must not become a
-second current contract. Do not add a translation mirror or a new specialist
-document unless it has an independent owner and audience.
+use a short summary and a relative link. The changelog records what a delivery
+added; it must not become a second current contract. Do not add a translation
+mirror or a new specialist document unless it has an independent owner and
+audience.
 
 After editing:
 
@@ -265,7 +300,7 @@ After editing:
   capability;
 - check that summaries link to their owner and do not silently change scope;
 - check that current status does not repeat historical logs;
-- check that a skill pattern cites code, tests, or a dated closure record;
+- check that a skill pattern cites code, tests, or a current contract;
 - run the narrowest relevant documentation and code gates.
 
 ## Pattern maintenance
@@ -273,8 +308,8 @@ After editing:
 Good and bad patterns belong in the relevant `.agents/skills/*/SKILL.md`.
 Patterns are review evidence, not contracts. A pattern entry must identify the
 observed behavior, evidence, risk, and smallest corrective direction. Promote
-it to `product`, `reference`, `design`, `status`, or a milestone owner only
-when repeated evidence makes it a stable rule. Do not create a parallel
+it to the `product`, `reference`, `design`, `status`, or `roadmap` document
+only when repeated evidence makes it a stable rule. Do not create a parallel
 pattern catalog merely to avoid choosing an owner.
 
 ## Release gates

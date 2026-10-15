@@ -12,7 +12,7 @@ from typing import TypedDict, cast
 from unittest import mock
 
 import luwu.m6_pilot as m6_pilot_module
-from experiments.m6_pilot import _cli, _unselected_bytes_preserved
+from experiments.pilot_rehearsal import _cli, _unselected_bytes_preserved
 from luwu.errors import LuwuError
 from luwu.m6_formats import M6FormatError, parse_m6_document, patch_m6_document
 from luwu.m6_pilot import (

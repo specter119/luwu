@@ -216,9 +216,7 @@ The current module responsibilities are:
   complete source or target document. The target copy payload records the
   digest algorithm and accepted digest, with mode evidence separately. Durable
   binding identity uses resolved root paths; root device/inode identity belongs
-  to execution freshness, not baseline identity. The corrected identity
-  encoding and its focused evidence are recorded in the
-  [M7 record](milestones/m7.md).
+  to execution freshness, not baseline identity.
 - `luwu/m7_filesystem.py` provides no-follow regular-file observations,
   missing-parent inspection, one-directory-at-a-time parent creation, and
   staged file replacement; content and mode-only changes use that same staged
@@ -270,9 +268,8 @@ The current module responsibilities are:
 The CLI integrates these capabilities behind explicit profile and mutation
 selection. Directory enumeration is rechecked at the write boundary so a new
 or rebound leaf cannot silently enter the authorized set. The release evidence
-for the current implementation is summarized in [status](status.md); overall
-M7 closure remains pending the items recorded there and in the [M7
-milestone](milestones/m7.md).
+for the current implementation is summarized in [status](status.md); the
+remaining closure constraint is tracked in the [roadmap](roadmap.md).
 Application-shaped configuration uses the same declared-path and ownership
 mechanism. The fixed-version targets and opaque live-owned Codex hook state
 are defined in [reference.md](reference.md#m7-full-dotfiles-coverage-manifest-version-8);
@@ -293,6 +290,40 @@ permissions. Provider records, caches, diagnostics, and errors use
 metadata-only projections. The confidentiality contract and the supported
 provider shape belong to [reference.md](reference.md); this section describes
 the separation of implementation paths.
+
+## Rejected alternatives
+
+These designs were evaluated against concrete counterexamples and rejected
+because the accepted behavior did not need them. Reopening one needs a new
+owner decision and evidence, not a convenience argument.
+
+- A generic field-path language, storage framework, or merge engine for
+  ownership. Declared literal paths and an explicit baseline were sufficient.
+- A generic JSON editor or schema registry for reverse sync. Selected
+  top-level literal spans are patched; unsupported or ambiguous spans are
+  rejected before writing.
+- A transaction engine, second ledger, or automatic replay and rollback. The
+  journal is metadata-only and recovery is read-only observation. The
+  in-memory execution context is not a durable record.
+- Treating journal publication as proof of target replacement, or equal
+  content as proof of a Luwu replacement. Replace-boundary results distinguish
+  `not_replaced`, `replaced`, and `indeterminate` from re-observed identity.
+- A provider registry, lazy providers, a network capability, secret
+  fingerprints, or cache-driven decision hooks. The cache is diagnostic only
+  and never participates in a plan decision.
+- An AST or adapter framework for TOML. A bounded lexical patcher with
+  byte-level negative controls covers the declared shapes; nested trust state
+  is deferred because it needs path identity.
+- Requiring plan-graph alias topology to be equal for authorization. Splitting
+  a shared subnode into equal copies, or merging equal copies, does not change
+  what is written. Authorization compares every projected edge and value,
+  exact scalar type, Decimal representation, parser span, and source bytes.
+  A security basis for topology equality was challenged and withdrawn.
+- Retaining caller-origin references and repeating an origin-graph check after
+  authorization. The fresh verify-observe-verify cycle and per-action
+  dependency checks already bound the write.
+- Parallel writers as a performance optimization. Concurrency must not obscure
+  ordering and partial-success boundaries.
 
 ## Deliberate limits
 

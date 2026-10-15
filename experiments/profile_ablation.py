@@ -577,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(source_modules, dict):
         parser.error("execution process returned no module hashes")
     report = {
-        "experiment": "m7_full_ablation",
+        "experiment": "profile_ablation",
         "execution_mode": "source_only",
         "status": "pass"
         if all(case.get("status") == "pass" for case in cases.values())

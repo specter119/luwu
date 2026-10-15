@@ -4,7 +4,7 @@
 # ///
 """Ablate M7a TOML comment handling through the production patcher.
 
-Run from the repository root with ``uv run --script experiments/m7_ablation.py``.
+Run from the repository root with ``uv run --script experiments/toml_comment_ablation.py``.
 """
 
 from __future__ import annotations
@@ -92,7 +92,7 @@ def main() -> None:
     print(
         json.dumps(
             {
-                "experiment": "m7_ablation",
+                "experiment": "toml_comment_ablation",
                 "status": "pass",
                 "production_update_cases": len(CASES),
                 "naive_split_breaks_quoted_cases": naive_breaks,

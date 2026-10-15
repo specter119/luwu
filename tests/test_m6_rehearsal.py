@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from experiments import m6_pilot
-from experiments.m6_pilot import main
+from experiments.pilot_rehearsal import main
 
 
 class M6RehearsalTests(unittest.TestCase):
@@ -202,7 +202,7 @@ class M6RehearsalTests(unittest.TestCase):
             manifest = home / "luwu.toml"
             with (
                 mock.patch.dict(os.environ, {"PYTHONPATH": "src:."}),
-                mock.patch("experiments.m6_pilot.subprocess.run") as run,
+                mock.patch("experiments.pilot_rehearsal.subprocess.run") as run,
             ):
                 run.return_value = subprocess.CompletedProcess(
                     args=[], returncode=0, stdout="{}", stderr=""

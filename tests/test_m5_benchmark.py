@@ -11,9 +11,9 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
-import experiments.m5_benchmark as benchmark
+import experiments.batch_benchmark as benchmark
 import luwu
-from experiments.m5_benchmark import (
+from experiments.batch_benchmark import (
     _assert_prepared_scenario,
     _measure,
     _probe_python,
@@ -255,7 +255,7 @@ class M5BenchmarkHarnessTests(unittest.TestCase):
         )
         with (
             tempfile.TemporaryDirectory() as directory,
-            patch("experiments.m5_benchmark.subprocess.run", return_value=completed),
+            patch("experiments.batch_benchmark.subprocess.run", return_value=completed),
             self.assertRaisesRegex(RuntimeError, "checkout source tree"),
         ):
             _probe_python(
@@ -284,7 +284,7 @@ class M5BenchmarkHarnessTests(unittest.TestCase):
         )
         with (
             tempfile.TemporaryDirectory() as directory,
-            patch("experiments.m5_benchmark.subprocess.run", return_value=completed),
+            patch("experiments.batch_benchmark.subprocess.run", return_value=completed),
             self.assertRaisesRegex(
                 RuntimeError, "outside the target Python site-packages"
             ),
@@ -305,11 +305,11 @@ class M5BenchmarkHarnessTests(unittest.TestCase):
             expected_python = python_link.expanduser().absolute()
             with (
                 patch(
-                    "experiments.m5_benchmark._probe_python",
+                    "experiments.batch_benchmark._probe_python",
                     return_value=_fake_runtime("3.12.7"),
                 ) as probe,
                 patch(
-                    "experiments.m5_benchmark._measure",
+                    "experiments.batch_benchmark._measure",
                     return_value=_fake_row(1, "plan"),
                 ) as measure,
             ):
@@ -342,11 +342,11 @@ class M5BenchmarkHarnessTests(unittest.TestCase):
             runtime = _fake_runtime("3.12.7")
             with (
                 patch(
-                    "experiments.m5_benchmark._probe_python",
+                    "experiments.batch_benchmark._probe_python",
                     return_value=runtime,
                 ),
                 patch(
-                    "experiments.m5_benchmark._measure",
+                    "experiments.batch_benchmark._measure",
                     side_effect=[_fake_row(1, "plan"), RuntimeError("interrupted")],
                 ),
                 self.assertRaisesRegex(RuntimeError, "interrupted"),
@@ -380,11 +380,11 @@ class M5BenchmarkHarnessTests(unittest.TestCase):
             runtime = _fake_runtime("3.13.2")
             with (
                 patch(
-                    "experiments.m5_benchmark._probe_python",
+                    "experiments.batch_benchmark._probe_python",
                     return_value=runtime,
                 ),
                 patch(
-                    "experiments.m5_benchmark._measure",
+                    "experiments.batch_benchmark._measure",
                     return_value=_fake_row(1, "plan"),
                 ),
             ):

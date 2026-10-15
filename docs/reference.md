@@ -1,8 +1,8 @@
 # Luwu Public Reference
 
-Status: current versioned contracts, including the complete M7 version 8 public contract.
+Status: current versioned contracts, including the complete version 8 public contract.
 
-This document owns the manifest, CLI, JSON, error, and compatibility contracts for the developer-confidence preview and its M2, M3a, narrow single-resource M3b, explicit M3c execution, M4 provider extension, additive M6 version 7 pilot extension, and additive M7 version 8 extension. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
+This document owns the manifest, CLI, JSON, error, and compatibility contracts for the developer-confidence preview and its versions 2 through 8: read-only observation, ownership observation, single-resource selective mutation, explicit execution, the provider extension, the additive version 7 pilot extension, and the additive version 8 extension. The [changelog](changelog.md) maps delivery names to versions. Product direction belongs in [product.md](product.md); implementation rationale belongs in [design.md](design.md); verified scope belongs in [status.md](status.md).
 
 ## Manifest
 
@@ -34,7 +34,7 @@ M1 accepts exactly one resource. It is intentionally single-resource so that the
 
 `template` renders the source as Jinja; `symbolic` makes the target a symlink to the declared source. Explicit `kind = "template"` requires a `.j2` source. Unknown kinds, source/target overlap, absolute paths, path traversal, and provider/secret fields fail validation. A target's parent directory must already exist and must not contain a symlink. M1 does not infer resources from existing files.
 
-### M2 manifest version 2
+### Manifest version 2
 
 Version `2` is the read-only observation contract. It accepts multiple declared resources, orders them by resource name, and rejects duplicate targets, source/target path conflicts, and ancestor-overlapping declared paths before planning. It adds the explicitly observed `kind = "copy"`, which reads a regular source file as literal bytes; copy resources are not template-rendered and are not applyable in M2. A version 2 resource supports the same ownership, scope, source, target, and public-variable rules as M1, plus an optional explicit `comparison`:
 
@@ -43,7 +43,7 @@ Version `2` is the read-only observation contract. It accepts multiple declared 
 
 Version 2 does not expand ownership, field scope, baseline, reverse sync, or provider capabilities. It is an observation experiment: `inspect` and `plan` are supported, while `apply` is rejected with `m2_read_only` before any target write. Version 1 remains the only applyable manifest contract in M2.
 
-### M3a manifest version 3
+### Manifest version 3
 
 Version `3` is a read-only field ownership experiment. It accepts multiple explicitly declared template resources, requires `comparison = "json"`, `owner = "fields"`, `scope = "fields"`, and `content_sensitivity = "public"`, and rejects template variables and implicit resource kinds. Its `[resources.NAME.fields]` table maps non-empty literal top-level JSON keys to `source`, `live`, `merge`, or `ignore`; dots and slashes have no path syntax, and nested objects and arrays are compared as one complete field. A resource may name one root-relative `baseline` file, but Luwu never creates or updates it.
 
@@ -51,7 +51,7 @@ The baseline file is a strict JSON envelope with exactly `schema_version`, `reso
 
 For a supplied baseline, each field is classified as `unchanged`, `converged`, `source_changed`, `live_changed`, `conflict`, or `ignored`. Ownership determines whether a one-sided change is a `forward_candidate` or `reverse_candidate`; unsupported directions and two-sided changes remain `review`. Without a baseline, non-ignored fields are `unbased` and produce no candidate. Undeclared desired/live changes are reported by a boolean signal without exposing their names or values. Candidates are observations only. Version 3 `apply` is rejected with `m3_read_only` before any write, and M3a does not accept, reverse-sync, persist, or roll back configuration.
 
-### M3b manifest version 4
+### Manifest version 4
 
 Version `4` preserves the v3 field contract while admitting two explicit, single-resource public mutations. It still requires an explicit template kind, strict JSON comparison, field scope, and `content_sensitivity = "public"`. The optional `reverse_sync` table must use `format = "literal-json"` and identity-map declared live/merge fields to their same-named top-level literal keys in the source JSON; alias mappings are rejected in this frozen slice. Dynamic Jinja expressions, nested path syntax, ignored/source-owned mappings, and provider or secret inputs are rejected.
 
@@ -61,7 +61,7 @@ Reverse-sync rejects the resource with `review_required` when any declared field
 
 Reverse-sync authorization remains bound to the baseline actually used for field classification. Confirmed execution rechecks that baseline and the manifest under the source writer lock, immediately before replacement, and after replacement alongside the existing source/live checks. A changed or unavailable authorization input blocks before replacement with `stale_plan`; a change detected after replacement preserves the committed/unknown or committed-but-verification-failed outcome. Internal baseline stale-check evidence is never emitted or persisted.
 
-### M3c manifest version 5 execution slice
+### Manifest version 5 execution
 
 Version `5` is an independent execution capability, not an upgrade of versions `1`–`4`. It accepts multiple resources only when each resource explicitly declares `kind = "template"` or `kind = "symbolic"`, `owner = "source"`, `scope = "whole-file"`, and `content_sensitivity = "public"`. It rejects comparison, fields, baseline, reverse-sync, provider, and secret fields. Resources are ordered by name, and duplicate or overlapping source/target paths are rejected before planning.
 
@@ -76,7 +76,7 @@ For a recorded `committed` or `unchanged` resource, recovery confirmation requir
 
 The overall recovery outcome is `confirmed` only when every resource is confirmed. A journal containing only `not-attempted` resources still returns `recovery_required`, including when their current configurations happen to be in sync.
 
-### M4 manifest version 6 provider execution
+### Manifest version 6 provider execution
 
 Version `6` is an independent provider execution capability. Its root allows
 only `version = 6`, `capabilities = ["subprocess"]`, and `resources`. Each
@@ -119,7 +119,7 @@ cache status cannot authorize or alter reconciliation. `platform-check` is
 diagnostic only, and unsupported filesystem/provider primitives fail closed
 with `platform_unsupported`.
 
-## M6 pilot extension (manifest version 7)
+## Pilot extension (manifest version 7)
 
 This section defines the bounded public contract implemented for the Pi/Codex
 public-configuration pilot. It does not change the meaning or capability of
@@ -308,15 +308,15 @@ Luwu manages it. Dotter and Luwu must not both manage the same target. The
 handoff and any return to Dotter are operator actions; the pilot does not edit
 Dotter configuration, remove or create links, or adopt targets implicitly.
 The repeatable handoff and return procedure belongs in
-[maintenance.md](maintenance.md) and the M6 pilot record.
+[maintenance.md](maintenance.md).
 
-## M7 full dotfiles coverage (manifest version 8)
+## Full dotfiles coverage (manifest version 8)
 
-This additive contract preserves versions 1 through 7, including the M7a
-version 7 extension. It defines the complete authorized M7 scope; M7 is not
-split into feedback-gated delivery slices. Current implementation status and
-remaining verification are owned by [status.md](status.md) and the [M7
-record](milestones/m7.md).
+This additive contract preserves versions 1 through 7, including the
+inline-comment extension of version 7. It defines the complete authorized
+scope as one contract, not feedback-gated slices. Current implementation
+status is owned by [status.md](status.md) and open constraints by the
+[roadmap](roadmap.md).
 
 ### Manifest, profiles, and package closure
 
@@ -544,7 +544,7 @@ these lists do not imply that Luwu enforces those value domains.
 
 These shapes define compatibility targets, not evidence that an application
 runtime loaded them. Current implementation and runtime verification status
-remain in [status.md](status.md) and the [M7 record](milestones/m7.md).
+remain in [status.md](status.md) and the [roadmap](roadmap.md).
 
 ### Baselines, adoption, and explicit mutation
 
@@ -644,8 +644,8 @@ document bytes, diffs, content hashes, secret material, raw parser messages,
 filesystem exception text, or exception payloads. Only allowlisted version 8
 codes are projected; an unknown internal code is normalized to
 `m7_resource_blocked`. The version 8 error projection and the fixed meanings
-defined in this contract are included in the release verification recorded in
-[status.md](status.md) and the [M7 record](milestones/m7.md).
+defined in this contract are covered by the tests; the verified state is in
+[status.md](status.md).
 
 ## Commands
 

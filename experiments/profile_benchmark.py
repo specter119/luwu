@@ -805,7 +805,7 @@ def _probe_runtime(
 def _script_hashes() -> dict[str, str]:
     paths = (
         Path(__file__).resolve(),
-        Path(__file__).with_name("m7_full_ablation.py").resolve(),
+        Path(__file__).with_name("profile_ablation.py").resolve(),
     )
     return {
         path.name: hashlib.sha256(path.read_bytes()).hexdigest()
@@ -961,7 +961,7 @@ def main(argv: list[str] | None = None) -> int:
     payload: dict[str, object] = {
         "schema_version": 1,
         "complete": False,
-        "benchmark": "m7_full_benchmark",
+        "benchmark": "profile_benchmark",
         "workload": "public-v8-copy-and-fields",
         "resource_counts": list(resource_counts),
         "scenarios": list(args.scenarios),

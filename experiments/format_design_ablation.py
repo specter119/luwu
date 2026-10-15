@@ -4,7 +4,7 @@
 # ///
 """Run M6 format design probes with metadata-only JSON output.
 
-Run from the repository root with ``uv run --script experiments/m6_ablation.py``.
+Run from the repository root with ``uv run --script experiments/format_design_ablation.py``.
 """
 
 from __future__ import annotations

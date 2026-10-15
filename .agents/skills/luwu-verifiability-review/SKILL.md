@@ -41,12 +41,14 @@ documentation. Ask:
 Attack happy-path-only tests, status inflation, duplicated conflicting docs,
 unstated defaults, unstable error contracts, multi-file partial writes,
 unversioned schema changes, and M1 limitations accidentally treated as eternal
-architecture.
+architecture. Evidence is a command or test that can be rerun, plus a commit;
+a captured result from one machine goes stale and cannot be re-checked.
 
 Return a maturity matrix of implemented, partial, design-only, and unstarted
 claims, with path/line evidence, missing contract or test, and the smallest
 next practice. Use `docs/status.md` for current facts, `docs/reference.md` for
-stable contracts, and `docs/product.md` for future intent.
+stable contracts, `docs/roadmap.md` for open exit conditions, and
+`docs/product.md` for future intent.
 
 ## Scope boundary
 
@@ -54,25 +56,29 @@ This stance owns evidence continuity: whether a claim is current, planned,
 historical, testable, recoverable, and routed to one documentation owner. It
 does not own the product value itself, public field semantics, implementation
 mechanics, filesystem safety, secret exposure, consent, or configuration
-authority. Route those findings to the product, reference, design, boundary,
-confidentiality, consent, or ownership owner rather than restating them.
+authority, nor along which dimension the repository is organized. Route those
+findings to the product, reference, design, boundary, confidentiality,
+consent, ownership, or coherence owner rather than restating them.
 
 ## Good patterns
 
-- Keep current status as a small snapshot and retain dated test counts,
-  temporary paths, and closure reasoning in milestone records. Evidence:
-  [M4 closure record](../../../docs/milestones/m4.md) and
+- Keep current status as a small snapshot of what is implemented and what is
+  open, and leave dated results out of it. Evidence:
   [current status](../../../docs/status.md).
+- Keep an open exit condition in the roadmap, with the condition that would
+  close it. Evidence: the Droid workspace-trust constraint in
+  [roadmap](../../../docs/roadmap.md).
 - Separate target replacement facts from journal publication facts and expose
-  enough metadata for the next action without persisting content. Evidence:
-  [M3 execution closure](../../../docs/milestones/m3-execution-closure.md).
+  enough metadata for the next action without persisting content. Evidence: the
+  execution-outcome tests under `tests/records/` and `tests/cli/`.
 
 ## Bad patterns
 
-- Copy a closed milestone's test log and temporary artifact paths into the
-  current status page, creating two competing histories.
-- Let a milestone, skill, or summary page redefine a stable field, state, or
+- Copy a test log, temporary artifact path, or benchmark capture into the
+  current status page or a committed file, creating a competing history that
+  cannot be rerun.
+- Let a changelog, skill, or summary page redefine a stable field, state, or
   error instead of linking to `docs/reference.md`.
 
 Patterns are evidence about maintainability. The status snapshot, public
-contract, and historical records keep their own document owners.
+contract, and roadmap keep their own document owners.
