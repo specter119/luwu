@@ -46,7 +46,7 @@ changing before final verification.
 Run this Bash block from the repository root in a Python environment with this
 checkout's dependencies installed. `cp -a` preserves the fixture's valid alias
 symlink; its three excluded-path sentinels remain ordinary files in this guide.
-The broken-link attack sentinels are created only by `_M7Case` in disposable
+The broken-link attack sentinels are created only by `ProfileCliCase` in `tests/support/profile_cli.py` in disposable
 acceptance copies. The block runs in a subshell; each CLI
 process receives the temporary `HOME`, while the caller's environment and
 directory are restored when it exits. Every CLI call uses the copied manifest

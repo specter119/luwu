@@ -129,7 +129,7 @@ INVALID_TOML_INPUTS = (
 )
 
 
-class _M7Case:
+class _TomlLoopCase:
     def __init__(self, root: Path) -> None:
         shutil.copytree(CODEX_FIXTURE, root, dirs_exist_ok=True)
         self.root = root
@@ -216,12 +216,12 @@ def _error_code(payload: dict[str, object]) -> str | None:
 
 
 class TomlCommentLoopV7Tests(unittest.TestCase):
-    def _case(self) -> _M7Case:
+    def _case(self) -> _TomlLoopCase:
         temporary = tempfile.TemporaryDirectory(prefix="luwu-m7-comments-")
         self.addCleanup(temporary.cleanup)
-        return _M7Case(Path(temporary.name))
+        return _TomlLoopCase(Path(temporary.name))
 
-    def _seed_cli(self, case: _M7Case) -> bytes:
+    def _seed_cli(self, case: _TomlLoopCase) -> bytes:
         accepted_preview = case.cli(
             "accept",
             "--resource",
