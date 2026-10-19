@@ -85,18 +85,19 @@ were read as permission to copy the writer. Nothing compared the copies, and
 they drifted: five secret-name predicates disagreed on `apikey`, dashes, and
 camel case.
 
-A review cannot see this, because the copy is created while writing. Three
+A review cannot see this, because the copy is created while writing. Two
 controls act at that moment:
 
-1. `AGENTS.md` tells the author to find the owner in
-   [design](design.md#shared-primitives) before writing the code.
+1. The project skill `luwu-primitive-reuse` is written to trigger on the
+   author's action (opening, writing, or parsing a file, or needing an option a
+   shared function lacks). It lists the moments a duplicate is written and the
+   review checks, including the ablation that proves a guard redundant. Keep
+   its description about those actions so it loads on its own, and do not
+   repeat its rule in `AGENTS.md`.
 1. `tests/tooling/test_primitive_ownership.py` fails when a module outside the
    owner calls a primitive such as `os.replace`, `os.open`, or `json.loads`,
    and names the owner in the message. Its ceilings record known debt and may
    only go down.
-1. The project skill `luwu-primitive-reuse` lists the moments a duplicate is
-   written and the review checks, including the ablation that proves a guard
-   redundant.
 
 When a capability needs different behavior, add a parameter or a second
 function in the shared module, with a test for each caller's case. When review
