@@ -1193,12 +1193,24 @@ def reverse_inputs(
                 fields=(name,),
             )
         resolved = item.inputs.values.get(binding.input)
-        destination = record.manifest.inputs[binding.input].reverse_to
+        input_binding = record.manifest.inputs[binding.input]
+        destination = input_binding.reverse_to
+        # A destination layer that is absent or below the current winner still
+        # takes effect after the write, as long as no higher layer overrides it.
+        destination_layer = None
+        if destination is not None:
+            destination_layer = next(
+                (
+                    index
+                    for index, layer in enumerate(input_binding.layers)
+                    if layer.file == destination.file and layer.path == destination.path
+                ),
+                None,
+            )
         if (
             resolved is None
-            or destination is None
-            or resolved.winner.file != destination.file
-            or resolved.winner.path != destination.path
+            or destination_layer is None
+            or destination_layer < resolved.winner.layer_index
         ):
             raise EngineError(
                 "reverse_destination",
@@ -1465,7 +1477,10 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
         if source.data is None:
             raise EngineError("review_required")
         target = observe_file(roots.target.path, resource.target)
-        baseline_observation, baseline = load_baseline(manifest, resource)
+        baseline_observation, baseline = load_baseline(
+            manifest, resource, allow_stale=True
+        )
+        baseline_replaced = baseline is None and baseline_observation.data is not None
         inputs = (
             load_inputs(manifest, resource) if resource.kind == "template" else None
         )
@@ -1724,6 +1739,12 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
         if target_missing and resource.parents == "require" and action == "create":
             status, action, reason = "blocked", "blocked", "target parents are missing"
         error_code = None
+        if baseline_replaced and status in {"unbased", "adopt_required"}:
+            reason = (
+                "baseline was recorded for a different declaration; "
+                "accepting it again replaces the old baseline"
+            )
+            error_code = "baseline_stale"
         if undeclared_changed:
             status, action, reason = (
                 "review",

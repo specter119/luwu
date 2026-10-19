@@ -605,8 +605,8 @@ parent_mode = "0700"
         body = self._manifest().replace(
             'target = ".config/settings.json"', 'target = ".new/settings.json"'
         )
-        with self.assertRaises(ManifestError):
-            self._load(body)
+        manifest = self._load(body)
+        self.assertEqual(manifest.resources[0].parents, "require")
         self.assertFalse((self.target_root / ".new").exists())
 
         body = body.replace('parents = "require"', 'parents = "create"')
@@ -614,22 +614,18 @@ parent_mode = "0700"
         self.assertEqual(manifest.resources[0].parents, "create")
         self.assertFalse((self.target_root / ".new").exists())
 
-    def test_reverse_destination_requires_an_existing_parent(self) -> None:
-        body = self._manifest().replace(
-            'reverse_to = { file = "local/model.json", path = ["model"], format = "json" }',
-            'reverse_to = { file = "local/missing/model.json", path = ["model"], format = "json" }',
-        )
-        with self.assertRaises(ManifestError) as raised:
-            self._load(body)
-        self.assertEqual(raised.exception.code, "path_missing")
-
-    def test_hardlinked_input_file_is_rejected_as_a_path_alias(self) -> None:
+    def test_unsafe_live_paths_do_not_abort_manifest_loading(self) -> None:
         (self.inputs_root / "local/model.json").hardlink_to(
             self.inputs_root / "global/model.json"
         )
+        outside = self.root / "outside.json"
+        outside.write_text("{}\n", encoding="utf-8")
+        self.target_root.joinpath(".config").mkdir(parents=True, exist_ok=True)
+        self.target_root.joinpath(".config/settings.json").symlink_to(outside)
 
-        with self.assertRaises(ManifestError):
-            self._load()
+        manifest = self._load()
+
+        self.assertEqual(len(manifest.resources), 1)
 
     def test_rejects_traversal_invalid_globs_and_aliasing_field_paths(self) -> None:
         traversal = self._manifest().replace(
@@ -754,7 +750,7 @@ parent_mode = "0700"
                 side_effect=AssertionError("verify reparsed the manifest"),
             ),
             patch(
-                "luwu.manifest._load_manifest",
+                "luwu.manifest.load_manifest",
                 side_effect=AssertionError("verify reloaded all resources"),
             ),
         ):

@@ -92,18 +92,29 @@ def read_baseline(manifest: Manifest, resource: Resource) -> Baseline | None:
 
 
 def load_baseline(
-    manifest: Manifest, resource: Resource
+    manifest: Manifest, resource: Resource, *, allow_stale: bool = False
 ) -> tuple[FileObservation, Baseline | None]:
-    """Return the baseline leaf observation and its validated schema-2 value."""
+    """Return the baseline leaf observation and its validated schema-2 value.
+
+    With ``allow_stale``, a baseline recorded for a different declaration is
+    reported as absent so the caller can offer an explicit re-accept. The
+    observation still describes the stale file, so the replacement is guarded
+    by its identity.
+    """
 
     root = manifest.roots.inputs.path
     path = _absolute(root, resource.baseline)
     observation = observe_file(root, path)
     if observation.data is None:
         return observation, None
-    validated_values, whole_file_digest, whole_file_mode = _validate_baseline_data(
-        observation.data, manifest, resource
-    )
+    try:
+        validated_values, whole_file_digest, whole_file_mode = _validate_baseline_data(
+            observation.data, manifest, resource
+        )
+    except BaselineError as exc:
+        if allow_stale and exc.code == "baseline_stale":
+            return observation, None
+        raise
     return observation, Baseline(
         values=MappingProxyType(validated_values),
         whole_file_digest=whole_file_digest,

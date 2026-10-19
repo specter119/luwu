@@ -29,7 +29,7 @@ class ProfileAuthorizationTests(profile_case.ProfileEngineCase):
         original_observe = engine_module._observe_all
         with (
             patch(
-                "luwu.manifest._load_manifest",
+                "luwu.manifest.load_manifest",
                 side_effect=AssertionError("reauthorization reloaded the manifest"),
             ),
             patch("luwu.engine.verify_manifest", wraps=original_verify) as verify,

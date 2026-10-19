@@ -161,6 +161,74 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
         )
         self.assertNotIn("app-theme-v2", json.dumps(result.to_dict()))
 
+    def test_reverse_creates_an_absent_optional_local_layer(self) -> None:
+        local = self.inputs / "local" / "settings.json"
+        local.unlink()
+        (self.source / "templates" / "settings.json.j2").write_text(
+            '{"settings":{"theme":{{ inputs.theme | tojson }},'
+            '"brand":{{ inputs.brand | tojson }}},'
+            '"unmanaged":{"source":"unmanaged-source-v1"}}\n',
+            encoding="utf-8",
+        )
+        manifest = self.manifest_path.read_text(encoding="utf-8")
+        self.manifest_path.write_text(
+            manifest.replace(
+                '{ file = "local/settings.json", path = ["overrides", "theme"], format = "json" },',
+                '{ file = "local/settings.json", path = ["overrides", "theme"], format = "json", optional = true },',
+            ).replace(
+                '{ file = "local/settings.json", path = ["branding"], format = "json" },',
+                '{ file = "local/settings.json", path = ["branding"], format = "json", optional = true },',
+            ),
+            encoding="utf-8",
+        )
+        self._deploy_template()
+        target = self._target()
+        changed = json.loads(target.read_bytes())
+        changed["settings"]["theme"] = "app-theme-v2"
+        target.write_text(json.dumps(changed) + "\n", encoding="utf-8")
+
+        result = reverse_inputs(
+            self._plan(),
+            resource="settings",
+            fields=("theme",),
+            confirm=True,
+        )
+
+        self.assertEqual(result.outcome, "committed")
+        self.assertEqual(result.verification_status, "verified")
+        self.assertEqual(
+            json.loads(local.read_text(encoding="utf-8"))["overrides"]["theme"],
+            "app-theme-v2",
+        )
+
+    def test_reverse_into_a_layer_below_the_winner_is_rejected(self) -> None:
+        manifest = self.manifest_path.read_text(encoding="utf-8")
+        global_layer = '{ file = "global/settings.json", path = ["values", "theme"], format = "json" },'
+        local_layer = '{ file = "local/settings.json", path = ["overrides", "theme"], format = "json" },'
+        self.manifest_path.write_text(
+            manifest.replace(
+                f"{global_layer}\n  {local_layer}", f"{local_layer}\n  {global_layer}"
+            ),
+            encoding="utf-8",
+        )
+        self._deploy_template()
+        target = self._target()
+        changed = json.loads(target.read_bytes())
+        changed["settings"]["theme"] = "app-theme-v2"
+        target.write_text(json.dumps(changed) + "\n", encoding="utf-8")
+        before = self._snapshot()
+
+        with self.assertRaises(EngineError) as raised:
+            reverse_inputs(
+                self._plan(),
+                resource="settings",
+                fields=("theme",),
+                confirm=True,
+            )
+
+        self.assertEqual(raised.exception.code, "reverse_destination")
+        self.assertEqual(self._snapshot(), before)
+
     def test_same_resource_conflict_blocks_reverse_and_deletion_is_rejected(
         self,
     ) -> None:
@@ -242,8 +310,27 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
             encoding="utf-8",
         )
         stale = self._plan().to_dict()["resources"][0]
-        self.assertEqual(stale["status"], "blocked")
+        self.assertEqual(stale["status"], "unbased")
         self.assertEqual(stale["error_code"], "baseline_stale")
+
+    def test_declaration_change_is_recoverable_by_accepting_again(self) -> None:
+        self._deploy_template()
+        body = self.manifest_path.read_text(encoding="utf-8")
+        self.manifest_path.write_text(
+            body.replace('parent_mode = "0700"', 'parent_mode = "0750"'),
+            encoding="utf-8",
+        )
+        stale = self._plan().to_dict()["resources"][0]
+        self.assertEqual(stale["status"], "unbased")
+        self.assertEqual(stale["action"], "accept_baseline")
+        self.assertEqual(stale["error_code"], "baseline_stale")
+        self.assertIn("different declaration", stale["reason"])
+
+        self._accept_template_baseline()
+
+        recovered = self._plan().to_dict()["resources"][0]
+        self.assertEqual(recovered["status"], "in_sync")
+        self.assertIsNone(recovered["error_code"])
 
     def test_copy_adoption_is_baseline_only_and_live_changes_conflict(self) -> None:
         (self.source / "note.txt").write_text("source-note-v2\n", encoding="utf-8")

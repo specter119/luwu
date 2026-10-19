@@ -659,6 +659,74 @@ class FilesystemV8Tests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), b"after")
             self.assertNotIn("private", str(raised.exception))
 
+    def test_write_stale_target_is_rejected_before_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "target"
+            path.write_bytes(b"before")
+            expected = observe_file(root, path)
+            path.write_bytes(b"changed")
+
+            with (
+                patch.object(
+                    filesystem_module,
+                    "_create_temporary_file",
+                    side_effect=AssertionError("staged a stale write"),
+                ),
+                self.assertRaises(FilesystemError) as raised,
+            ):
+                write_file(root, path, b"after", expected=expected)
+
+            self.assertEqual(raised.exception.code, "stale_inputs")
+
+    def test_write_rechecks_target_after_input_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "target"
+            path.write_bytes(b"before")
+            expected = observe_file(root, path)
+
+            def change_target() -> None:
+                path.write_bytes(b"changed concurrently")
+
+            with self.assertRaises(FilesystemError) as raised:
+                write_file(
+                    root, path, b"after", expected=expected, check_inputs=change_target
+                )
+
+            self.assertEqual(raised.exception.code, "stale_inputs")
+            self.assertEqual(raised.exception.state, "not_replaced")
+            self.assertEqual(path.read_bytes(), b"changed concurrently")
+            self.assertEqual(list(root.glob(".luwu-tmp-*")), [])
+
+    def test_write_reports_target_changed_after_replace_as_uncertain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "target"
+            path.write_bytes(b"before")
+            expected = observe_file(root, path)
+            original_sync = filesystem_module.sync_directory
+
+            def foreign_replace_after_commit(descriptor: int) -> None:
+                original_sync(descriptor)
+                foreign = root / "foreign"
+                foreign.write_bytes(b"foreign")
+                os.replace(foreign, path)
+
+            with (
+                patch.object(
+                    filesystem_module,
+                    "sync_directory",
+                    side_effect=foreign_replace_after_commit,
+                ),
+                self.assertRaises(FilesystemError) as raised,
+            ):
+                write_file(root, path, b"after", expected=expected)
+
+            self.assertEqual(raised.exception.code, "write_unknown")
+            self.assertEqual(raised.exception.state, "uncertain")
+            self.assertTrue(raised.exception.committed)
+
     def test_write_rejects_substituted_staging_entry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

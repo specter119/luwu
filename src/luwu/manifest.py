@@ -237,14 +237,6 @@ class _Package:
 def load_manifest(path: Path, *, profile: str) -> Manifest:
     """Load and validate one version 8 manifest profile without reading payloads."""
 
-    return _load_manifest(path, profile=profile, inspect_mutable_paths=True)
-
-
-def _load_manifest(
-    path: Path, *, profile: str, inspect_mutable_paths: bool
-) -> Manifest:
-    """Load declarations and source freshness, optionally checking mutable paths."""
-
     manifest_path = _absolute_path(path)
     raw, manifest_identity = _read_manifest_snapshot(manifest_path)
     document = _parse_manifest(raw)
@@ -366,8 +358,10 @@ def _load_manifest(
         manifest_path,
     )
 
-    # Observe selected paths only. Excluded packages and their directories have
-    # already been removed before this no-follow metadata pass.
+    # Only source files are author-controlled, so only they may abort loading.
+    # Live targets, baselines, and input layers are observed per resource by
+    # the engine, where an unsafe entry blocks that resource instead of the
+    # whole profile.
     direct_declarations = {
         declaration.name: declaration
         for declaration in selected_declarations
@@ -375,48 +369,8 @@ def _load_manifest(
     }
     for resource in expanded_resources:
         declaration = direct_declarations.get(resource.name)
-        if declaration is not None and inspect_mutable_paths:
-            _inspect_source_resource(declaration, roots)
-            _inspect_output_paths(
-                roots,
-                target_name=resource.target_name,
-                baseline_name=declaration.baseline_relative.as_posix(),
-                parents=resource.parents,
-            )
-
-    # Directory leaves are already statted during enumeration; validate their
-    # output and baseline destinations using the same no-follow path walker.
-    directory_leaf_names = {
-        f"{declaration.name}:{relative}"
-        for declaration in selected_declarations
-        if declaration.kind == "directory"
-        for directory_name, relative, *_ in expansion
-        if directory_name == declaration.name
-    }
-    for resource in expanded_resources:
-        if not inspect_mutable_paths or resource.name not in directory_leaf_names:
-            continue
-        _inspect_output_paths(
-            roots,
-            target_name=resource.target_name,
-            baseline_name=resource.baseline.relative_to(roots.inputs.path).as_posix(),
-            parents=resource.parents,
-        )
-
-    if inspect_mutable_paths:
-        for binding in selected_inputs.values():
-            for layer in binding.layers:
-                _inspect_input_file(
-                    roots.inputs,
-                    layer.file.relative_to(roots.inputs.path),
-                    optional=layer.optional,
-                )
-            if binding.reverse_to is not None:
-                _inspect_input_file(
-                    roots.inputs,
-                    binding.reverse_to.file.relative_to(roots.inputs.path),
-                    optional=True,
-                )
+        if declaration is not None:
+            _inspect_source_file(roots.source, declaration.source_relative)
 
     try:
         roots.verify()
@@ -1223,55 +1177,8 @@ def _validate_declared_relationships(
             )
 
 
-def _inspect_source_resource(
-    declaration: _ResourceDeclaration, roots: Roots
-) -> tuple[tuple[object, ...], ...]:
-    return _inspect_file(
-        roots.source,
-        declaration.source_relative,
-        optional=False,
-        allow_missing_parents=False,
-    )
-
-
-def _inspect_output_paths(
-    roots: Roots,
-    *,
-    target_name: str,
-    baseline_name: str,
-    parents: str,
-) -> tuple[tuple[object, ...], ...]:
-    snapshots = list(
-        _inspect_file(
-            roots.target,
-            Path(target_name),
-            optional=True,
-            allow_missing_parents=parents == "create",
-        )
-    )
-    snapshots.extend(
-        _inspect_file(
-            roots.inputs,
-            Path(baseline_name),
-            optional=True,
-            allow_missing_parents=False,
-        )
-    )
-    return tuple(snapshots)
-
-
-def _inspect_input_file(
-    root: DirectoryBoundary, relative: Path, *, optional: bool
-) -> tuple[tuple[object, ...], ...]:
-    return _inspect_file(root, relative, optional=optional, allow_missing_parents=False)
-
-
-def _inspect_file(
-    root: DirectoryBoundary,
-    relative: Path,
-    *,
-    optional: bool,
-    allow_missing_parents: bool,
+def _inspect_source_file(
+    root: DirectoryBoundary, relative: Path
 ) -> tuple[tuple[object, ...], ...]:
     if not relative.parts:
         raise ManifestError(
@@ -1286,12 +1193,6 @@ def _inspect_file(
             try:
                 info = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
             except FileNotFoundError:
-                if allow_missing_parents:
-                    snapshots.append(_missing_snapshot(root, prefix))
-                    _verify_directory_binding(
-                        root, Path(*relative.parts[:index]), descriptor
-                    )
-                    return tuple(snapshots)
                 raise ManifestError(
                     "declared path parent does not exist", code="path_missing"
                 ) from None
@@ -1314,10 +1215,6 @@ def _inspect_file(
         try:
             info = os.stat(leaf, dir_fd=descriptor, follow_symlinks=False)
         except FileNotFoundError:
-            if optional:
-                snapshots.append(_missing_snapshot(root, relative))
-                _verify_directory_binding(root, relative.parent, descriptor)
-                return tuple(snapshots)
             raise ManifestError(
                 "declared file does not exist", code="path_missing"
             ) from None
@@ -1790,10 +1687,6 @@ def _stat_snapshot(
         info.st_mtime_ns,
         info.st_ctime_ns,
     )
-
-
-def _missing_snapshot(root: DirectoryBoundary, relative: Path) -> tuple[object, ...]:
-    return (str(root.path), relative.as_posix(), "missing")
 
 
 def _manifest_signature(manifest: Manifest) -> str:
