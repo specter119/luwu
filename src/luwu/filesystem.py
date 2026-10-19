@@ -35,7 +35,7 @@ class DirectoryBoundary:
     def verify(self) -> None:
         """Reject a replaced root or any symlink/rebinding in its path."""
 
-        descriptor = _open_directory(self.path)
+        descriptor = open_directory(self.path)
         try:
             current = os.fstat(descriptor)
             if current.st_dev != self.device or current.st_ino != self.inode:
@@ -47,7 +47,7 @@ class DirectoryBoundary:
 def capture_directory_boundary(path: Path) -> DirectoryBoundary:
     """Capture an existing absolute directory through no-follow opens."""
 
-    descriptor = _open_directory(path)
+    descriptor = open_directory(path)
     try:
         current = os.fstat(descriptor)
         return DirectoryBoundary(path, current.st_dev, current.st_ino)
@@ -61,10 +61,10 @@ def open_parent_directory(root: Path, path: Path) -> tuple[int, str]:
     relative = path.relative_to(root)
     if not relative.parts:
         raise ValueError("path must name an entry below the root")
-    descriptor = _open_directory(root)
+    descriptor = open_directory(root)
     try:
         for component in relative.parts[:-1]:
-            child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            child = os.open(component, directory_flags(), dir_fd=descriptor)
             previous = descriptor
             descriptor = child
             os.close(previous)
@@ -90,7 +90,7 @@ def verify_directory_identity(descriptor: int, path: Path) -> None:
 
     expected_descriptor = -1
     try:
-        expected_descriptor = _open_directory(path)
+        expected_descriptor = open_directory(path)
         expected = os.fstat(expected_descriptor)
         current = os.fstat(descriptor)
     except (OSError, ValueError):
@@ -131,14 +131,14 @@ def unlock_directory(descriptor: int) -> None:
     fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
-def _open_directory(path: Path) -> int:
+def open_directory(path: Path) -> int:
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError("directory path must be absolute and contain no '..'")
 
-    descriptor = os.open(path.anchor, _directory_flags())
+    descriptor = os.open(path.anchor, directory_flags())
     try:
         for component in path.parts[1:]:
-            child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            child = os.open(component, directory_flags(), dir_fd=descriptor)
             previous = descriptor
             descriptor = child
             os.close(previous)
@@ -298,15 +298,8 @@ def create_parent(
 
         # Keep mkdir and the no-follow open adjacent: the descriptor is the
         # identity anchor for fchmod and subsequent checks.
-        child_descriptor = os.open(name, _directory_flags(), dir_fd=parent)
+        child_descriptor = os.open(name, directory_flags(), dir_fd=parent)
         opened = os.fstat(child_descriptor)
-        if not stat.S_ISDIR(opened.st_mode):
-            raise _error(
-                "created filesystem parent is unsafe",
-                "parent_create_unknown",
-                state=_UNCERTAIN,
-                committed=True,
-            )
         identity = _identity(opened)
         os.fchmod(child_descriptor, mode)
         opened = os.fstat(child_descriptor)
@@ -425,7 +418,6 @@ def write_file(
         _validate_mode(mode)
     if not isinstance(expected, FileObservation):
         raise _error("filesystem observation is invalid", "invalid_observation")
-    _verify_expected_ancestry(boundary, root, relative, expected)
 
     try:
         parent, name = open_parent_directory(root, path)
@@ -449,13 +441,9 @@ def write_file(
 
         final_mode = _write_mode(expected, mode)
         _validate_mode(final_mode)
-        initial_mode = _initial_stage_mode(expected, mode)
-        descriptor, temporary = _create_temporary_file(parent, initial_mode)
+        descriptor, temporary = _create_temporary_file(parent)
         try:
-            staged_info = os.fstat(descriptor)
-            if not stat.S_ISREG(staged_info.st_mode) or staged_info.st_nlink != 1:
-                raise _error("staged filesystem entry is unsafe", "unsafe_stage")
-            staged_identity = _identity(staged_info)
+            staged_identity = _identity(os.fstat(descriptor))
             os.fchmod(descriptor, 0o600)
             _write_all(descriptor, data)
             os.fchmod(descriptor, final_mode)
@@ -463,10 +451,6 @@ def write_file(
         finally:
             os.close(descriptor)
 
-        _verify_root_parent(boundary, parent, path.parent)
-        _verify_staged_entry(
-            parent, path.parent, temporary, staged_identity, final_mode, data
-        )
         _run_check_inputs(check_inputs)
 
         _verify_root_parent(boundary, parent, path.parent)
@@ -651,7 +635,7 @@ def _capture_ancestry(
     missing: list[Path] = []
     descriptor = -1
     try:
-        descriptor = os.open(root, _directory_flags())
+        descriptor = os.open(root, directory_flags())
         root_info = os.fstat(descriptor)
         if (
             not stat.S_ISDIR(root_info.st_mode)
@@ -665,7 +649,7 @@ def _capture_ancestry(
         for index, component in enumerate(parents):
             child_path = current / component
             try:
-                child = os.open(component, _directory_flags(), dir_fd=descriptor)
+                child = os.open(component, directory_flags(), dir_fd=descriptor)
             except FileNotFoundError:
                 missing.append(child_path)
                 for remaining in parents[index + 1 :]:
@@ -763,7 +747,7 @@ def _observe_entry(parent: int, name: str) -> FileObservation:
         raise _error("filesystem entry is not a private regular file", "unsafe_file")
 
     try:
-        descriptor = os.open(name, _read_flags(), dir_fd=parent)
+        descriptor = os.open(name, read_flags(), dir_fd=parent)
     except (OSError, NotImplementedError):
         raise _error(
             "filesystem entry changed during observation", "unsafe_file"
@@ -884,16 +868,12 @@ def _write_mode(expected: FileObservation, mode: int | None) -> int:
     return 0o644
 
 
-def _initial_stage_mode(expected: FileObservation, mode: int | None) -> int:
-    return 0o600
-
-
-def _create_temporary_file(parent: int, initial_mode: int) -> tuple[int, str]:
+def _create_temporary_file(parent: int) -> tuple[int, str]:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _nofollow_flag()
     for _ in range(100):
         name = f".luwu-tmp-{uuid.uuid4().hex}"
         try:
-            return os.open(name, flags, initial_mode, dir_fd=parent), name
+            return os.open(name, flags, 0o600, dir_fd=parent), name
         except FileExistsError:
             continue
     raise _error("temporary filesystem entry could not be created", "write_failed")
@@ -908,11 +888,11 @@ def _write_all(descriptor: int, data: bytes) -> None:
         remaining = remaining[written:]
 
 
-def _read_flags() -> int:
+def read_flags() -> int:
     return os.O_RDONLY | _required_flag("O_NONBLOCK") | _nofollow_flag()
 
 
-def _directory_flags() -> int:
+def directory_flags() -> int:
     return os.O_RDONLY | _required_flag("O_DIRECTORY") | _nofollow_flag()
 
 

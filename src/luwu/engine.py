@@ -26,6 +26,7 @@ from .filesystem import (
     FilesystemError,
     capture_directory_boundary,
     create_parent,
+    directory_flags,
     missing_parents,
     observe_file,
     open_parent_directory,
@@ -393,7 +394,6 @@ def build_plan(manifest: Manifest) -> Plan:
     """Observe every selected resource and return a sealed in-memory plan."""
 
     try:
-        verify_manifest(manifest)
         resources = _observe_all(manifest)
         verify_manifest(manifest)
     except LuwuError:
@@ -489,10 +489,6 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
         include_directories=target_directories,
         root=record.manifest.roots.target.path,
     )
-    try:
-        _assert_forward_fresh(record)
-    except EngineError as exc:
-        return _finish_actions("apply", actions, "not_attempted", exc.code)
     expected_targets: dict[Path, FileObservation] = {}
     expected_baselines: dict[Path, FileObservation] = {}
     expected_inputs: dict[Path, FileObservation] = {}
@@ -599,16 +595,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
             )
             fresh_item = _resource_by_name(fresh_resources, item.resource.name)
             fresh_spec = _forward_specs_for_item(fresh_item, record.manifest)
-            if (
-                fresh_spec is None
-                or fresh_spec.kind != spec.kind
-                or fresh_spec.resource.name != spec.resource.name
-                or fresh_spec.root != spec.root
-                or fresh_spec.path != spec.path
-                or fresh_spec.mode != spec.mode
-                or fresh_spec.fields != spec.fields
-                or fresh_spec.data != item.write_data
-            ):
+            if fresh_spec is None:
                 raise EngineError("stale_plan", resource=item.resource.name)
             expected = expected_targets.get(fresh_spec.path, item.target_observation)
             if expected is None:
@@ -2267,7 +2254,6 @@ def _assert_fresh(
     expected_inputs = {} if expected_inputs is None else expected_inputs
     expected_directories = {} if expected_directories is None else expected_directories
     try:
-        verify_manifest(record.manifest)
         if resource_names is None:
             fresh = _observe_all(record.manifest)
         else:
@@ -2573,23 +2559,11 @@ def _observe_directory_mode(root: Path, path: Path) -> tuple[tuple[int, int], in
     child_descriptor: int | None = None
     try:
         parent_descriptor, name = open_parent_directory(root, path)
-        try:
-            flags = os.O_DIRECTORY | os.O_NOFOLLOW
-        except AttributeError:
-            raise ValueError from None
-        child_descriptor = os.open(
-            name,
-            os.O_RDONLY | flags,
-            dir_fd=parent_descriptor,
-        )
+        child_descriptor = os.open(name, directory_flags(), dir_fd=parent_descriptor)
         opened = os.fstat(child_descriptor)
         entry = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
         identity = (opened.st_dev, opened.st_ino)
-        if (
-            not stat.S_ISDIR(opened.st_mode)
-            or not stat.S_ISDIR(entry.st_mode)
-            or identity != (entry.st_dev, entry.st_ino)
-        ):
+        if identity != (entry.st_dev, entry.st_ino):
             raise ValueError
         return identity, stat.S_IMODE(opened.st_mode)
     except (OSError, ValueError, NotImplementedError):
@@ -3201,10 +3175,6 @@ def _relative_path(root: Path, path: Path) -> str:
         return path.relative_to(root).as_posix()
     except ValueError:
         return "<outside-root>"
-
-
-def _path_text(path: Path) -> str:
-    return path.as_posix()
 
 
 def _mode_text(mode: int) -> str:

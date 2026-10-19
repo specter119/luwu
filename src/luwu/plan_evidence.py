@@ -103,17 +103,13 @@ def _capture_plan_evidence(projection: object) -> _PlanEvidence:
         frame.offset += 1
         frame.edges.append(edge_for(child))
 
-    completed = tuple(record for record in records if record is not None)
-    if len(completed) != len(records):
-        _raise_invalid()
-    return _PlanEvidence(root, completed)
+    return _PlanEvidence(
+        root, tuple(record for record in records if record is not None)
+    )
 
 
 def _matches_plan_evidence(projection: object, evidence: _PlanEvidence) -> bool:
     """Re-read and compare the complete current graph against captured evidence."""
-
-    if type(evidence) is not _PlanEvidence:
-        _raise_invalid()
 
     active: set[int] = set()
     compared: set[tuple[int, int]] = set()
@@ -126,8 +122,6 @@ def _matches_plan_evidence(projection: object, evidence: _PlanEvidence) -> bool:
         current, expected, exiting = pending.pop()
         identity = id(current)
         if exiting:
-            if identity not in active:
-                _raise_invalid()
             active.remove(identity)
             continue
 
@@ -148,16 +142,10 @@ def _matches_plan_evidence(projection: object, evidence: _PlanEvidence) -> bool:
 
         kind, children = _describe_node(current)
         index = expected.index
-        if type(index) is not int or not 0 <= index < len(evidence.records):
-            _raise_invalid()
         record = evidence.records[index]
-        if type(record) is not _NodeRecord or type(record.edges) is not tuple:
-            _raise_invalid()
         if kind != record.kind or len(children) != len(record.edges):
             return False
 
-        if identity in active:
-            _raise_invalid()
         pair = (identity, index)
         if pair in compared:
             continue

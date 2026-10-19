@@ -669,8 +669,8 @@ class FilesystemV8Tests(unittest.TestCase):
             original_fsync = os.fsync
             staged: dict[str, object] = {}
 
-            def remember(parent: int, mode: int) -> tuple[int, str]:
-                descriptor, name = original_create(parent, mode)
+            def remember(parent: int) -> tuple[int, str]:
+                descriptor, name = original_create(parent)
                 staged.update(parent=parent, name=name)
                 return descriptor, name
 
@@ -708,8 +708,8 @@ class FilesystemV8Tests(unittest.TestCase):
             original_fsync = os.fsync
             staged: dict[str, object] = {}
 
-            def remember(parent: int, mode: int) -> tuple[int, str]:
-                descriptor, name = original_create(parent, mode)
+            def remember(parent: int) -> tuple[int, str]:
+                descriptor, name = original_create(parent)
                 staged.update(parent=parent, name=name)
                 return descriptor, name
 

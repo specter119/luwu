@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import ClassVar
 
 from .errors import LuwuError
+from .sensitivity import is_sensitive_name
 
 LeafPath = tuple[str, ...]
 
@@ -117,32 +118,6 @@ class Document:
     )
 
 
-_SENSITIVE_FRAGMENTS = (
-    "apikey",
-    "accesskey",
-    "credential",
-    "password",
-    "privatekey",
-    "secret",
-    "token",
-)
-_SENSITIVE_NAMES = frozenset(
-    {
-        "api_key",
-        "apikey",
-        "access_key",
-        "client_secret",
-        "credential",
-        "credentials",
-        "password",
-        "private_key",
-        "refresh_token",
-        "secret",
-        "secrets",
-        "session_token",
-        "token",
-    }
-)
 _JSON_NUMBER = re.compile(rb"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 _BARE_TOML_KEY = re.compile(r"[A-Za-z0-9_-]+")
 _MAX_PATH_SEGMENTS = 256
@@ -231,7 +206,7 @@ def patch_document(document: Document, edits: Mapping[LeafPath, object]) -> byte
     normalized: dict[LeafPath, object] = {}
     for path, value in edits.items():
         _validate_path(path)
-        if any(_is_sensitive_name(segment) for segment in path):
+        if any(is_sensitive_name(segment) for segment in path):
             raise FormatError(code="sensitive_input")
         if value is not MISSING:
             _validate_scalar(value, document._format)
@@ -441,7 +416,7 @@ class _JsonParser:
             key_start, key_end, key = self._string()
             if key in children:
                 raise FormatError(code="format")
-            if _is_sensitive_name(key):
+            if is_sensitive_name(key):
                 raise FormatError(code="sensitive_input")
             self._skip_trivia()
             colon = self.index
@@ -1308,7 +1283,7 @@ def _validate_tree(value: object) -> None:
             if not isinstance(key, str):
                 raise FormatError(code="format")
             _ensure_utf8(key)
-            if _is_sensitive_name(key):
+            if is_sensitive_name(key):
                 raise FormatError(code="sensitive_input")
             _validate_tree(child)
         return
@@ -1362,19 +1337,6 @@ def _validate_non_overlapping_paths(paths: tuple[LeafPath, ...]) -> None:
             raise FormatError(code="patch")
 
 
-def _is_sensitive_name(name: str) -> bool:
-    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
-    normalized = normalized.casefold().replace("-", "_")
-    compact = "".join(char for char in normalized if char.isalnum())
-    return (
-        normalized in _SENSITIVE_NAMES
-        or normalized.endswith(
-            ("_credential", "_credentials", "_key", "_password", "_secret", "_token")
-        )
-        or any(fragment in compact for fragment in _SENSITIVE_FRAGMENTS)
-    )
-
-
 def _is_number(value: object) -> bool:
     return isinstance(value, (int, Decimal)) and not isinstance(value, bool)
 
@@ -1421,7 +1383,7 @@ def _encode_json_value(value: object) -> bytes:
     if isinstance(value, dict):
         parts = []
         for key, child in value.items():
-            if not isinstance(key, str) or _is_sensitive_name(key):
+            if not isinstance(key, str) or is_sensitive_name(key):
                 raise FormatError(code="sensitive_input")
             parts.append(_encode_json_string(key) + b":" + _encode_json_value(child))
         return b"{" + b",".join(parts) + b"}"
@@ -1450,7 +1412,7 @@ def _encode_toml_inline_value(value: object) -> bytes:
             return b"{}"
         pairs: list[bytes] = []
         for key, child in value.items():
-            if not isinstance(key, str) or _is_sensitive_name(key):
+            if not isinstance(key, str) or is_sensitive_name(key):
                 raise FormatError(code="sensitive_input")
             pairs.append(
                 _encode_toml_key(key).encode("utf-8")

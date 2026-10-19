@@ -18,7 +18,14 @@ from types import MappingProxyType
 from urllib.parse import quote
 
 from .errors import ManifestError
-from .filesystem import DirectoryBoundary, capture_directory_boundary
+from .filesystem import (
+    DirectoryBoundary,
+    capture_directory_boundary,
+    directory_flags,
+    open_directory,
+    read_flags,
+)
+from .sensitivity import is_sensitive_name
 
 _VERSION = 8
 _FORMATS = frozenset({"json", "jsonc", "toml"})
@@ -43,28 +50,6 @@ class Roots:
         self.target.verify()
 
 
-_SENSITIVE_NAMES = frozenset(
-    {
-        "access_key",
-        "accesskey",
-        "api_key",
-        "apikey",
-        "client_secret",
-        "clientsecret",
-        "credential",
-        "credentials",
-        "password",
-        "private_key",
-        "privatekey",
-        "refresh_token",
-        "refreshtoken",
-        "secret",
-        "secrets",
-        "session_token",
-        "sessiontoken",
-        "token",
-    }
-)
 _PROVENANCE_TOKEN = object()
 
 
@@ -561,17 +546,10 @@ def _absolute_path(path: Path) -> Path:
     return absolute
 
 
-def _read_manifest(path: Path) -> bytes:
-    """Read manifest bytes after descriptor and namespace identity checks."""
-
-    raw, _ = _read_manifest_snapshot(path)
-    return raw
-
-
 def _read_manifest_snapshot(path: Path) -> tuple[bytes, tuple[int, int]]:
     """Read a manifest and retain the no-follow identity of its opened file."""
 
-    flags = os.O_RDONLY | _required_flag("O_NOFOLLOW") | getattr(os, "O_NONBLOCK", 0)
+    flags = read_flags()
     descriptor = -1
     parent_descriptor = -1
     try:
@@ -1322,7 +1300,7 @@ def _inspect_file(
                     "declared path parent is not a safe directory",
                     code="path_boundary",
                 )
-            child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            child = os.open(component, directory_flags(), dir_fd=descriptor)
             opened = os.fstat(child)
             if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
                 _close_descriptor(child)
@@ -1348,7 +1326,7 @@ def _inspect_file(
                 "declared file must be regular and single-linked",
                 code="path_boundary",
             )
-        opened = os.open(leaf, _file_flags(), dir_fd=descriptor)
+        opened = os.open(leaf, read_flags(), dir_fd=descriptor)
         try:
             current = os.fstat(opened)
             if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
@@ -1397,7 +1375,7 @@ def _expand_directory(
                     "directory source must contain only safe directories and files",
                     code="directory_boundary",
                 )
-            child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            child = os.open(component, directory_flags(), dir_fd=descriptor)
             opened = os.fstat(child)
             if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
                 _close_descriptor(child)
@@ -1488,7 +1466,7 @@ def _scan_directory(
             ) from None
         source_entry = source_relative / relative_entry
         if stat.S_ISDIR(info.st_mode):
-            child = os.open(name, _directory_flags(), dir_fd=descriptor)
+            child = os.open(name, directory_flags(), dir_fd=descriptor)
             try:
                 current = os.fstat(child)
                 if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
@@ -1517,7 +1495,7 @@ def _scan_directory(
                 "directory source must contain only safe files",
                 code="directory_boundary",
             )
-        file_descriptor = os.open(name, _file_flags(), dir_fd=descriptor)
+        file_descriptor = os.open(name, read_flags(), dir_fd=descriptor)
         try:
             current = os.fstat(file_descriptor)
             if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
@@ -1584,7 +1562,7 @@ def _leaf_path(value: object, *, code: str) -> tuple[str, ...]:
             not isinstance(part, str)
             or not part
             or _has_control_chars(part)
-            or _is_sensitive_name(part)
+            or is_sensitive_name(part)
         ):
             raise ManifestError(
                 "field paths must contain only non-empty public keys", code=code
@@ -1723,15 +1701,6 @@ def _valid_name(value: str) -> bool:
     return bool(_NAME_RE.fullmatch(value))
 
 
-def _is_sensitive_name(value: str) -> bool:
-    normalized = unicodedata.normalize("NFKC", value)
-    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized).casefold()
-    normalized = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
-    return normalized in _SENSITIVE_NAMES or normalized.endswith(
-        ("_credential", "_credentials", "_key", "_password", "_secret", "_token")
-    )
-
-
 def _has_control_chars(value: str) -> bool:
     return any(unicodedata.category(character) in {"Cc", "Cs"} for character in value)
 
@@ -1741,10 +1710,6 @@ def _path_key(path: Path) -> tuple[str, ...]:
     return tuple(
         unicodedata.normalize("NFC", part).casefold() for part in absolute.parts
     )
-
-
-def _path_keys_overlap(left: Path, right: Path) -> bool:
-    return _keys_overlap(_path_key(left), _path_key(right))
 
 
 def _keys_overlap(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
@@ -1759,23 +1724,6 @@ def _leaf_paths_overlap(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
     return left_key[:common] == right_key[:common]
 
 
-def _directory_flags() -> int:
-    return os.O_RDONLY | _required_flag("O_DIRECTORY") | _required_flag("O_NOFOLLOW")
-
-
-def _file_flags() -> int:
-    return os.O_RDONLY | _required_flag("O_NOFOLLOW") | getattr(os, "O_NONBLOCK", 0)
-
-
-def _required_flag(name: str) -> int:
-    try:
-        return getattr(os, name)
-    except AttributeError:
-        raise ManifestError(
-            "platform lacks required no-follow filesystem support", code="platform"
-        ) from None
-
-
 def _close_descriptor(descriptor: int) -> None:
     try:
         os.close(descriptor)
@@ -1786,7 +1734,7 @@ def _close_descriptor(descriptor: int) -> None:
 
 
 def _open_boundary(root: DirectoryBoundary) -> int:
-    descriptor = _open_directory(root.path)
+    descriptor = open_directory(root.path)
     try:
         info = os.fstat(descriptor)
         if (info.st_dev, info.st_ino) != (root.device, root.inode):
@@ -1804,7 +1752,7 @@ def _verify_directory_binding(
     try:
         current = _open_boundary(root)
         for component in relative.parts:
-            child = os.open(component, _directory_flags(), dir_fd=current)
+            child = os.open(component, directory_flags(), dir_fd=current)
             _close_descriptor(current)
             current = child
         expected_info = os.fstat(descriptor)
@@ -1825,23 +1773,6 @@ def _verify_directory_binding(
     finally:
         if current >= 0:
             _close_descriptor(current)
-
-
-def _open_directory(path: Path) -> int:
-    if not path.is_absolute() or ".." in path.parts:
-        raise ManifestError(
-            "directory path is not absolute and safe", code="path_boundary"
-        )
-    descriptor = os.open(path.anchor, _directory_flags())
-    try:
-        for component in path.parts[1:]:
-            child = os.open(component, _directory_flags(), dir_fd=descriptor)
-            _close_descriptor(descriptor)
-            descriptor = child
-        return descriptor
-    except BaseException:
-        _close_descriptor(descriptor)
-        raise
 
 
 def _stat_snapshot(

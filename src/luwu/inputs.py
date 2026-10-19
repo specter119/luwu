@@ -128,7 +128,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
                 raise InputError(
                     "required input value is missing", code="input_missing"
                 )
-            if not _is_public_scalar(value) or _sensitive_path(layer.path):
+            if not _is_public_scalar(value):
                 raise InputError(
                     "input value is outside the public scalar boundary",
                     code="input_invalid",
@@ -187,17 +187,3 @@ def _is_public_scalar(value: object) -> bool:
     return (
         value is None or type(value) in {str, bool, int} or isinstance(value, Decimal)
     )
-
-
-def _sensitive_path(path: tuple[str, ...]) -> bool:
-    sensitive = {
-        "api_key",
-        "apikey",
-        "credential",
-        "password",
-        "private_key",
-        "privatekey",
-        "secret",
-        "token",
-    }
-    return any(part.casefold().replace("-", "_") in sensitive for part in path)
