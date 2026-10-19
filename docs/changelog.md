@@ -77,6 +77,28 @@ For example: `git show bb80335:docs/milestones/m3.md`.
 - Synthetic OpenCode, Codex, and Droid settings shapes; no application
   runtime has loaded them.
 
+## M7a and M7b: daily loop and file resources (version 8)
+
+- Resource kind is inferred from the source: `.j2` is a template, another file
+  is a plain file, and a directory expands into one resource per file. A
+  top-level `[defaults]` table sets `deploy`, `parents`, and `parent_mode`.
+  The explicit `copy` and `directory` kinds and the whole-file `scope` and
+  `owner` keys were removed from the manifest.
+- Symlink resources are the default deployment. Copy is an explicit
+  `deploy = "copy"`.
+- Whole-file text templates render a `.j2` source without fields from declared
+  inputs and reuse the copy baseline, adopt, and review mechanisms.
+- Apply advances the baseline of the resources it wrote, reports a baseline
+  failure as `committed_but_baseline_not_advanced`, and skips resources that
+  need review instead of stopping the whole profile (outcome `partial`).
+- `undeclared = "preserve"` keeps application-written keys; `public_names`
+  admits exact key names past the sensitive-name check; the adopt preview and
+  plan projection report `replaces_live_on_apply`.
+- `reverse-sync --undeclared` writes a proven literal-subtree change back to a
+  template source.
+- M7a is implemented but not closed: its exit is a real trial (see the
+  [roadmap](roadmap.md#m7a-daily-loop-usability)).
+
 ## Consolidation: one manifest contract
 
 - Retired manifest versions 1 through 7. Version 8 is the only manifest the
@@ -121,16 +143,17 @@ For example: `git show bb80335:docs/milestones/m3.md`.
 Rows are capabilities and columns are deliveries. A cell says where the
 capability was introduced or widened, not whether it works now.
 
-| Capability                     | M1  | M2  | M3  | M4  | M5  | M6  | M7  |
-| ------------------------------ | --- | --- | --- | --- | --- | --- | --- |
-| Template and symbolic resource | new |     |     |     |     |     | ext |
-| Multi-resource observation     |     | new |     |     |     |     | ext |
-| Structured comparison          |     | new |     |     |     | ext | ext |
-| Ownership and baselines        |     |     | new |     |     | ext | ext |
-| Reverse sync and accept        |     |     | new |     |     | ext | ext |
-| Journal and recovery           |     |     | new | ext | ext |     |     |
-| Providers and secrets          |     |     |     | new |     |     |     |
-| Batch performance              |     |     |     |     | new |     | ext |
-| Roots and local inputs         |     |     |     |     |     | new | ext |
-| Profiles and directories       |     |     |     |     |     |     | new |
-| JSONC and nested TOML          |     |     |     |     |     | ext | new |
+| Capability                     | M1  | M2  | M3  | M4  | M5  | M6  | M7  | M7a/b |
+| ------------------------------ | --- | --- | --- | --- | --- | --- | --- | ----- |
+| Template and symbolic resource | new |     |     |     |     |     | ext | ext   |
+| Multi-resource observation     |     | new |     |     |     |     | ext |       |
+| Structured comparison          |     | new |     |     |     | ext | ext | ext   |
+| Ownership and baselines        |     |     | new |     |     | ext | ext | ext   |
+| Reverse sync and accept        |     |     | new |     |     | ext | ext | ext   |
+| Journal and recovery           |     |     | new | ext | ext |     |     |       |
+| Providers and secrets          |     |     |     | new |     |     |     |       |
+| Batch performance              |     |     |     |     | new |     | ext |       |
+| Roots and local inputs         |     |     |     |     |     | new | ext |       |
+| Profiles and directories       |     |     |     |     |     |     | new | ext   |
+| JSONC and nested TOML          |     |     |     |     |     | ext | new |       |
+| Text templates                 |     |     |     |     |     |     |     | new   |

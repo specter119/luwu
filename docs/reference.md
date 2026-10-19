@@ -16,7 +16,7 @@ owned by [status.md](status.md) and open constraints by the
 
 A manifest has `version = 8` and declares [roots] with source, inputs,
 and target paths; named [profiles.NAME]; named [packages.NAME]; named inputs;
-and named resources. Source and inputs are relative to the manifest directory;
+named resources; and an optional [defaults] table. Source and inputs are relative to the manifest directory;
 target may be relative to it or an explicit absolute path. All three roots must
 already exist as safe directories.
 Source and inputs roots must be distinct and non-overlapping. The target root
@@ -93,43 +93,85 @@ change another declared consumer, the fixed error code is
 
 ### Resources and declared scope
 
-A resource declares kind, source and target relative to their respective roots,
-baseline relative to the inputs root, content_sensitivity = public, parents,
-and parent_mode. Template resources additionally declare a supported
-structured format, scope = fields,
-and a non-empty field map. Each field alias maps to a literal path, an owner
-(source, live, merge, or ignore), and, where required, a named input binding.
-Mapped paths may not overlap. Dots, slashes, and array positions have no
-special path syntax; a path is the exact ordered tuple of its declared string
-segments. There are no built-in application schemas or inferred field
-mappings; application configuration is handled only through these declarations.
+A resource is one `[resources.NAME]` table and one target file; nested tables
+are its fields. It declares `source` and `target` relative to their respective
+roots. It may also declare `baseline` relative to the inputs root, `deploy`,
+`mode`, `parents`, `parent_mode`, `content_sensitivity = "public"`, and the
+keys named below. There is no copy or directory kind: Luwu infers what a
+resource is from its source.
 
-Copy and directory resources declare scope = whole-file and owner = source;
-neither has a structured field map or format. Copy resources own their complete
-regular-file bytes. An existing copy target is not authorized by observation
-or by apply: it requires
-an explicit adopt operation before source deployment. The copy baseline uses
-its closed payload variant to store the digest algorithm and accepted public
-byte digest as content evidence; accepted file mode is represented separately.
-It does not persist file bytes. Explicit public admission does not redact
-secrets. Subsequent source/live disagreement requires review; there is no
-force or implicit overwrite rule.
+- A source name ending in `.j2` is a template. Any other regular file is a
+  plain file. A source that is a directory expands recursively into one
+  resource per file leaf. The optional `kind = "template"` or `kind = "file"`
+  overrides the inference for a file source; there is no other kind value.
+- An optional top-level `[defaults]` table sets `deploy`, `parents`, and
+  `parent_mode` for every resource. A resource key overrides it. Without a
+  declaration, `deploy = "symlink"`, `parents = "require"`, and
+  `parent_mode = 0o700`.
+- `format` (`json`, `jsonc`, or `toml`) is inferred from the source name after
+  removing `.j2`, or declared explicitly. A template with `fields` requires one.
 
-Directory resources explicitly enumerate a source directory into a
-deterministic set of copy leaves. Recursive traversal is enabled by default
-and may be narrowed by declared relative exclusion globs. Symlinks are not
-followed, undeclared entries are not silently added, and an empty directory
-does not create a target directory. The expanded leaf set and its identities
-are part of the observed manifest selection and are rechecked before a write;
-an added, removed, or rebound leaf makes the plan stale or blocked. Each leaf
-has a deterministic, collision-free baseline identity formed from the
-directory declaration identity and relative leaf path, never enumeration
-order.
+**Plain files with `deploy = "symlink"`** (the default) own a symlink at the
+target whose content is the absolute path of the source file. A symlink
+resource has no baseline, no `mode`, and no adopt step. A missing target is
+planned as `create`. A target that is already a symlink to that source is in
+sync. A regular file, a symlink elsewhere, or a directory at the target
+blocks the resource with a fixed reason; Luwu never follows or replaces it.
+The link is created only when the name does not exist, and its content is read
+back and checked after creation. A plain file with `deploy = "copy"` is a
+copy resource.
 
-Every resource explicitly declares whether target and baseline parents must
-already exist or may be created, and supplies parent_mode for directories
-created under that resource. The same policy governs the
-parents of a reverse-sync destination. parent_mode
+**Copy resources** own the complete regular-file bytes of their source. They
+require a `baseline`. An existing copy target is not authorized by observation
+or by apply: it requires an explicit adopt operation before source
+deployment. The copy baseline uses its closed payload variant to store the
+digest algorithm and accepted public byte digest as content evidence; accepted
+file mode is represented separately. It does not persist file bytes. Explicit
+public admission does not redact secrets. Subsequent source/live disagreement
+requires review; there is no force or implicit overwrite rule.
+
+**Whole-file templates** are `.j2` sources without `fields`. The template is
+rendered in a sandbox with the values of the input bindings listed in the
+resource's `inputs`, and the rendered bytes are owned by the source. They use
+the copy baseline, adopt, and review mechanisms on the rendered bytes. A
+template is written, never deployed, so `deploy` is invalid on it. The target
+name of a directory leaf drops its `.j2` suffix.
+
+**Structured templates** declare `fields`, a non-empty map. Each field alias
+maps to a literal path, an owner (`source`, `live`, `merge`, or `ignore`), and,
+where required, a named input binding. A structured template takes its inputs
+from its field bindings and does not declare `inputs`. Mapped paths may not
+overlap. Dots, slashes, and array positions have no special path syntax; a
+path is the exact ordered tuple of its declared string segments. There are no
+built-in application schemas or inferred field mappings; application
+configuration is handled only through these declarations.
+
+A structured template may declare two optional keys. `undeclared = "block"`
+is the default: a change to undeclared content makes the resource `review`,
+as described under structured formats. `undeclared = "preserve"` still
+reports `undeclared_changed = true` but does not block. Apply then writes only
+declared fields and keeps every other key as the application left it. Preserve
+never adopts those keys. `public_names` is a list of exact key names that
+sensitive-name detection would otherwise reject; a resource lists the names
+that its fields or document may carry, and an input binding lists the names
+that its layers may carry. Matching is by exact key name, the default stays
+fail-closed, and the list does not redact secrets.
+
+Directory expansion walks a source directory into a deterministic set of
+leaves. Recursive traversal is enabled by default (`recursive = false` turns
+it off) and may be narrowed by declared relative exclusion globs (`exclude`).
+Each leaf is a plain file or a whole-file template, and takes the directory's
+`deploy`. Symlinks are not followed, undeclared entries are not silently
+added, and an empty directory does not create a target directory. The expanded
+leaf set and its identities are part of the observed manifest selection and
+are rechecked before a write; an added, removed, or rebound leaf makes the
+plan stale or blocked. Each leaf has a deterministic, collision-free baseline
+identity formed from the directory declaration identity and relative leaf
+path, never enumeration order.
+Every resource has a parents policy, declared or taken from `[defaults]`,
+that says whether target and baseline parents must already exist or may be
+created, and a parent_mode for directories created under that resource. The
+same policy governs the parents of a reverse-sync destination. parent_mode
 and mode values are plain permission bits from 0o000 through 0o777; setuid,
 setgid, and sticky bits are invalid. Final modes are exact and do not inherit
 the process umask. A new parent_mode with group-write or world-write bits is
@@ -205,6 +247,8 @@ When undeclared content changes for a resource, its plan projection has
 `status = "review"`, `action = "blocked"`, `undeclared_changed = true`, and the
 `review_required` error code. Its fixed `reason` is `undeclared content changed; inspect declared scope or correct it manually, then re-plan`.
 This message gives an action without disclosing undeclared keys or values.
+A resource with `undeclared = "preserve"` keeps `undeclared_changed = true`
+but is not blocked on that account.
 
 ### Fixed-version application-shaped mapping targets
 
@@ -256,8 +300,14 @@ explicitly accepted public byte digest as content evidence, with accepted file
 mode represented separately; it never stores the copied file bytes. These
 persisted digest bytes are not metadata-only, but are explicit public baseline
 content evidence. Baselines never contain complete source, target, or input
-documents. Only explicit accept and adopt operations establish or advance
-baselines; planning, reverse sync, and apply never accept state implicitly.
+documents. Accept and adopt establish a baseline. A confirmed apply also advances the
+baseline of every resource it wrote, and only for what it wrote: the declared
+fields that it forwarded or that already converged for a structured template,
+or the accepted digest and mode of a copy or whole-file template. Apply does
+not create a baseline, and it never accepts a field that is not converged
+after the write. The preview lists each `baseline_write` action, so the
+advance is part of what `--yes` authorizes. Planning and reverse sync never
+change a baseline.
 
 Durable baseline identity binds the profile, resource identity and kind, the
 resolved paths of all three roots, source and target paths, and format. For a
@@ -275,10 +325,12 @@ written baseline and never included in any CLI output, repr, or log.
 
 Inspect and plan are read-only. Accept requires an explicit profile, exactly
 one resource, field selection, and --from desired|live baseline side.
-Reverse-sync requires an explicit profile, exactly one resource, and selected
-eligible live/merge fields; it writes only their declared reverse_to
-destinations. Adopt requires an explicit profile and exactly one whole-file
-copy resource. These are per-resource mutations; there is no joint
+Reverse-sync requires an explicit profile, exactly one resource, and either
+selected eligible live/merge fields or `--undeclared`. Field mode writes only
+the declared reverse_to destinations. Undeclared mode is described below. Adopt requires an explicit profile and exactly one copy or whole-file
+template resource. When the source bytes differ from the live target, the
+adopt preview marks its baseline action with `replaces_live_on_apply = true`:
+the next apply will replace those live bytes. These are per-resource mutations; there is no joint
 cross-resource selection for accept, adopt, or reverse-sync. Apply alone
 mutates the complete selected profile as a batch. Every mutation has a
 metadata-only preview and requires explicit --yes; confirmation
@@ -295,14 +347,58 @@ does not change authorized writes and is not a cancellation API. Shared
 declaration objects and actual file dependencies remain subject to the
 finite-batch and per-action checks below.
 
+### Writing undeclared changes back to a template source
+
+`reverse-sync --resource NAME --undeclared` is the only operation that writes
+the source root. It copies a scalar change that the application made outside
+the declared fields into the structured template's source, so the next apply
+reproduces it. It applies only to a structured template and is separate from
+`--field`; the two cannot be combined.
+
+Luwu writes only when it can prove every one of these conditions, and
+otherwise refuses with `undeclared_unsafe` and writes nothing:
+
+- The source parses in its declared format and contains no Jinja block or
+  comment syntax (`{%`, `{#`).
+- Every changed path, and each of its ancestors, is a literal mapping in the
+  source and in the render, and neither the keys nor the values contain
+  template markup (`{{`, `{%`, `{#`).
+- The source value at that path equals the rendered value, so Jinja did not
+  rewrite it.
+- The changes are scalars: no array member, no multiline value, and no
+  sensitive key name unless it is listed in `public_names`.
+- Re-rendering the patched source in memory reproduces every undeclared live
+  value and leaves every declared field's desired value unchanged.
+
+The write uses the same span patch and atomic replacement as other writes,
+rechecks the source, inputs, baseline, and target, and verifies after the
+write that undeclared content no longer differs and declared fields are
+unchanged. A resource that is blocked, in conflict, unbased, or not a
+structured template is refused (`review_required` or `operation_invalid`).
+Without `--yes`, the command prints a preview whose action is
+`source_write` and returns exit code `2`.
+
 ### Finite-batch freshness and verification
 
 A confirmed profile mutation fixes its finite batch from the verified
 manifest, selected profile and package closure, explicit resource selection,
 and directory expansion. Before the first write, Luwu completes full-batch
 preflight across every selected resource and expanded directory leaf,
-including no-op resources. The blocked outcome includes all blockers found in
-that observation; any blocker prevents every write from starting.
+including no-op resources. A batch-level blocker, such as conflicting parent
+modes or a stale manifest, includes all blockers found in that observation
+and prevents every write from starting.
+
+A resource that needs review does not stop the batch. Apply skips each
+resource whose status is `blocked`, `conflict`, `unbased`, or
+`adopt_required`, or whose undeclared content changed under
+`undeclared = "block"`, and deploys the rest. Each skipped resource appears
+as a `resource_skip` action with state `skipped` and a reason code (the
+status, or `undeclared_changed`). When any resource is skipped the outcome is
+`partial`, even if every other write succeeds, and the exit code is `2`. If
+every resource is skipped nothing is written. Skipped resources are excluded
+from the per-action freshness checks and from the final whole-batch
+verification; a resource that was not skipped at plan time but needs review at
+write time still stops the batch with `review_required`.
 
 Before staging or creating each action, Luwu revalidates the common batch
 authority by rereading and revalidating the manifest bytes, selected
@@ -341,7 +437,17 @@ schema_version, command, profile, the ordered included package list, the
 excluded package list, and resource projections. A mutation result contains
 schema_version, operation, command, outcome, ordered actions,
 verification_status, and an error_code when applicable. Each action identifies
-its kind, resource, relative path, state, and selected field labels.
+its kind (`target_write`, `link_create`, `baseline_write`, `input_write`,
+`source_write`, `resource_skip`, or a parent creation), resource, relative
+path, state, and selected field labels. A skipped action also carries its
+fixed `reason`. A copy or whole-file template resource whose plan action is
+`adopt` while the live bytes differ from the source reports
+`replaces_live_on_apply = true` in its plan projection, and the adopt preview
+marks its `baseline_write` action the same way. Apply may end as
+`committed_but_baseline_not_advanced` when the targets were written but a
+baseline could not be advanced. The targets are not rolled back; the old
+baseline is left in place, so the next plan classifies the resource against it, and an explicit
+accept or adopt can move it.
 CLI mutation commands return exit code 0 only for committed or no-change
 outcomes; other outcomes return 2. Results and errors never expose values,
 document bytes, diffs, content hashes, secret material, raw parser messages,
@@ -357,11 +463,11 @@ Luwu has six commands: `inspect`, `plan`, `apply`, `accept`, `adopt`, and `rever
 
 `inspect` reports the current state. `plan` reports the same observation together with the action an explicit apply could take. Neither writes the manifest, source, target, input, or baseline. Both return exit code `0` after successfully calculating a plan, including when a resource is reported as `blocked`.
 
-`apply` always calculates a plan first. Without `--yes` it is only a preview, writes nothing, and returns exit code `2`. With `--yes` it completes a full profile preflight, rechecks every dependency, and then writes. Any blocked, review, or unbased resource in the selected profile stops the whole batch before the first write (`review_required`); resolving that resource is a separate explicit step. `apply` uses no execution record.
+`apply` always calculates a plan first. Without `--yes` it is only a preview, writes nothing, and returns exit code `2`. With `--yes` it completes a full profile preflight, rechecks every dependency, and then writes. A blocked, review, conflict, unbased, or adopt-required resource is skipped and reported, the remaining resources are deployed, and the outcome is `partial` with exit code `2`; resolving a skipped resource is a separate explicit step. After the targets verify, `apply` advances the baselines of the resources it wrote, and the preview lists those writes. `apply` uses no execution record.
 
-`accept` requires `--resource`, one or more `--field` values, and `--from desired|live`. `reverse-sync` requires `--resource` and one or more `--field` values. `adopt` requires `--resource` naming a whole-file copy. Without `--yes`, a mutation command emits a metadata-only preview and returns exit code `2`. The preview is not a persisted plan token; `--yes` recalculates the current inputs and then performs the documented stale checks. A successful mutation returns exit code `0` and includes a fresh verification result. Results never contain accepted values, rendered content, diffs, or hashes.
+`accept` requires `--resource`, one or more `--field` values, and `--from desired|live`. `reverse-sync` requires `--resource` and either one or more `--field` values or `--undeclared`, never both. `adopt` requires `--resource` naming a copy or whole-file template. Without `--yes`, a mutation command emits a metadata-only preview and returns exit code `2`. The preview is not a persisted plan token; `--yes` recalculates the current inputs and then performs the documented stale checks. A successful mutation returns exit code `0` and includes a fresh verification result. Results never contain accepted values, rendered content, diffs, or hashes.
 
-Writes use a temporary file in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved unless a mode is declared. A target symlink is refused rather than followed or replaced. Luwu uses descriptor-relative no-follow operations, records identities, and takes a non-blocking advisory lock for cooperating Luwu writers on POSIX. It fails closed when those filesystem primitives are unavailable. An advisory lock does not control unrelated writers that ignore it.
+Writes use a temporary file in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved unless a mode is declared. A target symlink is refused rather than followed or replaced; a symlink resource only creates its own link where nothing exists, and leaves an existing link alone. Luwu uses descriptor-relative no-follow operations, records identities, and takes a non-blocking advisory lock for cooperating Luwu writers on POSIX. It fails closed when those filesystem primitives are unavailable. An advisory lock does not control unrelated writers that ignore it.
 
 Expected failures use exit code `2`. With `--json` they are emitted as:
 

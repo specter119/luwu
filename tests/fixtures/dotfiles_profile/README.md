@@ -1,8 +1,11 @@
 # Synthetic profile acceptance fixture
 
 This fixture exercises manifest v8 profiles, package dependencies, exclusions,
-layered public inputs, nested JSONC and TOML fields, whole-file copies, and
-directory expansion. All values and schemas are synthetic. In particular, the
+layered public inputs, nested JSONC and TOML fields, copies declared with
+`deploy = "copy"`, and directory expansion. Symlink resources, whole-file text
+templates, `undeclared = "preserve"`, and `reverse-sync --undeclared` are
+covered by tests that build their own temporary manifests, so this profile
+stays on the copy and structured-template path. All values and schemas are synthetic. In particular, the
 `mihomo` package is only an exclusion sentinel; these files do not claim
 compatibility with Mihomo, Codex, OpenCode, Droid, or another application.
 

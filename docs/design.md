@@ -45,7 +45,8 @@ token with `json.loads`, and the manifest loader parses its own TOML with
   `RootChangedError`, and each caller maps those to its own error code.
 - `luwu/sensitivity.py` holds the only predicate that decides whether a public
   name looks secret-bearing. The manifest, input layers, and document formats
-  all call it.
+  all call it. An exact-name `public_names` set flows from the resource or
+  input declaration into the predicate, so the default stays fail-closed.
 - `luwu/semantic.py` holds strict JSON parsing (`parse_strict_json`), the
   public scalar boundary (`is_public_scalar`), and value equality. Baselines,
   input layers, and ownership use them.
@@ -74,7 +75,11 @@ modules carry the mechanism:
 - `luwu/manifest.py` loads the version 8 declaration, validates roots and
   path relationships, resolves the explicitly selected profile, computes
   stable package dependency closure and exclusions, and expands declared
-  directory resources. It retains input-layer and expansion provenance so a
+  directory resources. It infers a resource's kind from its source (a `.j2`
+  suffix, a directory, or a plain file), applies `[defaults]`, and resolves the
+  `deploy` choice into the internal kinds `template`, `copy`, and `symlink`; a
+  whole-file template is a copy whose rendered bytes are the desired side. It
+  retains input-layer and expansion provenance so a
   later confirmation can reload and compare the same selection. Excluded
   resources and inputs used only by them are removed before payload metadata
   observation; declaration validation alone does not inspect their contents.
@@ -102,6 +107,12 @@ modules carry the mechanism:
   digest algorithm and accepted digest, with mode evidence separately. Durable
   binding identity uses resolved root paths; root device/inode identity belongs
   to execution freshness, not baseline identity.
+- `luwu/filesystem.py` also owns the symlink primitives `observe_link` and
+  `create_link`. A link is created with `os.symlink` relative to the held
+  parent descriptor, so `EEXIST` is the only create-if-absent check, and the
+  content is read back with `os.readlink` before the result is reported. Link
+  resources keep no baseline because the link target is fully determined by
+  the declaration.
 - `luwu/filesystem.py` provides no-follow regular-file observations,
   missing-parent inspection, one-directory-at-a-time parent creation, and
   staged file replacement; content and mode-only changes use that same staged
@@ -127,12 +138,21 @@ modules carry the mechanism:
   not match. The public authorization behavior is owned by the
   [version 8 contract](reference.md#manifest-and-profile-contract).
 - `luwu/engine.py` composes read-only plan, explicit baseline accept,
-  whole-file copy adopt, selected reverse sync, and profile-wide apply. It
+  copy and whole-file template adopt, selected reverse sync, and profile-wide apply. It
   uses a finite-batch flow: complete preflight, shared and current-action
   complete-byte freshness checks before staging and again in the publication
   callback, then a fresh whole-batch observation. Reverse sync rechecks all
   shared consumers; per-action results retain earlier commits if a later
-  resource or parent creation fails. This flow creates no simultaneous
+  resource or parent creation fails. Apply decides per resource: a resource
+  that needs review is reported as a skipped action and the rest are written,
+  so the outcome is `partial`. After a resource's target write verifies, apply
+  writes that resource's baseline through the same staged-write path, from the
+  freshly observed live values, and a failure there is its own outcome
+  because the target write is already committed. `reverse_undeclared` is the
+  one path that writes the source root: it patches the literal template,
+  renders the result in memory, and writes only when the render reproduces the
+  live undeclared values and leaves the declared fields unchanged. Structured
+  comparison of undeclared leaves is in `luwu/formats.py`. This flow creates no simultaneous
   snapshot, generic transaction, replay layer, or durable execution journal. The
   [version 8 finite-batch contract](reference.md#finite-batch-freshness-and-verification)
   owns the exact checks and outcomes. At mutation entry, the caller plan is
@@ -195,6 +215,13 @@ owner decision and evidence, not a convenience argument.
   dependency checks already bound the write.
 - Parallel writers as a performance optimization. Concurrency must not obscure
   ordering and partial-success boundaries.
+- Hardlink and reflink deployment. Luwu refuses a target whose link count is
+  not one, and a hardlink would let an application write silently change the
+  source file; configuration files are small enough that a symlink or an
+  atomic copy covers the need.
+- Writing undeclared changes back through templates that use Jinja blocks or
+  rewritten values. Only a literal subtree whose render is proven equal is
+  written; everything else is refused instead of guessed.
 - Keeping retired manifest versions alive beside the current one. Three
   engines with separate copies of the filesystem, baseline, and format
   primitives let the copies drift; the older versions were retired instead.
