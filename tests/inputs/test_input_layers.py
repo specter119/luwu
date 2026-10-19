@@ -7,7 +7,7 @@ import traceback
 import unittest
 from pathlib import Path
 
-from luwu.inputs import InputError, _absolute_input_path, load_inputs
+from luwu.inputs import InputError, absolute_input_path, load_inputs
 from luwu.manifest import Manifest, Resource, load_manifest
 
 
@@ -181,7 +181,21 @@ input = "model"
             root = Path(temporary_directory) / "inputs"
             outside = Path(temporary_directory) / "SYNTHETIC_PATH_MARKER.json"
             with self.assertRaises(InputError) as raised:
-                _absolute_input_path(root, outside)
+                absolute_input_path(root, outside)
 
         self.assertEqual(raised.exception.code, "unsafe_path")
         self._assert_error_chain_is_safe(raised.exception, "SYNTHETIC_PATH_MARKER")
+
+    def test_non_finite_toml_numbers_never_reach_resolved_inputs(self) -> None:
+        for literal in (b"value = inf\n", b"value = nan\n"):
+            with self.subTest(literal=literal):
+                manifest, resource = self._load_case(
+                    input_format="toml",
+                    global_data=literal,
+                    local_data=b'value = "local"\n',
+                )
+
+                with self.assertRaises(InputError) as raised:
+                    load_inputs(manifest, resource)
+
+                self.assertEqual(raised.exception.code, "input_invalid")

@@ -10,7 +10,8 @@ import stat
 import tomllib
 import unicodedata
 import weakref
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path, PurePosixPath
@@ -20,10 +21,16 @@ from urllib.parse import quote
 from .errors import ManifestError
 from .filesystem import (
     DirectoryBoundary,
+    FileChangedError,
+    RootChangedError,
+    UnsafeEntryError,
     capture_directory_boundary,
-    directory_flags,
-    open_directory,
-    read_flags,
+    list_directory,
+    open_boundary,
+    open_child_directory,
+    open_child_file,
+    read_stable_file,
+    verify_directory_binding,
 )
 from .sensitivity import is_sensitive_name
 
@@ -503,46 +510,22 @@ def _absolute_path(path: Path) -> Path:
 def _read_manifest_snapshot(path: Path) -> tuple[bytes, tuple[int, int]]:
     """Read a manifest and retain the no-follow identity of its opened file."""
 
-    flags = read_flags()
-    descriptor = -1
     parent_descriptor = -1
     try:
         parent = capture_directory_boundary(path.parent)
         parent_descriptor = _open_boundary(parent)
-        descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        try:
+            raw, info = read_stable_file(parent_descriptor, path.name)
+        except UnsafeEntryError:
             raise ManifestError(
                 "manifest must be a regular single-linked file", code="manifest_path"
-            )
-        chunks: list[bytes] = []
-        while True:
-            part = os.read(descriptor, 1024 * 1024)
-            if not part:
-                break
-            chunks.append(part)
-        after = os.fstat(descriptor)
-        current_path = os.stat(
-            path.name, dir_fd=parent_descriptor, follow_symlinks=False
-        )
-        if (
-            info.st_dev,
-            info.st_ino,
-            info.st_size,
-            info.st_mtime_ns,
-            info.st_ctime_ns,
-        ) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        ) or (current_path.st_dev, current_path.st_ino) != (info.st_dev, info.st_ino):
+            ) from None
+        except FileChangedError:
             raise ManifestError(
                 "manifest changed while being read", code="manifest_stale"
-            )
+            ) from None
         _verify_directory_binding(parent, Path(), parent_descriptor)
-        return b"".join(chunks), (info.st_dev, info.st_ino)
+        return raw, (info.st_dev, info.st_ino)
     except ManifestError:
         raise
     except (OSError, ValueError, TypeError):
@@ -550,8 +533,6 @@ def _read_manifest_snapshot(path: Path) -> tuple[bytes, tuple[int, int]]:
             "manifest cannot be read safely", code="manifest_unreadable"
         ) from None
     finally:
-        if descriptor >= 0:
-            _close_descriptor(descriptor)
         if parent_descriptor >= 0:
             _close_descriptor(parent_descriptor)
 
@@ -1190,55 +1171,32 @@ def _inspect_source_file(
         descriptor = _open_boundary(root)
         for index, component in enumerate(relative.parts[:-1]):
             prefix = Path(*relative.parts[: index + 1])
-            try:
-                info = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
-            except FileNotFoundError:
-                raise ManifestError(
-                    "declared path parent does not exist", code="path_missing"
-                ) from None
-            if not stat.S_ISDIR(info.st_mode):
-                raise ManifestError(
+            with _walk_errors(
+                missing=("declared path parent does not exist", "path_missing"),
+                unsafe=(
                     "declared path parent is not a safe directory",
-                    code="path_boundary",
-                )
-            child = os.open(component, directory_flags(), dir_fd=descriptor)
-            opened = os.fstat(child)
-            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
-                _close_descriptor(child)
-                raise ManifestError(
-                    "declared path changed during validation", code="path_stale"
-                )
+                    "path_boundary",
+                ),
+                stale=("declared path changed during validation", "path_stale"),
+            ):
+                child, opened = open_child_directory(descriptor, component)
             snapshots.append(_stat_snapshot(root, prefix, opened))
             _close_descriptor(descriptor)
             descriptor = child
-        leaf = relative.parts[-1]
-        try:
-            info = os.stat(leaf, dir_fd=descriptor, follow_symlinks=False)
-        except FileNotFoundError:
-            raise ManifestError(
-                "declared file does not exist", code="path_missing"
-            ) from None
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ManifestError(
+        with _walk_errors(
+            missing=("declared file does not exist", "path_missing"),
+            unsafe=(
                 "declared file must be regular and single-linked",
-                code="path_boundary",
-            )
-        opened = os.open(leaf, read_flags(), dir_fd=descriptor)
+                "path_boundary",
+            ),
+            stale=("declared file changed during validation", "path_stale"),
+        ):
+            file_descriptor, current = open_child_file(descriptor, relative.parts[-1])
         try:
-            current = os.fstat(opened)
-            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-                raise ManifestError(
-                    "declared file changed during validation", code="path_stale"
-                )
-            latest = os.stat(leaf, dir_fd=descriptor, follow_symlinks=False)
-            if (latest.st_dev, latest.st_ino) != (info.st_dev, info.st_ino):
-                raise ManifestError(
-                    "declared file changed during validation", code="path_stale"
-                )
             snapshots.append(_stat_snapshot(root, relative, current))
             _verify_directory_binding(root, relative.parent, descriptor)
         finally:
-            _close_descriptor(opened)
+            _close_descriptor(file_descriptor)
         return tuple(snapshots)
     except ManifestError:
         raise
@@ -1266,20 +1224,14 @@ def _expand_directory(
     try:
         descriptor = _open_boundary(root)
         for index, component in enumerate(relative.parts):
-            info = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
-            if not stat.S_ISDIR(info.st_mode):
-                raise ManifestError(
+            with _walk_errors(
+                unsafe=(
                     "directory source must contain only safe directories and files",
-                    code="directory_boundary",
-                )
-            child = os.open(component, directory_flags(), dir_fd=descriptor)
-            opened = os.fstat(child)
-            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
-                _close_descriptor(child)
-                raise ManifestError(
-                    "directory source changed during validation",
-                    code="directory_stale",
-                )
+                    "directory_boundary",
+                ),
+                stale=("directory source changed during validation", "directory_stale"),
+            ):
+                child, opened = open_child_directory(descriptor, component)
             prefix = Path(*relative.parts[: index + 1])
             snapshots.append(_stat_snapshot(root, prefix, opened))
             _close_descriptor(descriptor)
@@ -1329,7 +1281,7 @@ def _scan_directory(
 ) -> None:
     before = os.fstat(descriptor)
     try:
-        names = sorted(os.listdir(descriptor))
+        names = list_directory(descriptor)
     except OSError:
         raise ManifestError(
             "directory entries cannot be read safely", code="directory_boundary"
@@ -1363,13 +1315,15 @@ def _scan_directory(
             ) from None
         source_entry = source_relative / relative_entry
         if stat.S_ISDIR(info.st_mode):
-            child = os.open(name, directory_flags(), dir_fd=descriptor)
+            with _walk_errors(
+                unsafe=(
+                    "directory source must contain only safe files",
+                    "directory_boundary",
+                ),
+                stale=("directory changed during expansion", "directory_stale"),
+            ):
+                child, current = open_child_directory(descriptor, name, observed=info)
             try:
-                current = os.fstat(child)
-                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-                    raise ManifestError(
-                        "directory changed during expansion", code="directory_stale"
-                    )
                 snapshots.append(_stat_snapshot(root, source_entry, current))
                 if recursive:
                     _scan_directory(
@@ -1387,23 +1341,15 @@ def _scan_directory(
             finally:
                 _close_descriptor(child)
             continue
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ManifestError(
+        with _walk_errors(
+            unsafe=(
                 "directory source must contain only safe files",
-                code="directory_boundary",
-            )
-        file_descriptor = os.open(name, read_flags(), dir_fd=descriptor)
+                "directory_boundary",
+            ),
+            stale=("directory changed during expansion", "directory_stale"),
+        ):
+            file_descriptor, current = open_child_file(descriptor, name, observed=info)
         try:
-            current = os.fstat(file_descriptor)
-            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-                raise ManifestError(
-                    "directory changed during expansion", code="directory_stale"
-                )
-            latest = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-            if (latest.st_dev, latest.st_ino) != (info.st_dev, info.st_ino):
-                raise ManifestError(
-                    "directory changed during expansion", code="directory_stale"
-                )
             snapshot = _stat_snapshot(root, source_entry, current)
             snapshots.append(snapshot)
             leaves.append(relative_entry)
@@ -1631,45 +1577,51 @@ def _close_descriptor(descriptor: int) -> None:
 
 
 def _open_boundary(root: DirectoryBoundary) -> int:
-    descriptor = open_directory(root.path)
-    try:
-        info = os.fstat(descriptor)
-        if (info.st_dev, info.st_ino) != (root.device, root.inode):
-            raise ManifestError("declared root identity changed", code="root_stale")
-        return descriptor
-    except BaseException:
-        _close_descriptor(descriptor)
-        raise
+    with _walk_errors():
+        return open_boundary(root)
 
 
 def _verify_directory_binding(
     root: DirectoryBoundary, relative: Path, descriptor: int
 ) -> None:
-    current = -1
     try:
-        current = _open_boundary(root)
-        for component in relative.parts:
-            child = os.open(component, directory_flags(), dir_fd=current)
-            _close_descriptor(current)
-            current = child
-        expected_info = os.fstat(descriptor)
-        current_info = os.fstat(current)
-        if (expected_info.st_dev, expected_info.st_ino) != (
-            current_info.st_dev,
-            current_info.st_ino,
-        ):
-            raise ManifestError(
-                "declared directory identity changed", code="path_stale"
-            )
+        with _walk_errors(stale=("declared directory identity changed", "path_stale")):
+            verify_directory_binding(root, relative, descriptor)
     except ManifestError:
         raise
     except (OSError, ValueError, TypeError):
         raise ManifestError(
             "declared directory identity changed", code="path_stale"
         ) from None
-    finally:
-        if current >= 0:
-            _close_descriptor(current)
+
+
+@contextmanager
+def _walk_errors(
+    *,
+    missing: tuple[str, str] | None = None,
+    unsafe: tuple[str, str] | None = None,
+    stale: tuple[str, str] | None = None,
+) -> Generator[None]:
+    """Map typed filesystem failures to this call site's manifest error."""
+
+    try:
+        yield
+    except RootChangedError:
+        raise ManifestError(
+            "declared root identity changed", code="root_stale"
+        ) from None
+    except FileNotFoundError:
+        if missing is None:
+            raise
+        raise ManifestError(missing[0], code=missing[1]) from None
+    except UnsafeEntryError:
+        if unsafe is None:
+            raise
+        raise ManifestError(unsafe[0], code=unsafe[1]) from None
+    except FileChangedError:
+        if stale is None:
+            raise
+        raise ManifestError(stale[0], code=stale[1]) from None
 
 
 def _stat_snapshot(

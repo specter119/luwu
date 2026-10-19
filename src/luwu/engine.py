@@ -26,9 +26,9 @@ from .filesystem import (
     FilesystemError,
     capture_directory_boundary,
     create_parent,
-    directory_flags,
     missing_parents,
     observe_file,
+    open_child_directory,
     open_parent_directory,
     write_file,
 )
@@ -46,9 +46,11 @@ from .formats import (
 )
 from .inputs import (
     InputContext,
+    InputError,
     InputProvenance,
     ResolvedInput,
     _input_category,
+    absolute_input_path,
     load_inputs,
 )
 from .manifest import (
@@ -2114,12 +2116,10 @@ def _reverse_consumer_resource_names(
 
 
 def _absolute_input_path(root: Path, path: Path) -> Path:
-    candidate = path if path.is_absolute() else root / path
     try:
-        candidate.relative_to(root)
-    except ValueError:
+        return absolute_input_path(root, path)
+    except InputError:
         raise EngineError("reverse_destination") from None
-    return candidate
 
 
 def _with_input_location_updates(
@@ -2580,13 +2580,8 @@ def _observe_directory_mode(root: Path, path: Path) -> tuple[tuple[int, int], in
     child_descriptor: int | None = None
     try:
         parent_descriptor, name = open_parent_directory(root, path)
-        child_descriptor = os.open(name, directory_flags(), dir_fd=parent_descriptor)
-        opened = os.fstat(child_descriptor)
-        entry = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
-        identity = (opened.st_dev, opened.st_ino)
-        if identity != (entry.st_dev, entry.st_ino):
-            raise ValueError
-        return identity, stat.S_IMODE(opened.st_mode)
+        child_descriptor, opened = open_child_directory(parent_descriptor, name)
+        return (opened.st_dev, opened.st_ino), stat.S_IMODE(opened.st_mode)
     except (OSError, ValueError, NotImplementedError):
         raise EngineError("stale_plan") from None
     finally:

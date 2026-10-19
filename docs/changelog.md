@@ -100,6 +100,22 @@ For example: `git show bb80335:docs/milestones/m3.md`.
   and replaced by an explicit accept or adopt, instead of blocking the
   resource until the file is deleted by hand.
 
+## Consolidation: one directory walk
+
+- The manifest loader and the engine no longer carry their own no-follow
+  directory walks. They use shared descriptor primitives in
+  `luwu/filesystem.py` and map the typed failures to their existing error
+  codes. The observation read of a regular file shares the same primitive.
+- Strict JSON parsing and the public scalar boundary each have one
+  implementation in `luwu/semantic.py`; baselines, input layers, and ownership
+  call it.
+- A manifest that is a symbolic link is now reported as `manifest_path`
+  instead of `manifest_unreadable`, because the entry type is checked before
+  it is opened.
+- The ownership guard now forbids `os.open`, `os.read`, and `os.listdir`
+  outside `luwu/filesystem.py`. Fault-injection tests cover each primitive and
+  each caller's error code.
+
 ## Capability matrix by delivery
 
 Rows are capabilities and columns are deliveries. A cell says where the

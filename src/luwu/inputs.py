@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
 from typing import TypedDict
@@ -13,6 +12,7 @@ from .errors import LuwuError
 from .filesystem import FileObservation, observe_file
 from .formats import MISSING, get_leaf, parse_document
 from .manifest import Manifest, Resource
+from .semantic import is_public_scalar
 
 
 class InputError(LuwuError):
@@ -102,7 +102,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
             )
         contributors: list[InputProvenance] = []
         for layer_index, layer in enumerate(binding.layers):
-            path = _absolute_input_path(input_root, layer.file)
+            path = absolute_input_path(input_root, layer.file)
             observation = files.get(path)
             if observation is None:
                 observation = observe_file(input_root, path)
@@ -128,7 +128,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
                 raise InputError(
                     "required input value is missing", code="input_missing"
                 )
-            if not _is_public_scalar(value):
+            if not is_public_scalar(value):
                 raise InputError(
                     "input value is outside the public scalar boundary",
                     code="input_invalid",
@@ -146,7 +146,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
             )
         reverse_to = binding.reverse_to
         if reverse_to is not None:
-            reverse_path = _absolute_input_path(input_root, reverse_to.file)
+            reverse_path = absolute_input_path(input_root, reverse_to.file)
             if reverse_path not in files:
                 files[reverse_path] = observe_file(input_root, reverse_path)
         if not contributors:
@@ -164,7 +164,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
     )
 
 
-def _absolute_input_path(root: Path, path: Path) -> Path:
+def absolute_input_path(root: Path, path: Path) -> Path:
     candidate = path if path.is_absolute() else root / path
     outside_root = False
     try:
@@ -181,9 +181,3 @@ def _input_category(root_relative_file: Path) -> str | None:
 
     first_segment = root_relative_file.parts[0] if root_relative_file.parts else None
     return first_segment if first_segment in {"global", "local"} else None
-
-
-def _is_public_scalar(value: object) -> bool:
-    return (
-        value is None or type(value) in {str, bool, int} or isinstance(value, Decimal)
-    )

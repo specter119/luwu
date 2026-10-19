@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import dataclasses
+import errno
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from luwu import manifest as manifest_module
 from luwu.errors import ManifestError
+from luwu.filesystem import FileChangedError, RootChangedError
 from luwu.manifest import (
     _manifest_signature,
     _parse_manifest,
@@ -815,3 +819,170 @@ parent_mode = "0700"
             path.symlink_to(outside)
 
         verify_manifest(manifest)
+
+    def _nested_source_manifest(self) -> str:
+        return self._manifest().replace(
+            'source = "settings.json.j2"', 'source = "sub/settings.json.j2"'
+        )
+
+    def _assert_load_code(self, body: str, code: str) -> None:
+        with self.assertRaises(ManifestError) as raised:
+            self._load(body)
+        self.assertEqual(raised.exception.code, code)
+
+    def test_source_file_walk_reports_missing_unsafe_and_stale_by_code(self) -> None:
+        body = self._nested_source_manifest()
+        self._assert_load_code(body, "path_missing")
+
+        sub = self.source_root / "sub"
+        sub.mkdir()
+        self._assert_load_code(body, "path_missing")
+
+        (sub / "settings.json.j2").write_text("{}\n", encoding="utf-8")
+        self._load(body)
+
+        (sub / "twin").hardlink_to(sub / "settings.json.j2")
+        self._assert_load_code(body, "path_boundary")
+        (sub / "twin").unlink()
+
+        (sub / "settings.json.j2").rename(self.root / "moved.j2")
+        (self.root / "real-sub").mkdir()
+        (self.root / "moved.j2").rename(self.root / "real-sub/settings.json.j2")
+        sub.rmdir()
+        sub.symlink_to(self.root / "real-sub")
+        self._assert_load_code(body, "path_boundary")
+
+    def test_source_file_walk_maps_a_race_to_a_stale_code(self) -> None:
+        (self.source_root / "sub").mkdir()
+        (self.source_root / "sub/settings.json.j2").write_text("{}\n")
+        body = self._nested_source_manifest()
+        for target, code in (
+            ("open_child_directory", "path_stale"),
+            ("open_child_file", "path_stale"),
+        ):
+            with (
+                self.subTest(target=target),
+                patch(f"luwu.manifest.{target}", side_effect=FileChangedError("race")),
+            ):
+                self._assert_load_code(body, code)
+
+    def test_unreadable_entries_are_unsafe_not_stale(self) -> None:
+        (self.source_root / "sub").mkdir()
+        (self.source_root / "sub/settings.json.j2").write_text("{}\n")
+        (self.source_root / "assets").mkdir()
+        (self.source_root / "assets/a.conf").write_text("a")
+        real_open = os.open
+
+        def deny(name: str):
+            def open_denied(path: str, flags: int, *, dir_fd: int | None = None) -> int:
+                if path == name and dir_fd is not None:
+                    raise PermissionError(errno.EACCES, "denied")
+                return real_open(path, flags, dir_fd=dir_fd)
+
+            return open_denied
+
+        cases = (
+            (self._nested_source_manifest(), "settings.json.j2", "path_boundary"),
+            (self._directory_manifest(), "a.conf", "directory_boundary"),
+        )
+        for body, name, code in cases:
+            with (
+                self.subTest(code=code),
+                patch("luwu.filesystem.os.open", deny(name)),
+            ):
+                self._assert_load_code(body, code)
+
+        self.manifest_path.write_text(self._manifest(), encoding="utf-8")
+        with (
+            patch("luwu.filesystem.os.open", deny("luwu.toml")),
+            self.assertRaises(ManifestError) as raised,
+        ):
+            load_manifest(self.manifest_path, profile="dev")
+        self.assertEqual(raised.exception.code, "manifest_unreadable")
+
+    def test_root_replacement_during_a_walk_is_a_root_stale_error(self) -> None:
+        with patch("luwu.manifest.open_boundary", side_effect=RootChangedError("x")):
+            self._assert_load_code(self._manifest(), "root_stale")
+
+    def test_directory_walk_reports_missing_unsafe_and_stale_by_code(self) -> None:
+        body = self._directory_manifest()
+        self._assert_load_code(body, "path_missing")
+
+        (self.root / "elsewhere").mkdir()
+        (self.source_root / "assets").symlink_to(self.root / "elsewhere")
+        self._assert_load_code(body, "directory_boundary")
+        (self.source_root / "assets").unlink()
+
+        assets = self.source_root / "assets"
+        (assets / "nested").mkdir(parents=True)
+        (assets / "nested/a.conf").write_text("a", encoding="utf-8")
+        (assets / "twin.conf").write_text("t", encoding="utf-8")
+        (assets / "nested/twin.conf").hardlink_to(assets / "twin.conf")
+        self._assert_load_code(body, "directory_boundary")
+        (assets / "nested/twin.conf").unlink()
+
+        for target in ("open_child_directory", "open_child_file"):
+            with (
+                self.subTest(target=target),
+                patch(f"luwu.manifest.{target}", side_effect=FileChangedError("race")),
+            ):
+                self._assert_load_code(body, "directory_stale")
+
+    def test_manifest_file_must_be_a_single_linked_regular_file(self) -> None:
+        real = self.root / "real.toml"
+        real.write_text(self._manifest(), encoding="utf-8")
+        for make in (
+            lambda: self.manifest_path.symlink_to(real),
+            lambda: self.manifest_path.hardlink_to(real),
+        ):
+            self.manifest_path.unlink(missing_ok=True)
+            make()
+            with self.assertRaises(ManifestError) as raised:
+                load_manifest(self.manifest_path, profile="dev")
+            self.assertEqual(raised.exception.code, "manifest_path")
+
+        self.manifest_path.unlink()
+        with self.assertRaises(ManifestError) as raised:
+            load_manifest(self.manifest_path, profile="dev")
+        self.assertEqual(raised.exception.code, "manifest_unreadable")
+
+        self.manifest_path.write_text(self._manifest(), encoding="utf-8")
+        with (
+            patch(
+                "luwu.manifest.read_stable_file", side_effect=FileChangedError("race")
+            ),
+            self.assertRaises(ManifestError) as raised,
+        ):
+            load_manifest(self.manifest_path, profile="dev")
+        self.assertEqual(raised.exception.code, "manifest_stale")
+
+    def test_source_file_parent_swapped_after_open_is_stale(self) -> None:
+        sub = self.source_root / "sub"
+        sub.mkdir()
+        (sub / "settings.json.j2").write_text("{}\n", encoding="utf-8")
+        real = manifest_module.open_child_file
+
+        def open_then_swap_parent(parent: int, name: str, **kwargs):
+            opened = real(parent, name, **kwargs)
+            if name == "settings.json.j2":
+                sub.rename(self.root / "kept-sub")
+                sub.mkdir()
+                (sub / "settings.json.j2").write_text("{}\n", encoding="utf-8")
+            return opened
+
+        with patch("luwu.manifest.open_child_file", open_then_swap_parent):
+            self._assert_load_code(self._nested_source_manifest(), "path_stale")
+
+    def test_directory_changed_while_it_is_listed_is_stale(self) -> None:
+        assets = self.source_root / "assets"
+        assets.mkdir()
+        (assets / "a.conf").write_text("a", encoding="utf-8")
+        real = manifest_module.open_child_file
+
+        def open_then_add_entry(parent: int, name: str, **kwargs):
+            opened = real(parent, name, **kwargs)
+            (assets / "late.conf").write_text("late", encoding="utf-8")
+            return opened
+
+        with patch("luwu.manifest.open_child_file", open_then_add_entry):
+            self._assert_load_code(self._directory_manifest(), "directory_stale")

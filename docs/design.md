@@ -30,19 +30,25 @@ a best-effort success.
 ## Shared primitives
 
 Each primitive has one implementation, and every caller imports it. Two
-exceptions are recorded debt: `luwu/manifest.py` and `luwu/engine.py` still
-carry their own descriptor-relative directory walks, and the baseline and
-format modules each call `json.loads` for their own parse. The ceilings in
-`tests/tooling/test_primitive_ownership.py` stop these copies from growing.
+single-call exceptions are recorded in the ceilings of
+`tests/tooling/test_primitive_ownership.py`: the JSONC reader decodes one string
+token with `json.loads`, and the manifest loader parses its own TOML with
+`tomllib.loads`. The ceilings stop these from growing.
 
-- `luwu/filesystem.py` is the only place that opens, stages, replaces, locks,
-  or creates directories. Inputs, baselines, and targets all write through
-  `write_file` and `create_parent`.
+- `luwu/filesystem.py` is the only place that opens, reads, lists, stages,
+  replaces, locks, or creates files and directories. Inputs, baselines, and
+  targets all write through `write_file` and `create_parent`. Callers that
+  walk a tree (the manifest loader and the engine) use the descriptor
+  primitives `open_boundary`, `open_child_directory`, `open_child_file`,
+  `read_stable_file`, `list_directory`, and `verify_directory_binding`. They
+  raise `FileNotFoundError`, `UnsafeEntryError`, `FileChangedError`, or
+  `RootChangedError`, and each caller maps those to its own error code.
 - `luwu/sensitivity.py` holds the only predicate that decides whether a public
   name looks secret-bearing. The manifest, input layers, and document formats
   all call it.
-- `luwu/semantic.py` holds strict JSON parsing and value equality for
-  baselines and ownership.
+- `luwu/semantic.py` holds strict JSON parsing (`parse_strict_json`), the
+  public scalar boundary (`is_public_scalar`), and value equality. Baselines,
+  input layers, and ownership use them.
 
 A second copy of one of these is a defect, not a local convenience.
 `tests/tooling/test_primitive_ownership.py` enforces the owner of each

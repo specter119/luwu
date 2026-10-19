@@ -9,6 +9,7 @@ the inode observed after ``mkdir`` came exclusively from that syscall.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import stat
@@ -24,6 +25,14 @@ class FileChangedError(OSError):
     """A file changed between its descriptor-free and descriptor checks."""
 
 
+class RootChangedError(FileChangedError):
+    """A captured directory boundary no longer names the same directory."""
+
+
+class UnsafeEntryError(OSError):
+    """A directory entry has the wrong type or link count for its role."""
+
+
 @dataclass(frozen=True, slots=True)
 class DirectoryBoundary:
     """A directory path captured without following any path component."""
@@ -35,13 +44,7 @@ class DirectoryBoundary:
     def verify(self) -> None:
         """Reject a replaced root or any symlink/rebinding in its path."""
 
-        descriptor = open_directory(self.path)
-        try:
-            current = os.fstat(descriptor)
-            if current.st_dev != self.device or current.st_ino != self.inode:
-                raise FileChangedError(str(self.path))
-        finally:
-            os.close(descriptor)
+        os.close(open_boundary(self))
 
 
 def capture_directory_boundary(path: Path) -> DirectoryBoundary:
@@ -61,17 +64,10 @@ def open_parent_directory(root: Path, path: Path) -> tuple[int, str]:
     relative = path.relative_to(root)
     if not relative.parts:
         raise ValueError("path must name an entry below the root")
-    descriptor = open_directory(root)
-    try:
-        for component in relative.parts[:-1]:
-            child = os.open(component, directory_flags(), dir_fd=descriptor)
-            previous = descriptor
-            descriptor = child
-            os.close(previous)
-    except BaseException:
-        os.close(descriptor)
-        raise
-    return descriptor, relative.parts[-1]
+    return (
+        _descend(open_directory(root), relative.parts[:-1]),
+        relative.parts[-1],
+    )
 
 
 def read_descriptor(descriptor: int) -> bytes:
@@ -135,9 +131,14 @@ def open_directory(path: Path) -> int:
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError("directory path must be absolute and contain no '..'")
 
-    descriptor = os.open(path.anchor, directory_flags())
+    return _descend(os.open(path.anchor, directory_flags()), path.parts[1:])
+
+
+def _descend(descriptor: int, parts: tuple[str, ...]) -> int:
+    """Open each component below a descriptor, consuming the descriptor."""
+
     try:
-        for component in path.parts[1:]:
+        for component in parts:
             child = os.open(component, directory_flags(), dir_fd=descriptor)
             previous = descriptor
             descriptor = child
@@ -146,6 +147,125 @@ def open_directory(path: Path) -> int:
     except BaseException:
         os.close(descriptor)
         raise
+
+
+def open_boundary(boundary: DirectoryBoundary) -> int:
+    """Open a captured directory and require its recorded identity."""
+
+    descriptor = open_directory(boundary.path)
+    try:
+        info = os.fstat(descriptor)
+        if (info.st_dev, info.st_ino) != (boundary.device, boundary.inode):
+            raise RootChangedError(str(boundary.path))
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def verify_directory_binding(
+    boundary: DirectoryBoundary, relative: Path, descriptor: int
+) -> None:
+    """Require that ``descriptor`` is still the directory at boundary/relative."""
+
+    current = _descend(open_boundary(boundary), relative.parts)
+    try:
+        expected = os.fstat(descriptor)
+        actual = os.fstat(current)
+    finally:
+        os.close(current)
+    if _identity(expected) != _identity(actual):
+        raise FileChangedError(str(relative))
+
+
+def list_directory(descriptor: int) -> list[str]:
+    """Return the sorted entry names of an open directory."""
+
+    return sorted(os.listdir(descriptor))
+
+
+def open_child_directory(
+    parent: int, name: str, *, observed: os.stat_result | None = None
+) -> tuple[int, os.stat_result]:
+    """Open a child directory without following links and bind its identity.
+
+    ``observed`` is an earlier no-follow stat of the entry; without it the
+    entry is statted here. Raises ``FileNotFoundError`` for an absent entry,
+    ``UnsafeEntryError`` for a non-directory, and ``FileChangedError`` when the
+    opened directory is not the one observed.
+    """
+
+    info = observed or os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if not stat.S_ISDIR(info.st_mode):
+        raise UnsafeEntryError(name)
+    child = os.open(name, directory_flags(), dir_fd=parent)
+    try:
+        opened = os.fstat(child)
+        if _identity(opened) != _identity(info):
+            raise FileChangedError(name)
+    except BaseException:
+        os.close(child)
+        raise
+    return child, opened
+
+
+def open_child_file(
+    parent: int, name: str, *, observed: os.stat_result | None = None
+) -> tuple[int, os.stat_result]:
+    """Open a private regular child file without following links.
+
+    Raises ``FileNotFoundError`` for an absent entry, ``UnsafeEntryError`` unless
+    the entry is a single-linked regular file, and ``FileChangedError`` when the
+    opened file is not the entry that was observed.
+    """
+
+    info = observed or os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise UnsafeEntryError(name)
+    try:
+        descriptor = os.open(name, read_flags(), dir_fd=parent)
+    except OSError as error:
+        if error.errno in _ENTRY_RACE_ERRNOS:
+            raise FileChangedError(name) from None
+        raise
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or _identity(opened) != _identity(info)
+        ):
+            raise FileChangedError(name)
+        latest = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if _identity(latest) != _identity(info):
+            raise FileChangedError(name)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor, opened
+
+
+def read_stable_file(parent: int, name: str) -> tuple[bytes, os.stat_result]:
+    """Read a private regular file and prove it did not change while read."""
+
+    descriptor, opened = open_child_file(parent, name)
+    try:
+        data = read_descriptor(descriptor)
+        after = os.fstat(descriptor)
+        latest = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or after.st_nlink != 1
+            or _identity(after) != _identity(opened)
+            or _identity(latest) != _identity(after)
+            or not stat.S_ISREG(latest.st_mode)
+            or latest.st_nlink != 1
+            or _file_signature(after) != _file_signature(opened)
+        ):
+            raise FileChangedError(name)
+        return data, after
+    finally:
+        os.close(descriptor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +300,9 @@ class FilesystemError(LuwuError):
         self.cleanup_state = cleanup_state
 
 
+# An open that fails this way means the entry was swapped or removed after the
+# no-follow stat. Other errors (permissions, descriptor limits) are not races.
+_ENTRY_RACE_ERRNOS = frozenset({errno.ELOOP, errno.ENOENT, errno.ENOTDIR, errno.EMLINK})
 _ABSENT = FileObservation(None, None, None, None)
 _NOT_REPLACED = "not_replaced"
 _UNCERTAIN = "uncertain"
@@ -740,47 +863,23 @@ def _same_file(left: FileObservation, right: FileObservation) -> bool:
 
 def _observe_entry(parent: int, name: str) -> FileObservation:
     try:
-        before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        data, info = read_stable_file(parent, name)
     except FileNotFoundError:
         return _ABSENT
-    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-        raise _error("filesystem entry is not a private regular file", "unsafe_file")
-
-    try:
-        descriptor = os.open(name, read_flags(), dir_fd=parent)
-    except (OSError, NotImplementedError):
+    except UnsafeEntryError:
+        raise _error(
+            "filesystem entry is not a private regular file", "unsafe_file"
+        ) from None
+    except (FileChangedError, PermissionError):
         raise _error(
             "filesystem entry changed during observation", "unsafe_file"
         ) from None
-    try:
-        opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or _identity(opened) != _identity(before)
-        ):
-            raise _error("filesystem entry changed during observation", "unsafe_file")
-        data = read_descriptor(descriptor)
-        after = os.fstat(descriptor)
-        latest = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(after.st_mode)
-            or after.st_nlink != 1
-            or _identity(after) != _identity(opened)
-            or _identity(latest) != _identity(after)
-            or not stat.S_ISREG(latest.st_mode)
-            or latest.st_nlink != 1
-            or _file_signature(after) != _file_signature(opened)
-        ):
-            raise _error("filesystem entry changed during observation", "unsafe_file")
-        return FileObservation(
-            data=data,
-            identity=_identity(after),
-            digest=hashlib.sha256(data).hexdigest(),
-            mode=stat.S_IMODE(after.st_mode),
-        )
-    finally:
-        os.close(descriptor)
+    return FileObservation(
+        data=data,
+        identity=_identity(info),
+        digest=hashlib.sha256(data).hexdigest(),
+        mode=stat.S_IMODE(info.st_mode),
+    )
 
 
 def _verify_staged_entry(
