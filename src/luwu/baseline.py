@@ -98,7 +98,7 @@ def load_baseline(
     """
 
     root = manifest.roots.inputs.path
-    path = _absolute(root, resource.baseline)
+    path = _absolute(root, resource.baseline_path())
     observation = observe_file(root, path)
     if observation.data is None:
         return observation, None
@@ -192,7 +192,7 @@ def write_baseline(
     """Atomically replace a baseline under the declared input root."""
 
     root = manifest.roots.inputs.path
-    path = _absolute(root, resource.baseline)
+    path = _absolute(root, resource.baseline_path())
     return write_file(
         root, path, data, expected=expected, mode=0o600, check_inputs=check_inputs
     )
@@ -227,7 +227,9 @@ def baseline_identity(manifest: Manifest, resource: Resource) -> dict[str, objec
         "kind": resource.kind,
         "source": resource.source_name,
         "target": resource.target_name,
-        "baseline": _relative_name(manifest.roots.inputs.path, resource.baseline),
+        "baseline": _relative_name(
+            manifest.roots.inputs.path, resource.baseline_path()
+        ),
         "format": resource.format,
         "profile": manifest.profile,
         "roots": root_identity,

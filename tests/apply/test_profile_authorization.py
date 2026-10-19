@@ -120,12 +120,10 @@ dependencies = []
 resources = ["asset_tree"]
 [inputs]
 [resources.asset_tree]
-kind = "directory"
+deploy = "copy"
 source = "assets"
 target = ".config/assets"
 baseline = "baselines/assets"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "create"
 parent_mode = "0700"
@@ -282,22 +280,18 @@ dependencies = []
 resources = ["a", "b"]
 [inputs]
 [resources.a]
-kind = "copy"
+deploy = "copy"
 source = "a.txt"
 target = "a.txt"
 baseline = "baselines/a.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"
 [resources.b]
-kind = "copy"
+deploy = "copy"
 source = "b.txt"
 target = "b.txt"
 baseline = "baselines/b.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"

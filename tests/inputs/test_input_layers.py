@@ -63,13 +63,11 @@ layers = [
 reverse_to = {{ file = "local/model.{extension}", path = ["value"], format = "{input_format}" }}
 
 [resources.settings]
-kind = "template"
 source = "settings.json.j2"
 target = ".config/settings.json"
 format = "json"
 baseline = "baselines/settings.json"
 content_sensitivity = "public"
-scope = "fields"
 parents = "require"
 parent_mode = "0700"
 

@@ -938,7 +938,9 @@ def adopt_resource(plan: Plan, *, resource: str, confirm: bool) -> Result:
             "adopt",
             "confirmation_required",
             (spec,),
-            include_directories={item.resource.baseline: item.baseline_missing_parents},
+            include_directories={
+                item.resource.baseline_path(): item.baseline_missing_parents
+            },
             root=record.manifest.roots.inputs.path,
         )
     source_data = (
@@ -1723,11 +1725,13 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
 
         parent_states: dict[Path, tuple[int, int] | None] = {}
         target_missing = missing_parents(roots.target.path, resource.target)
-        baseline_missing = missing_parents(roots.inputs.path, resource.baseline)
+        baseline_missing = missing_parents(roots.inputs.path, resource.baseline_path())
         input_missing: dict[Path, tuple[Path, ...]] = {}
         _extend_parent_states(parent_states, roots.target.path, resource.target)
         _extend_parent_states(parent_states, roots.source.path, resource.source)
-        _extend_parent_states(parent_states, roots.inputs.path, resource.baseline)
+        _extend_parent_states(
+            parent_states, roots.inputs.path, resource.baseline_path()
+        )
         if inputs is not None:
             for path in inputs.files:
                 _extend_parent_states(parent_states, roots.inputs.path, path)
@@ -2632,7 +2636,9 @@ def _plan_projection(plan: Plan) -> list[object]:
                 "source": _projection_path(resource.source),
                 "target": _projection_path(resource.target),
                 "format": resource.format,
-                "baseline": _projection_path(resource.baseline),
+                "baseline": None
+                if resource.baseline is None
+                else _projection_path(resource.baseline),
                 "parents": resource.parents,
                 "parent_mode": resource.parent_mode,
                 "mode": resource.mode,

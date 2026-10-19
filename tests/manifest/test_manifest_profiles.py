@@ -71,13 +71,11 @@ layers = [
 reverse_to = { file = "local/model.json", path = ["model"], format = "json" }
 
 [resources.settings]
-kind = "template"
 source = "settings.json.j2"
 target = ".config/settings.json"
 format = "json"
 baseline = "baselines/settings.json"
 content_sensitivity = "public"
-scope = "fields"
 parents = "require"
 parent_mode = "0700"
 
@@ -104,13 +102,11 @@ input = "model"
         return (
             prefix
             + f'''[resources.assets]
-kind = "directory"
+deploy = "copy"
 source = "{source}"
 target = ".config/assets"
 baseline = "baselines/assets"
 content_sensitivity = "public"
-scope = "whole-file"
-owner = "source"
 parents = "create"
 parent_mode = "0700"
 {exclude_line}recursive = {str(recursive).lower()}
@@ -150,13 +146,11 @@ reverse_to = {{ file = "global/shared.json", path = ["{second_reverse}"], format
         return (
             prefix
             + """[resources.plain]
-kind = "copy"
+deploy = "copy"
 source = "plain.conf"
 target = ".config/plain.conf"
 baseline = "baselines/plain.json"
 content_sensitivity = "public"
-scope = "whole-file"
-owner = "source"
 parents = "require"
 parent_mode = "0700"
 """
@@ -372,9 +366,9 @@ owner = "source"
             )
             .replace(
                 "[resources.settings]",
-                '[resources.unused]\nkind = "directory"\nsource = "excluded"\ntarget = ".config/ignored"\n'
+                '[resources.unused]\ndeploy = "copy"\nsource = "excluded"\ntarget = ".config/ignored"\n'
                 'baseline = "baselines/unused"\ncontent_sensitivity = "public"\n'
-                'scope = "whole-file"\nowner = "source"\nparents = "create"\nparent_mode = "0700"\n\n'
+                'parents = "create"\nparent_mode = "0700"\n\n'
                 "[resources.settings]",
             )
         )
@@ -428,9 +422,9 @@ owner = "source"
             )
             .replace(
                 "[resources.settings]",
-                '[resources.ignored_dir]\nkind = "directory"\nsource = "excluded"\n'
+                '[resources.ignored_dir]\ndeploy = "copy"\nsource = "excluded"\n'
                 'target = ".config/ignored-dir"\nbaseline = "baselines/ignored-dir"\n'
-                'content_sensitivity = "public"\nscope = "whole-file"\nowner = "source"\n'
+                'content_sensitivity = "public"\n'
                 'parents = "create"\nparent_mode = "0700"\n\n[resources.settings]',
             )
         )
@@ -439,13 +433,11 @@ owner = "source"
 layers = [{ file = "global/missing.json", path = ["value"], format = "json" }]
 
 [resources.ignored_template]
-kind = "template"
 source = "missing-template.j2"
 target = ".config/ignored-template.json"
 format = "json"
 baseline = "baselines/ignored-template.json"
 content_sensitivity = "public"
-scope = "fields"
 parents = "create"
 parent_mode = "0700"
 
@@ -582,13 +574,11 @@ input = "ignored"
             )
             + """
 [resources.other]
-kind = "directory"
+deploy = "copy"
 source = "other"
 target = ".config/assets/nested"
 baseline = "baselines/other"
 content_sensitivity = "public"
-scope = "whole-file"
-owner = "source"
 parents = "create"
 parent_mode = "0700"
 """
@@ -910,11 +900,15 @@ parent_mode = "0700"
 
         (self.root / "elsewhere").mkdir()
         (self.source_root / "assets").symlink_to(self.root / "elsewhere")
-        self._assert_load_code(body, "directory_boundary")
+        self._assert_load_code(body, "path_boundary")
         (self.source_root / "assets").unlink()
 
         assets = self.source_root / "assets"
-        (assets / "nested").mkdir(parents=True)
+        assets.mkdir()
+        (assets / "linked").symlink_to(self.root / "elsewhere")
+        self._assert_load_code(body, "directory_boundary")
+        (assets / "linked").unlink()
+        (assets / "nested").mkdir()
         (assets / "nested/a.conf").write_text("a", encoding="utf-8")
         (assets / "twin.conf").write_text("t", encoding="utf-8")
         (assets / "nested/twin.conf").hardlink_to(assets / "twin.conf")

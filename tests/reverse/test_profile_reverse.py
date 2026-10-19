@@ -397,12 +397,10 @@ dependencies = []
 resources = ["note"]
 [inputs]
 [resources.note]
-kind = "copy"
+deploy = "copy"
 source = "note.txt"
 target = "note.txt"
 baseline = "baselines/note.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"
@@ -484,12 +482,10 @@ dependencies = []
 resources = ["asset_tree"]
 [inputs]
 [resources.asset_tree]
-kind = "directory"
+deploy = "copy"
 source = "assets"
 target = ".config/assets"
 baseline = "baselines/assets"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "create"
 parent_mode = "0700"
@@ -564,11 +560,9 @@ reverse_to = { file = "local/shared.json", path = ["values", "first"], format = 
 layers = [{ file = "local/shared.json", path = ["values", "second"], format = "json" }]
 reverse_to = { file = "local/shared.json", path = ["values", "second"], format = "json" }
 [resources.combined]
-kind = "template"
 source = "templates/shared.json.j2"
 target = "combined.json"
 format = "json"
-scope = "fields"
 baseline = "baselines/combined.json"
 content_sensitivity = "public"
 parents = "require"
@@ -815,12 +809,10 @@ dependencies = []
 resources = ["note"]
 [inputs]
 [resources.note]
-kind = "copy"
+deploy = "copy"
 source = "note.txt"
 target = "note.txt"
 baseline = "baselines/note.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"
@@ -936,11 +928,9 @@ resources = ["first", "second"]
 layers = [{ file = "local/shared.json", path = ["theme"], format = "json" }]
 reverse_to = { file = "local/shared.json", path = ["theme"], format = "json" }
 [resources.first]
-kind = "template"
 source = "templates/first.json.j2"
 target = "first.json"
 format = "json"
-scope = "fields"
 baseline = "baselines/first.json"
 content_sensitivity = "public"
 parents = "require"
@@ -950,11 +940,9 @@ path = ["theme"]
 owner = "merge"
 input = "theme"
 [resources.second]
-kind = "template"
 source = "templates/second.json.j2"
 target = "second.json"
 format = "json"
-scope = "fields"
 baseline = "baselines/second.json"
 content_sensitivity = "public"
 parents = "require"

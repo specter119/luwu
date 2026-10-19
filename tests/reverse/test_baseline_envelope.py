@@ -84,11 +84,9 @@ layers = [
 ]
 
 [resources.settings]
-kind = "template"
 source = "templates/settings.json.j2"
 target = ".config/app/settings.json"
 format = "json"
-scope = "fields"
 baseline = "baselines/settings.json"
 content_sensitivity = "public"
 parents = "create"
@@ -358,12 +356,10 @@ resources = ["note"]
 [inputs]
 
 [resources.note]
-kind = "copy"
+deploy = "copy"
 source = "note.txt"
 target = "note.txt"
 baseline = "baselines/note.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "create"
 parent_mode = "0700"
@@ -381,7 +377,7 @@ parent_mode = "0700"
             accepted_data=accepted_data,
             accepted_mode=accepted_mode,
         )
-        path = self.inputs / resource.baseline
+        path = self.inputs / resource.baseline_path()
         path.parent.mkdir(exist_ok=True)
         path.write_bytes(data)
         _, baseline = load_baseline(manifest, resource)

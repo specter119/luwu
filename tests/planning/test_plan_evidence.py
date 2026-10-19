@@ -512,11 +512,9 @@ layers = [{ file = "local/values.json", path = ["alpha"], format = "json" }]
 layers = [{ file = "local/values.json", path = ["beta"], format = "json" }]
 
 [resources.settings]
-kind = "template"
 source = "templates/settings.json.j2"
 target = "config/settings.json"
 format = "json"
-scope = "fields"
 baseline = "baselines/settings.json"
 content_sensitivity = "public"
 parents = "create"

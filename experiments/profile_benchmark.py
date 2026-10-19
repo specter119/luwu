@@ -263,9 +263,9 @@ def _write_fixture(root: Path, size: int) -> Fixture:
                 changed_fields=changed_fields,
             )
         )
+        deploy_line = 'deploy = "copy"\n' if kind == "copy" else ""
         common = (
-            f"kind = {json.dumps(kind)}\n"
-            f"source = {_toml_string(source_name)}\n"
+            f"{deploy_line}source = {_toml_string(source_name)}\n"
             f"target = {_toml_string(target_name)}\n"
             f"baseline = {_toml_string(baseline_name)}\n"
             'content_sensitivity = "public"\n'
@@ -273,14 +273,11 @@ def _write_fixture(root: Path, size: int) -> Fixture:
             'parent_mode = "0700"\n'
         )
         if kind == "copy":
-            declarations.append(
-                f'[resources.{name}]\n{common}scope = "whole-file"\nowner = "source"\n'
-            )
+            declarations.append(f"[resources.{name}]\n{common}")
         else:
             declarations.append(
                 f"[resources.{name}]\n{common}"
                 'format = "json"\n'
-                'scope = "fields"\n'
                 f"[resources.{name}.fields.value]\n"
                 'path = ["value"]\n'
                 'owner = "source"\n'

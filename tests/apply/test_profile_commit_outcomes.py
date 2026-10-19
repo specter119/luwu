@@ -150,22 +150,18 @@ dependencies = []
 resources = ["first", "second"]
 [inputs]
 [resources.first]
-kind = "copy"
+deploy = "copy"
 source = "first.txt"
 target = "first.txt"
 baseline = "baselines/first.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"
 [resources.second]
-kind = "copy"
+deploy = "copy"
 source = "second.txt"
 target = "second.txt"
 baseline = "baselines/second.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"

@@ -184,6 +184,12 @@ def list_directory(descriptor: int) -> list[str]:
     return sorted(os.listdir(descriptor))
 
 
+def child_is_directory(parent: int, name: str) -> bool:
+    """Tell whether a child entry is a directory, without following links."""
+
+    return stat.S_ISDIR(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode)
+
+
 def open_child_directory(
     parent: int, name: str, *, observed: os.stat_result | None = None
 ) -> tuple[int, os.stat_result]:

@@ -42,11 +42,9 @@ layers = [
 reverse_to = { file = "local/theme.json", path = ["theme"], format = "json" }
 
 [resources.settings]
-kind = "template"
 source = "templates/settings.json.j2"
 target = "settings.json"
 format = "json"
-scope = "fields"
 baseline = "settings.baseline.json"
 content_sensitivity = "public"
 parents = "require"
@@ -58,12 +56,10 @@ owner = "live"
 input = "theme"
 
 [resources.notes]
-kind = "copy"
+deploy = "copy"
 source = "notes.txt"
 target = "notes.txt"
 baseline = "notes.baseline.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"
