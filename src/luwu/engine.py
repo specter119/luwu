@@ -972,9 +972,7 @@ def adopt_resource(plan: Plan, *, resource: str, confirm: bool) -> Result:
             },
             root=record.manifest.roots.inputs.path,
         )
-    source_data = (
-        None if item.source_observation is None else item.source_observation.data
-    )
+    source_data = item.desired_data
     live_data = (
         None if item.target_observation is None else item.target_observation.data
     )
@@ -1517,31 +1515,33 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
         )
         baseline_replaced = baseline is None and baseline_observation.data is not None
         inputs = (
-            load_inputs(manifest, resource) if resource.kind == "template" else None
+            load_inputs(manifest, resource)
+            if resource.kind == "template" or resource.templated
+            else None
         )
-        if resource.kind == "copy":
-            desired_data = source.data
-            desired_document = None
-            desired_values: Mapping[str, object] = MappingProxyType({})
-        elif resource.kind == "template":
-            assert inputs is not None and resource.format is not None
+        desired_document: Document | None = None
+        desired_values: Mapping[str, object] = MappingProxyType({})
+        if resource.templated:
+            assert inputs is not None
             try:
                 template_text = source.data.decode("utf-8")
             except UnicodeDecodeError:
                 raise EngineError("review_required") from None
-            variables = inputs.template_variables()
-            rendered = render_source(
+            desired_data = render_source(
                 template_text,
-                dict(variables),
+                dict(inputs.template_variables()),
                 resource_name=resource.name,
-            )
-            desired_data = rendered.encode("utf-8")
+            ).encode("utf-8")
+        elif resource.kind == "copy":
+            desired_data = source.data
+        else:
+            raise EngineError("operation_invalid")
+        if resource.kind == "template":
+            assert resource.format is not None
             desired_document = parse_document(desired_data, format=resource.format)
             desired_values = MappingProxyType(
                 _project(desired_document, resource.fields)
             )
-        else:
-            raise EngineError("operation_invalid")
 
         target_document: Document | None = None
         live_values: Mapping[str, object] = MappingProxyType({})
@@ -1583,7 +1583,7 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
                 forward_fields = tuple(sorted(resource.fields))
         elif resource.kind == "copy":
             baseline_digest = None if baseline is None else baseline.whole_file_digest
-            source_digest = source.digest
+            source_digest = hashlib.sha256(desired_data).hexdigest()
             live_digest = target.digest
             baseline_mode = None if baseline is None else baseline.whole_file_mode
             live_mode_changed = (
@@ -2036,6 +2036,15 @@ def _preflight_reverse_consumers(
     for consumer in record.resources:
         if consumer.inputs is None:
             continue
+        if consumer.resource.kind == "copy" and any(
+            _input_binding_uses_locations(record.manifest, name, updates)
+            for name in consumer.resource.input_names
+        ):
+            raise EngineError(
+                "reverse_consumer_change",
+                operation="reverse-sync",
+                resource=consumer.resource.name,
+            )
         affected = tuple(
             sorted(
                 name
@@ -2203,10 +2212,18 @@ def _reverse_consumer_resource_names(
         item.resource.name
         for item in record.resources
         if item.inputs is not None
-        and any(
-            binding.input is not None
-            and _input_binding_uses_locations(record.manifest, binding.input, updates)
-            for binding in item.resource.fields.values()
+        and (
+            any(
+                binding.input is not None
+                and _input_binding_uses_locations(
+                    record.manifest, binding.input, updates
+                )
+                for binding in item.resource.fields.values()
+            )
+            or any(
+                _input_binding_uses_locations(record.manifest, name, updates)
+                for name in item.resource.input_names
+            )
         )
     )
 
@@ -2346,10 +2363,9 @@ def _verify_forward_results(
             if current.status != "in_sync":
                 return False
         elif item.resource.kind == "copy":
-            source_observation = current.source_observation
             if (
-                source_observation is None
-                or current.target_observation.data != source_observation.data
+                current.desired_data is None
+                or current.target_observation.data != current.desired_data
             ):
                 return False
         elif any(

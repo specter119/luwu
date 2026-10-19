@@ -89,6 +89,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
     selected_names = tuple(
         sorted(
             {binding.input for binding in fields.values() if binding.input is not None}
+            | set(resource.input_names)
         )
     )
 
