@@ -1,3 +1,0 @@
-# Global public inputs. This comment and retained assignment must survive other-field patches.
-model = "synthetic-codex-model-v1"
-retained = "public-note"

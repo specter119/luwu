@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from luwu.errors import ManifestError
-from luwu.m7_manifest import (
+from luwu.manifest import (
     _manifest_signature,
     _parse_manifest,
     _path_key,
@@ -213,8 +213,8 @@ parent_mode = "0700"
     def test_manifest_parser_does_not_retain_source_in_exception_chain(self) -> None:
         marker = "SYNTHETIC_MARKER"
         cases = (
-            (b"version=8\n# SYNTHETIC_MARKER\xff", "m7_manifest_encoding"),
-            (b'version=8\ninvalid = "SYNTHETIC_MARKER', "m7_manifest_toml"),
+            (b"version=8\n# SYNTHETIC_MARKER\xff", "manifest_encoding"),
+            (b'version=8\ninvalid = "SYNTHETIC_MARKER', "manifest_toml"),
         )
         for raw, expected_code in cases:
             with self.subTest(code=expected_code):
@@ -305,8 +305,7 @@ owner = "source"
 
     def test_official_shape_fixture_loads_absolute_project_and_hook_keys(self) -> None:
         fixture_manifest = (
-            Path(__file__).resolve().parents[1]
-            / "fixtures/dotfiles_profile_v8/luwu.toml"
+            Path(__file__).resolve().parents[1] / "fixtures/dotfiles_profile/luwu.toml"
         )
         manifest = load_manifest(fixture_manifest, profile="official_shapes")
         codex = next(
@@ -315,14 +314,14 @@ owner = "source"
 
         self.assertEqual(
             codex.fields["project_trust"].path,
-            ("projects", "/synthetic/luwu-m7/project.a", "trust_level"),
+            ("projects", "/synthetic/luwu-demo/project.a", "trust_level"),
         )
         self.assertEqual(
             codex.fields["hook_enabled"].path,
             (
                 "hooks",
                 "state",
-                "/synthetic/luwu-m7/hooks.json:pre_tool_use:0:0",
+                "/synthetic/luwu-demo/hooks.json:pre_tool_use:0:0",
                 "enabled",
             ),
         )
@@ -334,7 +333,7 @@ owner = "source"
         )
         with self.assertRaises(ManifestError) as raised:
             self._load(control_path)
-        self.assertEqual(raised.exception.code, "m7_field_path")
+        self.assertEqual(raised.exception.code, "field_path")
 
         def with_segment_count(count: int) -> str:
             segments = ", ".join(f'"segment_{index}"' for index in range(count))
@@ -348,7 +347,7 @@ owner = "source"
 
         with self.assertRaises(ManifestError) as raised:
             self._load(with_segment_count(257))
-        self.assertEqual(raised.exception.code, "m7_field_path")
+        self.assertEqual(raised.exception.code, "field_path")
 
     def test_stable_dependency_order_and_exclusion_precede_directory_walk(self) -> None:
         excluded = self.source_root / "excluded"
@@ -478,12 +477,12 @@ input = "ignored"
         overlapping_input = self._shared_input_manifest(second_read="first")
         with self.assertRaises(ManifestError) as raised:
             self._load(overlapping_input)
-        self.assertEqual(raised.exception.code, "m7_input_path_overlap")
+        self.assertEqual(raised.exception.code, "input_path_overlap")
 
         overlapping_writes = self._shared_input_manifest(second_reverse="first")
         with self.assertRaises(ManifestError) as raised:
             self._load(overlapping_writes)
-        self.assertEqual(raised.exception.code, "m7_write_alias")
+        self.assertEqual(raised.exception.code, "write_alias")
 
     def test_shared_input_documents_must_use_the_same_format(self) -> None:
         body = self._shared_input_manifest(second_format="toml")
@@ -491,7 +490,7 @@ input = "ignored"
         with self.assertRaises(ManifestError) as raised:
             self._load(body)
 
-        self.assertEqual(raised.exception.code, "m7_input_format")
+        self.assertEqual(raised.exception.code, "input_format")
 
     def test_input_files_cannot_alias_baseline_paths(self) -> None:
         body = self._manifest().replace(
@@ -499,7 +498,7 @@ input = "ignored"
         )
         with self.assertRaises(ManifestError) as raised:
             self._load(body)
-        self.assertEqual(raised.exception.code, "m7_path_overlap")
+        self.assertEqual(raised.exception.code, "path_overlap")
 
     def test_target_cannot_write_inside_source_or_input_roots(self) -> None:
         body = (
@@ -546,7 +545,7 @@ input = "ignored"
         self.assertTrue(all(resource.kind == "copy" for resource in manifest.resources))
         baselines = [resource.baseline for resource in manifest.resources]
         self.assertEqual(len(set(baselines)), 2)
-        self.assertTrue(all(path.name.startswith("assets.m7-") for path in baselines))
+        self.assertTrue(all(path.name.startswith("assets.leaf-") for path in baselines))
         verify_manifest(manifest)
 
     def test_directory_expansion_respects_nonrecursive_and_empty_directories(
@@ -592,7 +591,7 @@ parent_mode = "0700"
         )
         with self.assertRaises(ManifestError) as raised:
             self._load(body)
-        self.assertEqual(raised.exception.code, "m7_path_overlap")
+        self.assertEqual(raised.exception.code, "path_overlap")
 
     def test_included_symlinked_directory_entry_is_rejected(self) -> None:
         asset_root = self.source_root / "assets"
@@ -622,7 +621,7 @@ parent_mode = "0700"
         )
         with self.assertRaises(ManifestError) as raised:
             self._load(body)
-        self.assertEqual(raised.exception.code, "m7_path_missing")
+        self.assertEqual(raised.exception.code, "path_missing")
 
     def test_hardlinked_input_file_is_rejected_as_a_path_alias(self) -> None:
         (self.inputs_root / "local/model.json").hardlink_to(
@@ -644,7 +643,7 @@ parent_mode = "0700"
         )
         with self.assertRaises(ManifestError) as raised:
             self._load(overlapping_fields)
-        self.assertEqual(raised.exception.code, "m7_field_overlap")
+        self.assertEqual(raised.exception.code, "field_overlap")
 
         invalid_glob = self._directory_manifest(exclude='"../secret"')
         with self.assertRaises(ManifestError):
@@ -652,7 +651,7 @@ parent_mode = "0700"
 
     def test_relationship_validation_normalizes_each_path_once(self) -> None:
         target_path = self.target_root / ".config/settings.json"
-        with patch("luwu.m7_manifest._path_key", wraps=_path_key) as normalize:
+        with patch("luwu.manifest._path_key", wraps=_path_key) as normalize:
             self._load()
 
         target_key_calls = sum(
@@ -751,11 +750,11 @@ parent_mode = "0700"
         manifest = self._load()
         with (
             patch(
-                "luwu.m7_manifest._parse_manifest",
+                "luwu.manifest._parse_manifest",
                 side_effect=AssertionError("verify reparsed the manifest"),
             ),
             patch(
-                "luwu.m7_manifest._load_manifest",
+                "luwu.manifest._load_manifest",
                 side_effect=AssertionError("verify reloaded all resources"),
             ),
         ):
@@ -765,7 +764,7 @@ parent_mode = "0700"
         mutable_copy = dataclasses.replace(loaded, inputs=dict(loaded.inputs))
         with self.assertRaises(ManifestError) as raised:
             verify_manifest(mutable_copy)
-        self.assertEqual(raised.exception.code, "m7_provenance")
+        self.assertEqual(raised.exception.code, "provenance")
 
         nested_mutation = self._load()
         replacement = dataclasses.replace(
@@ -775,7 +774,7 @@ parent_mode = "0700"
         object.__setattr__(nested_mutation, "resources", (replacement,))
         with self.assertRaises(ManifestError) as raised:
             verify_manifest(nested_mutation)
-        self.assertEqual(raised.exception.code, "m7_provenance")
+        self.assertEqual(raised.exception.code, "provenance")
 
         altered = dataclasses.replace(loaded, profile="elsewhere")
         with self.assertRaises(ManifestError):
@@ -794,7 +793,7 @@ parent_mode = "0700"
         )
         with self.assertRaises(ManifestError) as raised:
             verify_manifest(target_mutation)
-        self.assertEqual(raised.exception.code, "m7_provenance")
+        self.assertEqual(raised.exception.code, "provenance")
 
         owner_mutation = self._load()
         binding = owner_mutation.resources[0].fields["model"]
@@ -804,7 +803,7 @@ parent_mode = "0700"
         )
         with self.assertRaises(ManifestError) as raised:
             verify_manifest(owner_mutation)
-        self.assertEqual(raised.exception.code, "m7_provenance")
+        self.assertEqual(raised.exception.code, "provenance")
 
     def test_verify_manifest_does_not_reinspect_mutable_paths(self) -> None:
         manifest = self._load()

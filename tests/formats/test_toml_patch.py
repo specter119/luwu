@@ -8,11 +8,10 @@ import tomllib
 import unittest
 from decimal import Decimal
 
-from luwu.errors import LuwuError, MutationError
-from luwu.m6_formats import parse_m6_document, patch_m6_document
-from luwu.m7_formats import (
+from luwu.errors import LuwuError
+from luwu.formats import (
     MISSING,
-    M7FormatError,
+    FormatError,
     get_leaf,
     parse_document,
     patch_document,
@@ -34,7 +33,7 @@ class TomlFormatsV8Tests(unittest.TestCase):
         for source, table, expected in cases:
             with self.subTest(source=source):
                 script = (
-                    "from luwu.m7_formats import parse_document\n"
+                    "from luwu.formats import parse_document\n"
                     f"document = parse_document({source!r}, format='toml')\n"
                     f"assert document.value[{table!r}]['text'] == {expected!r}\n"
                 )
@@ -205,7 +204,7 @@ class TomlFormatsV8Tests(unittest.TestCase):
                 self.assertEqual(changed, source.replace(b"b = 1", b"b = 2"))
                 reparsed = parse_document(changed, format="toml")
                 self.assertEqual(get_leaf(reparsed, ("a",)), expected)
-                with self.assertRaises(M7FormatError):
+                with self.assertRaises(FormatError):
                     patch_document(document, {("a",): "replaced"})
 
     def test_toml_inserts_missing_parent_using_literal_dotted_path(self) -> None:
@@ -289,177 +288,3 @@ class TomlFormatsV8Tests(unittest.TestCase):
         ):
             with self.subTest(edits=edits), self.assertRaises(LuwuError):
                 patch_document(document, edits)
-
-
-class TomlFormatsV7Tests(unittest.TestCase):
-    def test_toml_patch_preserves_comments_and_rejects_tables(self) -> None:
-        source = b'# keep\nmodel = "old"\nprovider = "x"\n'
-
-        changed = patch_m6_document(source, format="toml", updates={"model": "new"})
-        added = patch_m6_document(source, format="toml", updates={"changelog": "on"})
-        deleted = patch_m6_document(source, format="toml", deletes=("provider",))
-
-        self.assertEqual(changed, b'# keep\nmodel = "new"\nprovider = "x"\n')
-        self.assertIn(b"# keep\n", added)
-        self.assertIn(b'changelog = "on"\n', added)
-        self.assertEqual(deleted, b'# keep\nmodel = "old"\n')
-        with self.assertRaises(MutationError):
-            patch_m6_document(
-                b'[provider]\nmodel = "x"\n', format="toml", updates={"model": "y"}
-            )
-
-    def test_toml_requires_standard_syntax_before_parsing_or_patching(self) -> None:
-        cases = (
-            b"model = 01\n",
-            b"model = 1__0\n",
-            b'model = "\\/"\n',
-            b'model = "\\uD800"\n',
-        )
-        for source in cases:
-            with self.subTest(source=source):
-                with self.assertRaises(MutationError) as parse_error:
-                    parse_m6_document(source, format="toml")
-                self.assertEqual(parse_error.exception.code, "m6_format")
-                self.assertNotIn("model =", str(parse_error.exception))
-
-                with self.assertRaises(MutationError) as patch_error:
-                    patch_m6_document(source, format="toml", updates={"model": "new"})
-                self.assertEqual(patch_error.exception.code, "m6_format")
-                self.assertNotIn("model =", str(patch_error.exception))
-
-    def test_toml_uses_toml_unicode_escapes_and_keeps_decimal_precision(self) -> None:
-        source = (
-            b'# keep\r\nmodel = "\\U0001F642"\r\n'
-            b"precise = 0.1000000000000000000000000001"
-        )
-
-        parsed = parse_m6_document(source, format="toml")
-        changed = patch_m6_document(source, format="toml", updates={"model": "updated"})
-
-        self.assertEqual(parsed["model"], "🙂")
-        self.assertEqual(parsed["precise"], Decimal("0.1000000000000000000000000001"))
-        self.assertIs(type(parsed["precise"]), Decimal)
-        self.assertEqual(
-            changed,
-            b'# keep\r\nmodel = "updated"\r\nprecise = 0.1000000000000000000000000001',
-        )
-
-    def test_toml_hash_inside_string_is_not_an_inline_comment(self) -> None:
-        source = b'# keep\r\nmodel = "old#value"\r\nprovider = "x"'
-
-        changed = patch_m6_document(
-            source, format="toml", updates={"model": "new#value"}
-        )
-
-        self.assertEqual(
-            changed,
-            b'# keep\r\nmodel = "new#value"\r\nprovider = "x"',
-        )
-
-    def test_toml_string_token_consumes_escaped_quotes_and_unicode(self) -> None:
-        source = b'model = "say \\"hi\\" # \\U0001F642"\nprovider = "old"\n'
-
-        parsed = parse_m6_document(source, format="toml")
-        changed = patch_m6_document(source, format="toml", updates={"provider": "new"})
-
-        self.assertEqual(parsed["model"], 'say "hi" # 🙂')
-        self.assertEqual(
-            changed,
-            b'model = "say \\"hi\\" # \\U0001F642"\nprovider = "new"\n',
-        )
-
-    def test_toml_inline_comments_preserve_exact_non_value_bytes(self) -> None:
-        source = (
-            b'# header\r\nmodel = "say \\"hi\\" # inside" \t# "keep"\r\n'
-            b"provider = 'old#value' # literal comment"
-        )
-
-        parsed = parse_m6_document(source, format="toml")
-        changed = patch_m6_document(
-            source,
-            format="toml",
-            updates={"model": "updated", "provider": "next"},
-        )
-
-        self.assertEqual(parsed["model"], 'say "hi" # inside')
-        self.assertEqual(parsed["provider"], "old#value")
-        self.assertEqual(
-            changed,
-            b'# header\r\nmodel = "updated" \t# "keep"\r\n'
-            b'provider = "next" # literal comment',
-        )
-
-    def test_toml_inline_comments_preserve_bool_int_decimal_bytes(self) -> None:
-        cases = (
-            (
-                "bool",
-                "enabled",
-                "enabled = true# 开关注释  ".encode(),
-                True,
-                False,
-                "enabled = false# 开关注释  ".encode(),
-            ),
-            (
-                "int",
-                "count",
-                "count = 7  # 计数注释\t  ".encode(),
-                7,
-                12,
-                "count = 12  # 计数注释\t  ".encode(),
-            ),
-            (
-                "Decimal",
-                "ratio",
-                "ratio = 0.25# 小数注释  ".encode(),
-                Decimal("0.25"),
-                Decimal("1.125"),
-                "ratio = 1.125# 小数注释  ".encode(),
-            ),
-        )
-
-        for label, field, source, original, updated, expected in cases:
-            with self.subTest(value_type=label):
-                parsed = parse_m6_document(source, format="toml")
-                changed = patch_m6_document(
-                    source, format="toml", updates={field: updated}
-                )
-
-                self.assertEqual(parsed[field], original)
-                self.assertIs(type(parsed[field]), type(original))
-                self.assertEqual(changed, expected)
-
-    def test_toml_unsupported_lexical_forms_fail_closed(self) -> None:
-        cases = (
-            b'"model" = "x"\n',
-            b'model = """x\ny"""\n',
-            b'model = "x" trailing\n',
-            b'model = "x"\nnot-an-assignment\n',
-            b'model = ["x"]\n',
-            b"model = 1\nmodel = 2\n",
-            b"model = inf\n",
-            b"model = nan\n",
-        )
-        for source in cases:
-            with self.subTest(source=source), self.assertRaises(MutationError):
-                parse_m6_document(source, format="toml")
-
-    def test_toml_patch_updates_and_deletes_without_touching_unselected_bytes(
-        self,
-    ) -> None:
-        source = (
-            b'# keep\r\nmodel = "old"\r\n'
-            b'remove = "gone" # deleted with its assignment\r\n'
-            b"keep = 12345678901234567890"
-        )
-
-        changed = patch_m6_document(
-            source,
-            format="toml",
-            updates={"model": "new"},
-            deletes=("remove",),
-        )
-
-        self.assertEqual(
-            changed,
-            b'# keep\r\nmodel = "new"\r\nkeep = 12345678901234567890',
-        )

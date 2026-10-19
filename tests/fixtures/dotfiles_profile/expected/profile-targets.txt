@@ -1,0 +1,5 @@
+.config/demo/settings.jsonc
+.config/demo/deep/profile/runtime.toml
+.config/demo/profile.ini
+.config/demo/assets/defaults.conf
+.config/demo/assets/nested/keymap.jsonc

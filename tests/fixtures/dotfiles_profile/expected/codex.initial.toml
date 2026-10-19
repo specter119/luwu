@@ -1,0 +1,6 @@
+[projects."/synthetic/luwu-demo/project.a"]
+trust_level = "untrusted"
+
+[hooks.state."/synthetic/luwu-demo/hooks.json:pre_tool_use:0:0"]
+enabled = false
+trusted_hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"

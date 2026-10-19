@@ -10,10 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from luwu import m7_filesystem
-from luwu.m7_filesystem import (
+from luwu import filesystem as filesystem_module
+from luwu.filesystem import (
     FileObservation,
-    M7FilesystemError,
+    FilesystemError,
     create_parent,
     missing_parents,
     observe_file,
@@ -75,15 +75,15 @@ class FilesystemV8Tests(unittest.TestCase):
             symlink = root / "symlink"
             symlink.symlink_to(source.name)
 
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 observe_file(root, symlink)
-            self.assertEqual(raised.exception.code, "m7_unsafe_file")
+            self.assertEqual(raised.exception.code, "unsafe_file")
 
             alias = root / "alias"
             os.link(source, alias)
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 observe_file(root, source)
-            self.assertEqual(raised.exception.code, "m7_unsafe_file")
+            self.assertEqual(raised.exception.code, "unsafe_file")
 
     def test_observe_rechecks_ancestors_after_parent_open_reports_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -102,15 +102,15 @@ class FilesystemV8Tests(unittest.TestCase):
 
             with (
                 patch.object(
-                    m7_filesystem,
+                    filesystem_module,
                     "open_parent_directory",
                     side_effect=replace_parent_then_report_missing,
                 ),
-                self.assertRaises(M7FilesystemError) as raised,
+                self.assertRaises(FilesystemError) as raised,
             ):
                 observe_file(root, parent / "file")
 
-            self.assertEqual(raised.exception.code, "m7_unsafe_path")
+            self.assertEqual(raised.exception.code, "unsafe_path")
             self.assertTrue(parent.is_symlink())
 
     def test_missing_ancestor_snapshot_rejects_symlink_substitution(self) -> None:
@@ -121,10 +121,10 @@ class FilesystemV8Tests(unittest.TestCase):
             (root / "real").mkdir()
             (root / "missing").symlink_to("real", target_is_directory=True)
 
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 write_file(root, target, b"after", expected=expected)
 
-            self.assertEqual(raised.exception.code, "m7_unsafe_path")
+            self.assertEqual(raised.exception.code, "unsafe_path")
             self.assertFalse((root / "real" / "nested" / "file").exists())
 
     def test_missing_parents_are_ordered_and_symlinks_are_rejected(self) -> None:
@@ -138,9 +138,9 @@ class FilesystemV8Tests(unittest.TestCase):
             )
             (root / "real").mkdir()
             (root / "link").symlink_to(root / "real", target_is_directory=True)
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 missing_parents(root, root / "link" / "child" / "file")
-            self.assertEqual(raised.exception.code, "m7_unsafe_path")
+            self.assertEqual(raised.exception.code, "unsafe_path")
 
     def test_create_parent_sets_requested_mode_after_umask(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -157,7 +157,7 @@ class FilesystemV8Tests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(info.st_mode), 0o755)
             self.assertEqual(missing_parents(root, first / "file"), ())
 
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 create_parent(root, first, 0o700)
             self.assertEqual(raised.exception.state, "not_replaced")
             self.assertTrue(first.is_dir())
@@ -174,8 +174,8 @@ class FilesystemV8Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with (
-                patch.object(m7_filesystem, "sync_directory", side_effect=OSError),
-                self.assertRaises(M7FilesystemError) as raised,
+                patch.object(filesystem_module, "sync_directory", side_effect=OSError),
+                self.assertRaises(FilesystemError) as raised,
             ):
                 create_parent(root, root / "created", 0o700)
 
@@ -194,11 +194,11 @@ class FilesystemV8Tests(unittest.TestCase):
             root = Path(directory)
             with (
                 patch.object(
-                    m7_filesystem,
+                    filesystem_module,
                     "sync_directory",
                     side_effect=FileExistsError("private injected detail"),
                 ),
-                self.assertRaises(M7FilesystemError) as raised,
+                self.assertRaises(FilesystemError) as raised,
             ):
                 create_parent(root, root / "created", 0o700)
 
@@ -213,8 +213,10 @@ class FilesystemV8Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with (
-                patch.object(m7_filesystem, "unlock_directory", side_effect=OSError),
-                self.assertRaises(M7FilesystemError) as raised,
+                patch.object(
+                    filesystem_module, "unlock_directory", side_effect=OSError
+                ),
+                self.assertRaises(FilesystemError) as raised,
             ):
                 create_parent(root, root / "created", 0o700)
 
@@ -238,8 +240,10 @@ class FilesystemV8Tests(unittest.TestCase):
                 raise OSError("private filesystem detail")
 
             with (
-                patch.object(m7_filesystem.os, "mkdir", side_effect=mkdir_then_raise),
-                self.assertRaises(M7FilesystemError) as raised,
+                patch.object(
+                    filesystem_module.os, "mkdir", side_effect=mkdir_then_raise
+                ),
+                self.assertRaises(FilesystemError) as raised,
             ):
                 create_parent(root, root / "created", 0o700)
 
@@ -263,7 +267,7 @@ class FilesystemV8Tests(unittest.TestCase):
                 outer.mkdir()
                 (moved / "inner").rename(outer / "inner")
 
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 create_parent(
                     root,
                     parent / "created",
@@ -271,9 +275,9 @@ class FilesystemV8Tests(unittest.TestCase):
                     check_inputs=rebind_intermediate_ancestor,
                 )
 
-            self.assertEqual(raised.exception.code, "m7_stale_inputs")
+            self.assertEqual(raised.exception.code, "stale_inputs")
             self.assertFalse((parent / "created").exists())
-            self.assertEqual(list(root.glob(".luwu-m7-dir-*")), [])
+            self.assertEqual(list(root.glob(".luwu-tmp-dir-*")), [])
 
     def test_create_parent_never_replaces_a_racing_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -292,14 +296,14 @@ class FilesystemV8Tests(unittest.TestCase):
 
             with (
                 patch.object(
-                    m7_filesystem.os, "mkdir", side_effect=race_target_into_place
+                    filesystem_module.os, "mkdir", side_effect=race_target_into_place
                 ),
-                self.assertRaises(M7FilesystemError) as raised,
+                self.assertRaises(FilesystemError) as raised,
             ):
                 create_parent(root, target, 0o755)
 
             info = target.stat()
-            self.assertEqual(raised.exception.code, "m7_stale_inputs")
+            self.assertEqual(raised.exception.code, "stale_inputs")
             self.assertEqual(raised.exception.state, "not_replaced")
             self.assertFalse(raised.exception.committed)
             self.assertEqual(raised.exception.cleanup_state, "not_needed")
@@ -309,7 +313,7 @@ class FilesystemV8Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = root / "created"
-            original_sync = m7_filesystem.sync_directory
+            original_sync = filesystem_module.sync_directory
             original_mkdir = os.mkdir
             calls = 0
             captured: dict[str, tuple[int, int]] = {}
@@ -326,11 +330,11 @@ class FilesystemV8Tests(unittest.TestCase):
 
             with (
                 patch.object(
-                    m7_filesystem,
+                    filesystem_module,
                     "sync_directory",
                     side_effect=replace_after_first_sync,
                 ),
-                self.assertRaises(M7FilesystemError) as raised,
+                self.assertRaises(FilesystemError) as raised,
             ):
                 create_parent(root, target, 0o755)
 
@@ -367,7 +371,7 @@ class FilesystemV8Tests(unittest.TestCase):
                 return original_open(name, flags, mode, dir_fd=dir_fd)
 
             with patch.object(
-                m7_filesystem.os, "open", side_effect=replace_before_open
+                filesystem_module.os, "open", side_effect=replace_before_open
             ):
                 identity = create_parent(root, target, 0o755)
 
@@ -383,17 +387,17 @@ class FilesystemV8Tests(unittest.TestCase):
             parent = root / "parent"
             parent.mkdir()
             parent.chmod(0o770)
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 create_parent(root, parent / "created", 0o700)
-            self.assertEqual(raised.exception.code, "m7_unsafe_path")
+            self.assertEqual(raised.exception.code, "unsafe_path")
             self.assertFalse((parent / "created").exists())
 
             parent.chmod(0o700)
             root.chmod(0o777)
             try:
-                with self.assertRaises(M7FilesystemError) as raised:
+                with self.assertRaises(FilesystemError) as raised:
                     observe_file(root, root / "file")
-                self.assertEqual(raised.exception.code, "m7_unsafe_path")
+                self.assertEqual(raised.exception.code, "unsafe_path")
             finally:
                 root.chmod(0o700)
 
@@ -407,10 +411,10 @@ class FilesystemV8Tests(unittest.TestCase):
             expected = observe_file(root, target)
             parent.chmod(0o770)
 
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 write_file(root, target, b"after", expected=expected)
 
-            self.assertEqual(raised.exception.code, "m7_unsafe_path")
+            self.assertEqual(raised.exception.code, "unsafe_path")
             self.assertEqual(target.read_bytes(), b"before")
 
     def test_private_root_under_sticky_tmp_ancestor_is_allowed(self) -> None:
@@ -427,7 +431,7 @@ class FilesystemV8Tests(unittest.TestCase):
             def stale() -> None:
                 raise RuntimeError("sensitive callback details")
 
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 create_parent(root, root / "created", 0o700, check_inputs=stale)
 
             self.assertEqual(raised.exception.state, "not_replaced")
@@ -489,15 +493,15 @@ class FilesystemV8Tests(unittest.TestCase):
             expected = observe_file(root, path)
 
             with (
-                patch.object(m7_filesystem.os, "fsync", side_effect=OSError),
-                self.assertRaises(M7FilesystemError) as raised,
+                patch.object(filesystem_module.os, "fsync", side_effect=OSError),
+                self.assertRaises(FilesystemError) as raised,
             ):
                 write_file(root, path, b"after", expected=expected)
 
             self.assertEqual(raised.exception.state, "not_replaced")
             self.assertFalse(raised.exception.committed)
             self.assertEqual(path.read_bytes(), b"before")
-            self.assertEqual(list(root.glob(".luwu-m7-*")), [])
+            self.assertEqual(list(root.glob(".luwu-tmp-*")), [])
 
     def test_write_rejects_hardlinks_and_stale_observations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -507,16 +511,16 @@ class FilesystemV8Tests(unittest.TestCase):
             expected = observe_file(root, path)
             path.write_bytes(b"changed")
 
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 write_file(root, path, b"after", expected=expected)
-            self.assertEqual(raised.exception.code, "m7_stale_inputs")
+            self.assertEqual(raised.exception.code, "stale_inputs")
             self.assertEqual(path.read_bytes(), b"changed")
 
             alias = root / "alias"
             os.link(path, alias)
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 write_file(root, path, b"after", expected=expected)
-            self.assertEqual(raised.exception.code, "m7_unsafe_file")
+            self.assertEqual(raised.exception.code, "unsafe_file")
 
     def test_write_stale_callback_does_not_replace_target_or_leak_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -528,14 +532,14 @@ class FilesystemV8Tests(unittest.TestCase):
             def stale() -> None:
                 raise RuntimeError("private source contents")
 
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 write_file(root, path, b"after", expected=expected, check_inputs=stale)
 
-            self.assertEqual(raised.exception.code, "m7_stale_inputs")
+            self.assertEqual(raised.exception.code, "stale_inputs")
             self.assertEqual(raised.exception.state, "not_replaced")
             self.assertNotIn("private", str(raised.exception))
             self.assertEqual(path.read_bytes(), b"before")
-            self.assertEqual(list(root.glob(".luwu-m7-*")), [])
+            self.assertEqual(list(root.glob(".luwu-tmp-*")), [])
 
     def test_write_rechecks_parent_after_staging(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -559,15 +563,17 @@ class FilesystemV8Tests(unittest.TestCase):
                     (parent / target.name).write_bytes(b"before")
 
             with (
-                patch.object(m7_filesystem.os, "fsync", side_effect=rebind_after_stage),
-                self.assertRaises(M7FilesystemError) as raised,
+                patch.object(
+                    filesystem_module.os, "fsync", side_effect=rebind_after_stage
+                ),
+                self.assertRaises(FilesystemError) as raised,
             ):
                 write_file(root, target, b"after", expected=expected)
 
             self.assertEqual(raised.exception.state, "not_replaced")
             self.assertEqual(target.read_bytes(), b"before")
             self.assertEqual((moved / target.name).read_bytes(), b"before")
-            self.assertEqual(list(moved.glob(".luwu-m7-*")), [])
+            self.assertEqual(list(moved.glob(".luwu-tmp-*")), [])
 
     def test_write_rejects_changed_ancestor_snapshot_before_staging(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -582,13 +588,13 @@ class FilesystemV8Tests(unittest.TestCase):
             parent.mkdir()
             (parent / target.name).write_bytes(b"before")
 
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 write_file(root, target, b"after", expected=expected)
 
-            self.assertEqual(raised.exception.code, "m7_stale_inputs")
+            self.assertEqual(raised.exception.code, "stale_inputs")
             self.assertEqual(target.read_bytes(), b"before")
             self.assertEqual((moved / target.name).read_bytes(), b"before")
-            self.assertEqual(list(root.glob(".luwu-m7-*")), [])
+            self.assertEqual(list(root.glob(".luwu-tmp-*")), [])
 
     def test_write_rejects_ancestor_creation_after_missing_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -597,10 +603,10 @@ class FilesystemV8Tests(unittest.TestCase):
             expected = observe_file(root, target)
             (root / "parent").mkdir()
 
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 write_file(root, target, b"after", expected=expected)
 
-            self.assertEqual(raised.exception.code, "m7_stale_inputs")
+            self.assertEqual(raised.exception.code, "stale_inputs")
             self.assertFalse(target.exists())
 
     def test_write_reports_post_replace_and_replace_exception_honestly(self) -> None:
@@ -611,8 +617,8 @@ class FilesystemV8Tests(unittest.TestCase):
             expected = observe_file(root, path)
 
             with (
-                patch.object(m7_filesystem, "sync_directory", side_effect=OSError),
-                self.assertRaises(M7FilesystemError) as raised,
+                patch.object(filesystem_module, "sync_directory", side_effect=OSError),
+                self.assertRaises(FilesystemError) as raised,
             ):
                 write_file(root, path, b"after", expected=expected)
             self.assertEqual(raised.exception.state, "uncertain")
@@ -643,9 +649,9 @@ class FilesystemV8Tests(unittest.TestCase):
 
             with (
                 patch.object(
-                    m7_filesystem.os, "replace", side_effect=replace_then_raise
+                    filesystem_module.os, "replace", side_effect=replace_then_raise
                 ),
-                self.assertRaises(M7FilesystemError) as raised,
+                self.assertRaises(FilesystemError) as raised,
             ):
                 write_file(root, path, b"after", expected=expected)
             self.assertEqual(raised.exception.state, "uncertain")
@@ -659,7 +665,7 @@ class FilesystemV8Tests(unittest.TestCase):
             path = root / "target"
             path.write_bytes(b"before")
             expected = observe_file(root, path)
-            original_create = m7_filesystem._create_temporary_file
+            original_create = filesystem_module._create_temporary_file
             original_fsync = os.fsync
             staged: dict[str, object] = {}
 
@@ -678,16 +684,16 @@ class FilesystemV8Tests(unittest.TestCase):
 
             with (
                 patch.object(
-                    m7_filesystem, "_create_temporary_file", side_effect=remember
+                    filesystem_module, "_create_temporary_file", side_effect=remember
                 ),
-                patch.object(m7_filesystem.os, "fsync", side_effect=substitute),
-                self.assertRaises(M7FilesystemError) as raised,
+                patch.object(filesystem_module.os, "fsync", side_effect=substitute),
+                self.assertRaises(FilesystemError) as raised,
             ):
                 write_file(root, path, b"after", expected=expected)
 
             self.assertEqual(raised.exception.state, "not_replaced")
             self.assertEqual(path.read_bytes(), b"before")
-            staged_entries = list(root.glob(".luwu-m7-*"))
+            staged_entries = list(root.glob(".luwu-tmp-*"))
             self.assertEqual(len(staged_entries), 1)
             self.assertTrue(staged_entries[0].is_symlink())
             self.assertEqual(raised.exception.cleanup_state, "foreign_entry_retained")
@@ -698,7 +704,7 @@ class FilesystemV8Tests(unittest.TestCase):
             path = root / "target"
             path.write_bytes(b"before")
             expected = observe_file(root, path)
-            original_create = m7_filesystem._create_temporary_file
+            original_create = filesystem_module._create_temporary_file
             original_fsync = os.fsync
             staged: dict[str, object] = {}
 
@@ -722,33 +728,33 @@ class FilesystemV8Tests(unittest.TestCase):
 
             with (
                 patch.object(
-                    m7_filesystem, "_create_temporary_file", side_effect=remember
+                    filesystem_module, "_create_temporary_file", side_effect=remember
                 ),
-                patch.object(m7_filesystem.os, "fsync", side_effect=corrupt),
-                self.assertRaises(M7FilesystemError) as raised,
+                patch.object(filesystem_module.os, "fsync", side_effect=corrupt),
+                self.assertRaises(FilesystemError) as raised,
             ):
                 write_file(root, path, b"after", expected=expected)
 
             self.assertEqual(raised.exception.state, "not_replaced")
             self.assertEqual(path.read_bytes(), b"before")
-            self.assertEqual(list(root.glob(".luwu-m7-*")), [])
+            self.assertEqual(list(root.glob(".luwu-tmp-*")), [])
 
     def test_path_and_mode_validation_are_fixed_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for path in (root.parent / "outside", root / ".." / "outside"):
-                with self.subTest(path=path), self.assertRaises(M7FilesystemError):
+                with self.subTest(path=path), self.assertRaises(FilesystemError):
                     observe_file(root, path)
-            with self.assertRaises(M7FilesystemError) as raised:
+            with self.assertRaises(FilesystemError) as raised:
                 write_file(
                     root, root / "target", b"data", expected=_absent(), mode=True
                 )  # type: ignore[arg-type]
-            self.assertEqual(raised.exception.code, "m7_invalid_mode")
+            self.assertEqual(raised.exception.code, "invalid_mode")
 
             for mode in (0o1000, 0o2000, 0o4000, 0o4755, 0o7777):
                 with (
                     self.subTest(mode=oct(mode)),
-                    self.assertRaises(M7FilesystemError) as raised,
+                    self.assertRaises(FilesystemError) as raised,
                 ):
                     write_file(
                         root,
@@ -757,10 +763,10 @@ class FilesystemV8Tests(unittest.TestCase):
                         expected=observe_file(root, root / "target"),
                         mode=mode,
                     )
-                self.assertEqual(raised.exception.code, "m7_invalid_mode")
-                with self.assertRaises(M7FilesystemError) as raised:
+                self.assertEqual(raised.exception.code, "invalid_mode")
+                with self.assertRaises(FilesystemError) as raised:
                     create_parent(root, root / f"directory-{mode:o}", mode)
-                self.assertEqual(raised.exception.code, "m7_invalid_mode")
+                self.assertEqual(raised.exception.code, "invalid_mode")
 
             world_writable = root / "world-writable"
             create_parent(root, world_writable, 0o777)

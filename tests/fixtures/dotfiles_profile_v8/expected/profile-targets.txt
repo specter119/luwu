@@ -1,5 +1,0 @@
-.config/m7/settings.jsonc
-.config/m7/deep/profile/runtime.toml
-.config/m7/profile.ini
-.config/m7/assets/defaults.conf
-.config/m7/assets/nested/keymap.jsonc

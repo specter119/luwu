@@ -46,7 +46,7 @@ input flow to be public. It does not qualify a whole dotfiles migration.
 For the full dotfiles profile, start with the
 [version 8 reference](docs/reference.md#full-dotfiles-coverage-manifest-version-8),
 check [current implementation status](docs/status.md), and use the
-[isolated profile fixture guide](tests/fixtures/dotfiles_profile_v8/README.md).
+[isolated profile fixture guide](tests/fixtures/dotfiles_profile/README.md).
 
 Run the deterministic test suite with:
 

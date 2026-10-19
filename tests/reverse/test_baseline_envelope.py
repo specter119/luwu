@@ -12,21 +12,21 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from luwu.m7_baseline import (
-    M7BaselineError,
+from luwu.baseline import (
+    BaselineError,
     _parse_schema2_json,
     load_baseline,
     make_copy_baseline,
     make_field_baseline,
 )
-from luwu.m7_engine import M7EngineError, accept_baseline, build_plan
-from luwu.m7_formats import M7FormatError, parse_document
-from luwu.m7_manifest import load_manifest
+from luwu.engine import EngineError, accept_baseline, build_plan
+from luwu.formats import FormatError, parse_document
+from luwu.manifest import load_manifest
 
 
 class BaselineEnvelopeV8Tests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="luwu-m7-baseline-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="luwu-test-baseline-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.source = self.root / "source"
@@ -178,18 +178,18 @@ input = "{binding}"
                     b'"schema_version":2,"schema_version":2,',
                     1,
                 ),
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
-            ("duplicate nested key", with_nested_duplicate, "m7_baseline_invalid"),
+            ("duplicate nested key", with_nested_duplicate, "baseline_invalid"),
             (
                 "boolean schema version",
                 valid.replace(b'"schema_version":2,', b'"schema_version":true,', 1),
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
             (
                 "fractional schema version",
                 valid.replace(b'"schema_version":2,', b'"schema_version":2.0,', 1),
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
             (
                 "nonfinite value",
@@ -198,7 +198,7 @@ input = "{binding}"
                     b'"values":{"brand":NaN}',
                     1,
                 ),
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
             (
                 "lone surrogate",
@@ -207,22 +207,22 @@ input = "{binding}"
                     b'"values":{"brand":"\\ud800"}',
                     1,
                 ),
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
             (
                 "invalid UTF-8",
                 valid.rstrip(b"\n") + b"\xff\n",
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
             (
                 "comment",
                 valid.rstrip(b"\n") + b" /* " + marker.encode() + b" */\n",
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
             (
                 "trailing comma",
                 valid.rstrip(b"\n")[:-1] + b",}\n",
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
             (
                 "undeclared value alias",
@@ -232,7 +232,7 @@ input = "{binding}"
                         "values": {"brand": "accepted", "undeclared": marker},
                     }
                 ),
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
             (
                 "container value",
@@ -242,12 +242,12 @@ input = "{binding}"
                         "values": {"brand": {"nested": {"client_secret": marker}}},
                     }
                 ),
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
             (
                 "unknown envelope member",
                 self._json_bytes({**valid_model, "extra": marker}),
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
             (
                 "identity mismatch",
@@ -257,12 +257,12 @@ input = "{binding}"
                         "identity": {**valid_model["identity"], "extra": marker},
                     }
                 ),
-                "m7_baseline_stale",
+                "baseline_stale",
             ),
             (
                 "malformed JSON",
                 b'{"private_marker":"' + marker.encode() + b'"',
-                "m7_baseline_invalid",
+                "baseline_invalid",
             ),
         ]
 
@@ -270,7 +270,7 @@ input = "{binding}"
         for name, data, code in malformed:
             with self.subTest(envelope=name):
                 self.baseline_path.write_bytes(data)
-                with self.assertRaises(M7BaselineError) as raised:
+                with self.assertRaises(BaselineError) as raised:
                     load_baseline(manifest, resource)
                 error = raised.exception
                 self.assertEqual(error.code, code)
@@ -287,9 +287,9 @@ input = "{binding}"
         self.assertEqual(tuple(baseline_directory.iterdir()), ())
 
         with (
-            patch("luwu.m7_baseline.encode_public_json", return_value=b"{}"),
-            patch("luwu.m7_engine.write_baseline") as write_baseline,
-            self.assertRaises(M7EngineError) as raised,
+            patch("luwu.baseline.encode_public_json", return_value=b"{}"),
+            patch("luwu.engine.write_baseline") as write_baseline,
+            self.assertRaises(EngineError) as raised,
         ):
             accept_baseline(
                 build_plan(manifest),
@@ -299,7 +299,7 @@ input = "{binding}"
                 confirm=True,
             )
 
-        self.assertEqual(raised.exception.code, "m7_field_invalid")
+        self.assertEqual(raised.exception.code, "field_invalid")
         write_baseline.assert_not_called()
         self.assertEqual(tuple(baseline_directory.iterdir()), ())
         self.assertFalse(self.baseline_path.exists())
@@ -313,8 +313,8 @@ input = "{binding}"
         self.assertEqual(tuple(baseline_directory.iterdir()), ())
 
         with (
-            patch("luwu.m7_baseline.write_baseline") as write_baseline,
-            self.assertRaises(M7BaselineError) as raised,
+            patch("luwu.baseline.write_baseline") as write_baseline,
+            self.assertRaises(BaselineError) as raised,
         ):
             make_field_baseline(
                 manifest,
@@ -325,7 +325,7 @@ input = "{binding}"
             )
 
         error = raised.exception
-        self.assertEqual(error.code, "m7_baseline_invalid")
+        self.assertEqual(error.code, "baseline_invalid")
         self.assertIsNone(error.__context__)
         self.assertIsNone(error.__cause__)
         rendered = "".join(traceback.format_exception(error))
@@ -396,7 +396,7 @@ parent_mode = "0700"
     def test_actual_configuration_sensitive_key_still_uses_format_rejection(
         self,
     ) -> None:
-        with self.assertRaises(M7FormatError):
+        with self.assertRaises(FormatError):
             parse_document(
                 b'{"settings":{"nested":{"client_secret":"sentinel"}}}',
                 format="json",

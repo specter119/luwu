@@ -1,184 +1,35 @@
-"""Loading and validating versioned manifest contracts."""
+"""Strict, read-only loader for the independent version 8 manifest contract."""
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
+import os
 import re
+import stat
 import tomllib
 import unicodedata
+import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any
+from urllib.parse import quote
 
 from .errors import ManifestError
-from .filesystem import (
-    DirectoryBoundary,
-    capture_directory_boundary,
-)
+from .filesystem import DirectoryBoundary, capture_directory_boundary
 
-MANIFEST_VERSION = 1
-_MANIFEST_VERSION_V2 = 2
-_MANIFEST_VERSION_V3 = 3
-_MANIFEST_VERSION_V4 = 4
-EXECUTION_MANIFEST_VERSION = 5
-EXECUTION_RESOURCE_CAPABILITY = "public-source-whole-file"
-PROVIDER_MANIFEST_VERSION = 6
-M6_MANIFEST_VERSION = 7
-SUBPROCESS_CAPABILITY = "subprocess"
-_SUPPORTED_MANIFEST_VERSIONS = frozenset(
-    {
-        MANIFEST_VERSION,
-        _MANIFEST_VERSION_V2,
-        _MANIFEST_VERSION_V3,
-        _MANIFEST_VERSION_V4,
-        EXECUTION_MANIFEST_VERSION,
-        PROVIDER_MANIFEST_VERSION,
-        M6_MANIFEST_VERSION,
-    }
-)
-_MANIFEST_FIELDS = {"version", "resources"}
-_PROVIDER_MANIFEST_FIELDS = {"version", "capabilities", "resources"}
-_M6_MANIFEST_FIELDS = {"version", "roots", "resources"}
-_RESOURCE_FIELDS = {
-    "comparison",
-    "kind",
-    "source",
-    "target",
-    "owner",
-    "scope",
-    "variables",
-    "variables_sensitivity",
-    "fields",
-    "baseline",
-    "content_sensitivity",
-}
-_V3_RESOURCE_FIELDS = {
-    "comparison",
-    "kind",
-    "source",
-    "target",
-    "owner",
-    "scope",
-    "fields",
-    "baseline",
-    "content_sensitivity",
-}
-_V4_RESOURCE_FIELDS = _V3_RESOURCE_FIELDS | {"reverse_sync"}
-_EXECUTION_RESOURCE_FIELDS = {
-    "content_sensitivity",
-    "kind",
-    "source",
-    "target",
-    "owner",
-    "scope",
-    "variables",
-    "variables_sensitivity",
-}
-_PROVIDER_RESOURCE_FIELDS = {
-    "kind",
-    "source",
-    "target",
-    "owner",
-    "scope",
-    "content_sensitivity",
-    "providers",
-}
-_M6_RESOURCE_FIELDS = _V3_RESOURCE_FIELDS | {"inputs"}
-_LOADER_PROVENANCE = object()
-_PUBLIC_VARIABLES_TOKEN = object()
-_SENSITIVE_VARIABLE_KEYS = {
-    "api_key",
-    "apikey",
-    "credential",
-    "credentials",
-    "password",
-    "private_key",
-    "secret",
-    "secrets",
-    "token",
-    "access_token",
-    "client_secret",
-    "refresh_token",
-    "session_token",
-}
-_PROVIDER_ALIAS_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
-_RESERVED_PROVIDER_ALIASES = frozenset({"secrets"})
-
-
-class _PublicVariables(Mapping[str, object]):
-    """Manifest literals explicitly admitted to the non-secret M1 boundary."""
-
-    def __init__(self, values: Mapping[str, object], *, token: object) -> None:
-        if token is not _PUBLIC_VARIABLES_TOKEN:
-            raise TypeError(
-                "public variables can only be issued by the manifest loader"
-            )
-        self._values = MappingProxyType(
-            {key: _freeze_public_value(value) for key, value in values.items()}
-        )
-
-    def __getitem__(self, key: str) -> object:
-        return self._values[key]
-
-    def __iter__(self):
-        return iter(self._values)
-
-    def __len__(self) -> int:
-        return len(self._values)
+_VERSION = 8
+_FORMATS = frozenset({"json", "jsonc", "toml"})
+_MAX_PATH_SEGMENTS = 256
+_FIELD_OWNERS = frozenset({"source", "live", "merge", "ignore"})
+_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
 
 @dataclass(frozen=True, slots=True)
-class ProviderReference:
-    """One closed provider reference declared by a version-6 resource."""
-
-    type: str
-    item: str = dataclass_field(repr=False)
-    field: str = dataclass_field(repr=False)
-    alias: str | None = dataclass_field(default=None, repr=False, compare=False)
-
-
-ProviderSpec = ProviderReference
-
-
-@dataclass(frozen=True, slots=True)
-class Resource:
-    """One fully declared template, symbolic, or M2 copy resource."""
-
-    name: str
-    kind: str
-    source: Path
-    target: Path
-    source_name: str
-    target_name: str
-    owner: str
-    scope: str
-    variables: Mapping[str, object] = dataclass_field(repr=False)
-    variables_sensitivity: str | None = None
-    comparison: str = "exact-bytes"
-    fields: Mapping[str, str] = dataclass_field(
-        default_factory=lambda: MappingProxyType({}), repr=False
-    )
-    baseline: Path | None = None
-    baseline_name: str | None = None
-    content_sensitivity: str | None = None
-    reverse_sync: Mapping[str, str] = dataclass_field(
-        default_factory=lambda: MappingProxyType({}), repr=False
-    )
-    capability: str | None = None
-    providers: Mapping[str, ProviderReference] = dataclass_field(
-        default_factory=lambda: MappingProxyType({}), repr=False
-    )
-    inputs: Mapping[str, Path] = dataclass_field(
-        default_factory=lambda: MappingProxyType({}), repr=False
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class M6Roots:
-    """The explicit, non-overlapping filesystem authorities for version 7."""
+class Roots:
+    """The explicit, non-overlapping filesystem authorities of a manifest."""
 
     source: DirectoryBoundary
     inputs: DirectoryBoundary
@@ -192,1167 +43,1896 @@ class M6Roots:
         self.target.verify()
 
 
+_SENSITIVE_NAMES = frozenset(
+    {
+        "access_key",
+        "accesskey",
+        "api_key",
+        "apikey",
+        "client_secret",
+        "clientsecret",
+        "credential",
+        "credentials",
+        "password",
+        "private_key",
+        "privatekey",
+        "refresh_token",
+        "refreshtoken",
+        "secret",
+        "secrets",
+        "session_token",
+        "sessiontoken",
+        "token",
+    }
+)
+_PROVENANCE_TOKEN = object()
+
+
 @dataclass(frozen=True, slots=True)
+class InputLayer:
+    """One public field read from a declared input document."""
+
+    file: Path = dataclass_field(repr=False)
+    path: tuple[str, ...] = dataclass_field(repr=False)
+    format: str
+    optional: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class InputBinding:
+    """An ordered set of input layers and an optional reverse destination."""
+
+    name: str
+    layers: tuple[InputLayer, ...] = dataclass_field(repr=False)
+    reverse_to: InputLayer | None = dataclass_field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class FieldBinding:
+    """A field alias, its owner, and optional public input binding."""
+
+    path: tuple[str, ...] = dataclass_field(repr=False)
+    owner: str
+    input: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Resource:
+    """One selected resource; directory declarations become copy leaves."""
+
+    name: str
+    kind: str
+    source: Path = dataclass_field(repr=False)
+    target: Path = dataclass_field(repr=False)
+    format: str | None
+    fields: Mapping[str, FieldBinding] = dataclass_field(repr=False)
+    baseline: Path = dataclass_field(repr=False)
+    parents: str
+    parent_mode: int
+    mode: int | None
+    source_name: str = dataclass_field(repr=False)
+    target_name: str = dataclass_field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectorySource:
+    """A declared SOURCE directory whose expanded identity stays immutable."""
+
+    name: str
+    relative: Path
+    exclude: tuple[str, ...]
+    recursive: bool
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class Manifest:
-    """A validated manifest and the root against which it is scoped."""
+    """A validated profile selection and its private filesystem provenance."""
 
-    version: int
-    path: Path
-    root: Path
+    path: Path = dataclass_field(repr=False)
+    profile: str
+    roots: Roots = dataclass_field(repr=False)
     resources: tuple[Resource, ...]
-    content_digest: str
-    _provenance: object | None = dataclass_field(
-        default=None, init=False, repr=False, compare=False
+    inputs: Mapping[str, InputBinding] = dataclass_field(repr=False)
+    packages: tuple[str, ...]
+    excluded: tuple[str, ...]
+    content_digest: str = dataclass_field(repr=False)
+    expansion: tuple[tuple[object, ...], ...] = dataclass_field(repr=False)
+    _provenance: object = dataclass_field(repr=False, compare=False)
+    _signature: str = dataclass_field(repr=False, compare=False)
+    _manifest_identity: tuple[int, int] = dataclass_field(
+        default=(0, 0), repr=False, compare=False
     )
-    capabilities: tuple[str, ...] = ()
-    roots: M6Roots | None = None
-
-    @property
-    def execution_capability(self) -> str | None:
-        """Return the write capability exposed to the M3c executor."""
-
-        if self.version == EXECUTION_MANIFEST_VERSION:
-            return EXECUTION_RESOURCE_CAPABILITY
-        return None
-
-
-def is_execution_manifest(manifest: Manifest) -> bool:
-    """Whether *manifest* uses the explicit M3c execution contract."""
-
-    return manifest.version == EXECUTION_MANIFEST_VERSION
-
-
-def is_provider_manifest(manifest: Manifest) -> bool:
-    """Whether *manifest* uses the closed version-6 provider contract."""
-
-    return manifest.version == PROVIDER_MANIFEST_VERSION
-
-
-def is_m6_manifest(manifest: Manifest) -> bool:
-    """Whether *manifest* uses the bounded version-7 pilot contract."""
-
-    return manifest.version == M6_MANIFEST_VERSION
-
-
-def load_manifest(path: Path) -> Manifest:
-    """Read and validate a manifest without touching any declared target."""
-
-    try:
-        manifest_path = path.expanduser().resolve(strict=False)
-    except (OSError, RuntimeError):
-        raise ManifestError(
-            f"cannot resolve manifest {path}",
-            code="manifest_unreadable",
-        ) from None
-    try:
-        raw = manifest_path.read_bytes()
-    except FileNotFoundError:
-        raise ManifestError(
-            f"manifest does not exist: {path}",
-            code="manifest_missing",
-        ) from None
-    except OSError as exc:
-        raise ManifestError(
-            f"cannot read manifest {path}: {exc.strerror or type(exc).__name__}",
-            code="manifest_unreadable",
-        ) from None
-
-    try:
-        document = tomllib.loads(raw.decode("utf-8"))
-    except UnicodeDecodeError:
-        raise ManifestError(
-            f"manifest is not valid UTF-8: {path}",
-            code="manifest_encoding",
-        ) from None
-    except tomllib.TOMLDecodeError:
-        raise ManifestError(
-            "manifest is not valid TOML",
-            code="manifest_toml",
-        ) from None
-
-    if not isinstance(document, dict):
-        raise ManifestError("manifest root must be a table", code="manifest_shape")
-
-    version = document.get("version")
-    if type(version) is not int or version not in _SUPPORTED_MANIFEST_VERSIONS:
-        raise ManifestError(
-            "manifest version must be 1, 2, 3, 4, 5, 6, or 7",
-            code="manifest_version",
-        )
-
-    allowed_manifest_fields = (
-        _PROVIDER_MANIFEST_FIELDS
-        if version == PROVIDER_MANIFEST_VERSION
-        else _M6_MANIFEST_FIELDS
-        if version == M6_MANIFEST_VERSION
-        else _MANIFEST_FIELDS
+    _directory_sources: tuple[_DirectorySource, ...] = dataclass_field(
+        default=(), repr=False, compare=False
     )
-    unknown_fields = set(document) - allowed_manifest_fields
-    if unknown_fields:
-        raise ManifestError(
-            f"manifest has unsupported field(s): {', '.join(sorted(unknown_fields))}",
-            code="manifest_unknown_field",
-        )
-
-    capabilities: tuple[str, ...] = ()
-    if version == PROVIDER_MANIFEST_VERSION:
-        raw_capabilities = document.get("capabilities")
-        if raw_capabilities != [SUBPROCESS_CAPABILITY]:
-            raise ManifestError(
-                "version 6 manifest capabilities must be exactly ['subprocess']",
-                code="manifest_capabilities",
-            )
-        capabilities = (SUBPROCESS_CAPABILITY,)
-
-    raw_resources = document.get("resources")
-    if not isinstance(raw_resources, dict) or not raw_resources:
-        raise ManifestError(
-            "manifest resources must be a non-empty table",
-            code="manifest_resources",
-        )
-    if version == MANIFEST_VERSION and len(raw_resources) != 1:
-        raise ManifestError(
-            "M1 supports exactly one resource",
-            code="resource_count",
-        )
-
-    try:
-        root = manifest_path.parent.resolve(strict=False)
-    except (OSError, RuntimeError):
-        raise ManifestError(
-            f"cannot resolve manifest directory {manifest_path.parent}",
-            code="manifest_unreadable",
-        ) from None
-    m6_roots = (
-        _parse_m6_roots(document.get("roots"), root=root)
-        if version == M6_MANIFEST_VERSION
-        else None
+    _directory_freshness: tuple[tuple[object, ...], ...] = dataclass_field(
+        default=(), repr=False, compare=False
     )
-    resources: list[Resource] = []
-    resolved_sources: list[Path] = []
-
-    for name, raw_resource in sorted(raw_resources.items()):
-        if not isinstance(name, str) or not name.strip():
-            raise ManifestError(
-                "resource names must be non-empty strings",
-                code="resource_name",
-            )
-        if not isinstance(raw_resource, dict):
-            raise ManifestError(
-                f"resource {name!r} must be a table",
-                code="resource_shape",
-            )
-
-        allowed_resource_fields = _RESOURCE_FIELDS
-        if version == _MANIFEST_VERSION_V3:
-            allowed_resource_fields = _V3_RESOURCE_FIELDS
-        elif version == _MANIFEST_VERSION_V4:
-            allowed_resource_fields = _V4_RESOURCE_FIELDS
-        elif version == EXECUTION_MANIFEST_VERSION:
-            allowed_resource_fields = _EXECUTION_RESOURCE_FIELDS
-        elif version == PROVIDER_MANIFEST_VERSION:
-            allowed_resource_fields = _PROVIDER_RESOURCE_FIELDS
-        elif version == M6_MANIFEST_VERSION:
-            allowed_resource_fields = _M6_RESOURCE_FIELDS
-        else:
-            allowed_resource_fields = _RESOURCE_FIELDS - {
-                "fields",
-                "baseline",
-                "content_sensitivity",
-            }
-        unknown_resource_fields = set(raw_resource) - allowed_resource_fields
-        if unknown_resource_fields:
-            raise ManifestError(
-                f"resource {name!r} has unsupported field(s): "
-                f"{', '.join(sorted(unknown_resource_fields))}",
-                code="resource_unknown_field",
-            )
-
-        source_name = _required_string(raw_resource, "source", resource_name=name)
-        source_relative = _declared_relative_path(
-            source_name,
-            field=f"resource {name!r} source",
-        )
-
-        raw_kind = raw_resource.get("kind")
-        if (
-            version
-            in {_MANIFEST_VERSION_V3, EXECUTION_MANIFEST_VERSION, M6_MANIFEST_VERSION}
-            and raw_kind is None
-        ):
-            raise ManifestError(
-                f"resource {name!r} kind must be explicitly 'template' or 'symbolic' in manifest version {version}",
-                code="resource_kind",
-            )
-        if version == PROVIDER_MANIFEST_VERSION and raw_kind is None:
-            raise ManifestError(
-                f"resource {name!r} kind must be explicitly 'template' in manifest version {version}",
-                code="resource_kind",
-            )
-        if (
-            version
-            in {
-                _MANIFEST_VERSION_V3,
-                _MANIFEST_VERSION_V4,
-                M6_MANIFEST_VERSION,
-            }
-            and raw_kind is None
-        ):
-            raise ManifestError(
-                f"resource {name!r} kind must be explicitly 'template' in manifest version {version}",
-                code="resource_kind",
-            )
-        if raw_kind is None:
-            kind = "template" if source_relative.suffix == ".j2" else "symbolic"
-        else:
-            kind = _required_string(raw_resource, "kind", resource_name=name)
-        supported_kinds = {"template", "symbolic"}
-        if version == _MANIFEST_VERSION_V2:
-            supported_kinds.add("copy")
-        if version == _MANIFEST_VERSION_V3:
-            supported_kinds = {"template"}
-        if version == _MANIFEST_VERSION_V4:
-            supported_kinds = {"template"}
-        if version == M6_MANIFEST_VERSION:
-            supported_kinds = {"template"}
-        if version == EXECUTION_MANIFEST_VERSION:
-            supported_kinds = {"template", "symbolic"}
-        if version == PROVIDER_MANIFEST_VERSION:
-            supported_kinds = {"template"}
-        if kind not in supported_kinds:
-            raise ManifestError(
-                f"resource {name!r} kind is not supported by manifest version {version}",
-                code="resource_kind",
-            )
-        if kind == "template" and source_relative.suffix != ".j2":
-            raise ManifestError(
-                f"resource {name!r} template source must use the .j2 suffix",
-                code="resource_source_suffix",
-            )
-
-        raw_comparison = raw_resource.get("comparison")
-        if version == MANIFEST_VERSION and raw_comparison is not None:
-            raise ManifestError(
-                f"resource {name!r} comparison is only supported by manifest version 2",
-                code="resource_comparison_version",
-            )
-        comparison = (
-            "exact-bytes"
-            if raw_comparison is None
-            else _required_string(raw_resource, "comparison", resource_name=name)
-        )
-        if (
-            version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4}
-            and comparison != "json"
-        ):
-            raise ManifestError(
-                f"resource {name!r} comparison must be 'json' in manifest version {version}",
-                code="resource_comparison_version",
-            )
-        if version == M6_MANIFEST_VERSION and comparison not in {"json", "toml"}:
-            raise ManifestError(
-                "resource comparison must be 'json' or 'toml' in manifest version 7",
-                code="resource_comparison_version",
-            )
-        if version != M6_MANIFEST_VERSION and comparison not in {"exact-bytes", "json"}:
-            raise ManifestError(
-                "resource comparison is unsupported by this manifest version",
-                code="resource_comparison",
-            )
-        if comparison not in {"exact-bytes", "json", "toml"}:
-            raise ManifestError(
-                f"resource {name!r} comparison is unsupported",
-                code="resource_comparison",
-            )
-        if comparison in {"json", "toml"} and kind != "template":
-            raise ManifestError(
-                f"resource {name!r} json comparison requires a template resource",
-                code="resource_comparison_kind",
-            )
-
-        target_name = _required_string(raw_resource, "target", resource_name=name)
-        if version == PROVIDER_MANIFEST_VERSION:
-            target = _declared_external_absolute_path(
-                target_name,
-                root=root,
-                field=f"resource {name!r} target",
-            )
-        elif version == M6_MANIFEST_VERSION:
-            assert m6_roots is not None
-            target_relative = _declared_relative_path(
-                target_name,
-                field=f"resource {name!r} target",
-            )
-            target = m6_roots.target.path / target_relative
-        else:
-            target_relative = _declared_relative_path(
-                target_name,
-                field=f"resource {name!r} target",
-            )
-            target = root / target_relative
-
-        owner = _required_string(raw_resource, "owner", resource_name=name)
-        if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4, M6_MANIFEST_VERSION}:
-            if owner != "fields":
-                raise ManifestError(
-                    f"resource {name!r} owner must be 'fields' in manifest version {version}",
-                    code="resource_owner",
-                )
-        elif owner != "source":
-            raise ManifestError(
-                f"resource {name!r} owner must be 'source'",
-                code="resource_owner",
-            )
-
-        scope = _required_string(raw_resource, "scope", resource_name=name)
-        if version in {_MANIFEST_VERSION_V3, _MANIFEST_VERSION_V4, M6_MANIFEST_VERSION}:
-            if scope != "fields":
-                raise ManifestError(
-                    f"resource {name!r} scope must be 'fields' in manifest version {version}",
-                    code="resource_scope",
-                )
-        elif scope != "whole-file":
-            raise ManifestError(
-                f"resource {name!r} scope must be 'whole-file'",
-                code="resource_scope",
-            )
-
-        raw_variables = raw_resource.get("variables", {})
-        variables = _copy_supported_value(
-            raw_variables,
-            field=f"resource {name!r} variables",
-        )
-        if not isinstance(variables, dict):
-            raise ManifestError(
-                f"resource {name!r} variables must be a table",
-                code="resource_variables",
-            )
-        if kind in {"symbolic", "copy"} and variables:
-            raise ManifestError(
-                f"resource {name!r} {kind} resources cannot have variables",
-                code="resource_variables",
-            )
-        raw_sensitivity = raw_resource.get("variables_sensitivity")
-        if raw_sensitivity is not None and raw_sensitivity != "public":
-            raise ManifestError(
-                f"resource {name!r} variables_sensitivity must be 'public'",
-                code="resource_sensitivity",
-            )
-        if variables and raw_sensitivity != "public":
-            raise ManifestError(
-                f"resource {name!r} variables require explicit public sensitivity",
-                code="resource_sensitivity",
-            )
-
-        raw_fields = raw_resource.get("fields")
-        fields = (
-            _parse_fields(raw_fields, resource_name=name)
-            if version
-            in {
-                _MANIFEST_VERSION_V3,
-                _MANIFEST_VERSION_V4,
-                M6_MANIFEST_VERSION,
-            }
-            else MappingProxyType({})
-        )
-        raw_content_sensitivity = raw_resource.get("content_sensitivity")
-        if (
-            version
-            in {
-                _MANIFEST_VERSION_V3,
-                _MANIFEST_VERSION_V4,
-                M6_MANIFEST_VERSION,
-            }
-            and raw_content_sensitivity != "public"
-        ):
-            raise ManifestError(
-                f"resource {name!r} content_sensitivity must be 'public'",
-                code="resource_content_sensitivity",
-            )
-        content_sensitivity = (
-            raw_content_sensitivity
-            if version
-            in {
-                _MANIFEST_VERSION_V3,
-                _MANIFEST_VERSION_V4,
-                M6_MANIFEST_VERSION,
-            }
-            else None
-        )
-        if (
-            version == EXECUTION_MANIFEST_VERSION
-            and raw_content_sensitivity != "public"
-        ):
-            raise ManifestError(
-                f"resource {name!r} content_sensitivity must be 'public'",
-                code="resource_content_sensitivity",
-            )
-        if version == EXECUTION_MANIFEST_VERSION:
-            content_sensitivity = "public"
-        if version == PROVIDER_MANIFEST_VERSION and raw_content_sensitivity != "secret":
-            raise ManifestError(
-                f"resource {name!r} content_sensitivity must be 'secret'",
-                code="resource_content_sensitivity",
-            )
-        if version == PROVIDER_MANIFEST_VERSION:
-            content_sensitivity = "secret"
-        baseline_name: str | None = None
-        baseline: Path | None = None
-        if (
-            version
-            in {
-                _MANIFEST_VERSION_V3,
-                _MANIFEST_VERSION_V4,
-                M6_MANIFEST_VERSION,
-            }
-            and "baseline" in raw_resource
-        ):
-            baseline_name = _required_string(
-                raw_resource, "baseline", resource_name=name
-            )
-            baseline_relative = _declared_relative_path(
-                baseline_name,
-                field=f"resource {name!r} baseline",
-            )
-            baseline_root = (
-                m6_roots.inputs.path
-                if version == M6_MANIFEST_VERSION and m6_roots is not None
-                else root
-            )
-            baseline = baseline_root / baseline_relative
-
-        reverse_sync = (
-            _parse_reverse_sync(
-                raw_resource.get("reverse_sync"),
-                fields=fields,
-                resource_name=name,
-            )
-            if version == _MANIFEST_VERSION_V4
-            else MappingProxyType({})
-        )
-
-        inputs = (
-            _parse_m6_inputs(
-                raw_resource.get("inputs"),
-                fields=fields,
-                roots=m6_roots,
-                resource_name=name,
-            )
-            if version == M6_MANIFEST_VERSION and m6_roots is not None
-            else MappingProxyType({})
-        )
-
-        providers = (
-            _parse_providers(
-                raw_resource.get("providers"),
-                resource_name=name,
-            )
-            if version == PROVIDER_MANIFEST_VERSION
-            else MappingProxyType({})
-        )
-
-        source_root = (
-            m6_roots.source.path
-            if version == M6_MANIFEST_VERSION and m6_roots is not None
-            else root
-        )
-        source = source_root / source_relative
-        try:
-            resolved_source = source.resolve(strict=False)
-            resolved_source.relative_to(source_root)
-        except (OSError, RuntimeError, ValueError):
-            raise ManifestError(
-                f"resource {name!r} source must stay inside its source root",
-                code="resource_source_boundary",
-            ) from None
-
-        if version == M6_MANIFEST_VERSION:
-            assert m6_roots is not None
-            protected_roots = (m6_roots.source.path, m6_roots.inputs.path)
-            if any(
-                _paths_overlap(target, protected_root)
-                for protected_root in protected_roots
-            ):
-                raise ManifestError(
-                    "version 7 resource target must stay outside source and inputs roots",
-                    code="m6_root_overlap",
-                )
-
-        if target == manifest_path:
-            raise ManifestError(
-                f"resource {name!r} target must not replace the manifest",
-                code="target_manifest",
-            )
-        if target == source:
-            raise ManifestError(
-                f"resource {name!r} source and target must be different paths",
-                code="source_target_same",
-            )
-        if target == resolved_source:
-            raise ManifestError(
-                f"resource {name!r} source and target must resolve to different paths",
-                code="source_target_conflict",
-            )
-        resources.append(
-            Resource(
-                name=name,
-                kind=kind,
-                source=source,
-                target=target,
-                source_name=source_name,
-                target_name=target_name,
-                owner=owner,
-                scope=scope,
-                variables=_PublicVariables(variables, token=_PUBLIC_VARIABLES_TOKEN),
-                variables_sensitivity=raw_sensitivity,
-                comparison=comparison,
-                fields=fields,
-                baseline=baseline,
-                baseline_name=baseline_name,
-                content_sensitivity=content_sensitivity,
-                reverse_sync=reverse_sync,
-                capability=(
-                    EXECUTION_RESOURCE_CAPABILITY
-                    if version == EXECUTION_MANIFEST_VERSION
-                    else None
-                ),
-                providers=providers,
-                inputs=inputs,
-            )
-        )
-        resolved_sources.append(resolved_source)
-
-    _validate_resource_relationships(
-        resources,
-        resolved_sources,
-        manifest_path=manifest_path,
-    )
-    manifest = Manifest(
-        version=version,
-        path=manifest_path,
-        root=root,
-        resources=tuple(resources),
-        content_digest=hashlib.sha256(raw).hexdigest(),
-        capabilities=capabilities,
-        roots=m6_roots,
-    )
-    object.__setattr__(manifest, "_provenance", _LOADER_PROVENANCE)
-    return manifest
 
 
-def _validate_resource_relationships(
-    resources: list[Resource],
-    resolved_sources: list[Path],
-    *,
-    manifest_path: Path,
-) -> None:
-    """Reject ambiguous path relationships between declared resources."""
+_LOADED_MANIFESTS: dict[
+    int, tuple[weakref.ReferenceType[Manifest], tuple[object, ...], str]
+] = {}
 
-    # The original pairwise implementation made each manifest load quadratic
-    # in the number of resources.  Build indexes for exact paths and their
-    # ancestors instead.  Candidates retain their resource-pair and
-    # relationship order so the public error precedence remains deterministic.
-    resource_paths = [
-        (resource.source, resource.target, resolved_sources[index])
-        for index, resource in enumerate(resources)
-    ]
-    paths_to_resources: dict[Path, list[int]] = {}
-    source_paths: dict[Path, list[int]] = {}
-    target_paths: dict[Path, list[int]] = {}
-    for index, (source, target, resolved_source) in enumerate(resource_paths):
-        for path in (source, resolved_source, target):
-            paths_to_resources.setdefault(path, []).append(index)
-        for path in (source, resolved_source):
-            source_paths.setdefault(path, []).append(index)
-        target_paths.setdefault(target, []).append(index)
 
-    candidates: dict[tuple[int, int], tuple[int, str]] = {}
-
-    def add_candidate(
-        left_index: int,
-        right_index: int,
-        kind: int,
-        message: str,
-    ) -> None:
-        if left_index == right_index:
-            return
-        pair = (
-            (left_index, right_index)
-            if left_index < right_index
-            else (right_index, left_index)
-        )
-        current = candidates.get(pair)
-        if current is None or kind < current[0]:
-            candidates[pair] = (kind, message)
-
-    for index, resource in enumerate(resources):
-        for other_index in target_paths.get(resource.target, ()):
-            if other_index < index:
-                other = resources[other_index]
-                add_candidate(
-                    other_index,
-                    index,
-                    0,
-                    f"resources {other.name!r} and {resource.name!r} declare "
-                    f"the same target {resource.target_name!r}",
-                )
-
-        for other_index in source_paths.get(resource.target, ()):
-            if other_index == index:
-                continue
-            left_index, right_index = sorted((index, other_index))
-            left = resources[left_index]
-            right = resources[right_index]
-            if left_index == index:
-                message = (
-                    f"resource {left.name!r} target {left.target_name!r} "
-                    f"conflicts with resource {right.name!r} source "
-                    f"{right.source_name!r}"
-                )
-            else:
-                message = (
-                    f"resource {right.name!r} target {right.target_name!r} "
-                    f"conflicts with resource {left.name!r} source "
-                    f"{left.source_name!r}"
-                )
-            add_candidate(
-                left_index, right_index, 1 if left_index == index else 2, message
-            )
-
-        for ancestor in resource.source.parents:
-            for other_index in paths_to_resources.get(ancestor, ()):
-                if other_index == index:
-                    continue
-                left_index, right_index = sorted((index, other_index))
-                left = resources[left_index]
-                right = resources[right_index]
-                add_candidate(
-                    left_index,
-                    right_index,
-                    3,
-                    f"resources {left.name!r} and {right.name!r} have "
-                    "overlapping ancestor paths",
-                )
-        for ancestor in resource.target.parents:
-            for other_index in paths_to_resources.get(ancestor, ()):
-                if other_index == index:
-                    continue
-                left_index, right_index = sorted((index, other_index))
-                left = resources[left_index]
-                right = resources[right_index]
-                add_candidate(
-                    left_index,
-                    right_index,
-                    3,
-                    f"resources {left.name!r} and {right.name!r} have "
-                    "overlapping ancestor paths",
-                )
-        for ancestor in resolved_sources[index].parents:
-            for other_index in paths_to_resources.get(ancestor, ()):
-                if other_index == index:
-                    continue
-                left_index, right_index = sorted((index, other_index))
-                left = resources[left_index]
-                right = resources[right_index]
-                add_candidate(
-                    left_index,
-                    right_index,
-                    3,
-                    f"resources {left.name!r} and {right.name!r} have "
-                    "overlapping ancestor paths",
-                )
-
-    if candidates:
-        _, (kind, message) = min(
-            candidates.items(),
-            key=lambda item: (item[0][0], item[0][1], item[1][0]),
-        )
-        raise ManifestError(
-            message,
-            code=(
-                "resource_target_conflict"
-                if kind == 0
-                else "resource_path_conflict"
-                if kind in {1, 2}
-                else "resource_path_overlap"
+def _manifest_storage_identity(manifest: Manifest) -> tuple[object, ...]:
+    resource_storage = tuple(
+        (
+            id(resource),
+            id(resource.fields),
+            tuple(
+                (alias, id(binding))
+                for alias, binding in sorted(resource.fields.items())
             ),
         )
-
-    baselines = [(resource, resource.baseline) for resource in resources]
-    for resource, baseline in baselines:
-        if baseline is None:
-            continue
-        declared_paths = [manifest_path]
-        for other, resolved_source in zip(resources, resolved_sources):
-            declared_paths.extend((other.source, other.target, resolved_source))
-        for path in declared_paths:
-            if (
-                baseline == path
-                or _is_path_ancestor(baseline, path)
-                or _is_path_ancestor(path, baseline)
-            ):
-                raise ManifestError(
-                    f"resource {resource.name!r} baseline has a conflicting path",
-                    code="baseline_path_conflict",
-                )
-        for other, other_baseline in baselines:
-            if other_baseline is None or other is resource:
-                continue
-            if (
-                baseline == other_baseline
-                or _is_path_ancestor(baseline, other_baseline)
-                or _is_path_ancestor(other_baseline, baseline)
-            ):
-                raise ManifestError(
-                    "resources declare conflicting baseline paths",
-                    code="baseline_path_conflict",
-                )
-
-
-def _resources_have_ancestor_overlap(
-    left: Resource,
-    right: Resource,
-    *,
-    left_resolved_source: Path,
-    right_resolved_source: Path,
-) -> bool:
-    """Return whether any non-identical declared paths have an ancestor relation."""
-
-    left_paths = (left.source, left.target, left_resolved_source)
-    right_paths = (right.source, right.target, right_resolved_source)
-    return any(
-        _is_path_ancestor(left_path, right_path)
-        or _is_path_ancestor(right_path, left_path)
-        for left_path in left_paths
-        for right_path in right_paths
+        for resource in manifest.resources
     )
-
-
-def _is_path_ancestor(parent: Path, child: Path) -> bool:
-    return parent != child and parent in child.parents
-
-
-def _paths_overlap(left: Path, right: Path) -> bool:
+    input_storage = tuple(
+        (
+            name,
+            id(binding),
+            id(binding.layers),
+            tuple(id(layer) for layer in binding.layers),
+            None if binding.reverse_to is None else id(binding.reverse_to),
+        )
+        for name, binding in sorted(manifest.inputs.items())
+    )
+    root_storage = (
+        id(manifest.roots),
+        id(manifest.roots.source),
+        id(manifest.roots.inputs),
+        id(manifest.roots.target),
+    )
     return (
-        left == right
-        or _is_path_ancestor(left, right)
-        or _is_path_ancestor(right, left)
+        id(manifest.resources),
+        resource_storage,
+        id(manifest.inputs),
+        input_storage,
+        root_storage,
+        id(manifest.packages),
+        id(manifest.excluded),
+        id(manifest.expansion),
+        tuple(id(entry) for entry in manifest.expansion),
+        id(manifest._manifest_identity),
+        manifest._manifest_identity,
+        id(manifest._directory_sources),
+        tuple(
+            (
+                id(source),
+                id(source.exclude),
+                tuple(id(pattern) for pattern in source.exclude),
+            )
+            for source in manifest._directory_sources
+        ),
+        id(manifest._directory_freshness),
+        tuple(id(entry) for entry in manifest._directory_freshness),
     )
 
 
-def _parse_m6_roots(raw_roots: object, *, root: Path) -> M6Roots:
-    if not isinstance(raw_roots, dict):
-        raise ManifestError("version 7 manifest roots must be a table", code="m6_roots")
-    unknown = set(raw_roots) - {"source", "inputs", "target"}
-    if unknown:
-        raise ManifestError(
-            "version 7 manifest roots have unsupported field(s)",
-            code="m6_roots",
-        )
+def _register_manifest(manifest: Manifest) -> None:
+    key = id(manifest)
 
-    paths: dict[str, Path] = {}
-    for name in ("source", "inputs"):
-        value = raw_roots.get(name)
-        if not isinstance(value, str) or not value.strip():
-            raise ManifestError(
-                f"version 7 roots.{name} must be a non-empty relative path",
-                code="m6_roots",
+    def discard(reference: weakref.ReferenceType[Manifest]) -> None:
+        registered = _LOADED_MANIFESTS.get(key)
+        if registered is not None and registered[0] is reference:
+            del _LOADED_MANIFESTS[key]
+
+    reference = weakref.ref(manifest, discard)
+    _LOADED_MANIFESTS[key] = (
+        reference,
+        _manifest_storage_identity(manifest),
+        manifest._signature,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ResourceDeclaration:
+    name: str
+    kind: str
+    source_relative: Path
+    target_relative: Path
+    baseline_relative: Path
+    parents: str
+    parent_mode: int
+    mode: int | None
+    format: str | None = None
+    fields: Mapping[str, FieldBinding] = dataclass_field(
+        default_factory=lambda: MappingProxyType({}), repr=False
+    )
+    exclude: tuple[str, ...] = ()
+    recursive: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class _Package:
+    dependencies: tuple[str, ...]
+    resources: tuple[str, ...]
+
+
+def load_manifest(path: Path, *, profile: str) -> Manifest:
+    """Load and validate one version 8 manifest profile without reading payloads."""
+
+    return _load_manifest(path, profile=profile, inspect_mutable_paths=True)
+
+
+def _load_manifest(
+    path: Path, *, profile: str, inspect_mutable_paths: bool
+) -> Manifest:
+    """Load declarations and source freshness, optionally checking mutable paths."""
+
+    manifest_path = _absolute_path(path)
+    raw, manifest_identity = _read_manifest_snapshot(manifest_path)
+    document = _parse_manifest(raw)
+    if type(document.get("version")) is not int or document["version"] != _VERSION:
+        raise ManifestError("manifest version must be 8", code="manifest_version")
+    _require_exact_keys(
+        document,
+        required={"version", "roots", "profiles", "packages", "inputs", "resources"},
+        allowed={"version", "roots", "profiles", "packages", "inputs", "resources"},
+        code="manifest_schema",
+    )
+
+    roots = _parse_roots(document["roots"], manifest_root=manifest_path.parent)
+    profiles = _parse_profiles(document["profiles"])
+    packages = _parse_packages(document["packages"])
+    declarations = _parse_resources(document["resources"])
+    inputs = _parse_inputs(document["inputs"], roots=roots)
+    _validate_package_references(packages, declarations, inputs)
+
+    if not isinstance(profile, str) or not _valid_name(profile):
+        raise ManifestError("profile name is invalid", code="profile")
+    try:
+        profile_packages, profile_excludes = profiles[profile]
+    except KeyError:
+        raise ManifestError(
+            "selected profile is not declared", code="profile"
+        ) from None
+
+    selected_packages, excluded_packages = _select_packages(
+        profile_packages, profile_excludes, packages
+    )
+    ordered_packages = _stable_topological_order(selected_packages, packages)
+    selected_names = _selected_resources(ordered_packages, packages)
+    selected_declarations = tuple(declarations[name] for name in selected_names)
+    used_input_names = {
+        binding.input
+        for declaration in selected_declarations
+        for binding in declaration.fields.values()
+        if binding.input is not None
+    }
+    selected_inputs = MappingProxyType(
+        {name: inputs[name] for name in sorted(used_input_names)}
+    )
+
+    directory_freshness: list[tuple[object, ...]] = []
+    directory_sources: list[_DirectorySource] = []
+    expansion: list[tuple[object, ...]] = []
+    expanded_resources: list[Resource] = []
+    directory_scopes: list[tuple[str, Path, Path]] = []
+
+    for declaration in selected_declarations:
+        if declaration.kind == "directory":
+            source_dir = roots.source.path / declaration.source_relative
+            target_dir = roots.target.path / declaration.target_relative
+            directory_scopes.append((declaration.name, source_dir, target_dir))
+            directory_sources.append(
+                _DirectorySource(
+                    name=declaration.name,
+                    relative=declaration.source_relative,
+                    exclude=declaration.exclude,
+                    recursive=declaration.recursive,
+                )
             )
-        relative = _declared_relative_path(value, field=f"roots.{name}")
-        paths[name] = root / relative
+            leaves, snapshots, directory_entries = _expand_directory(
+                roots.source,
+                declaration.source_relative,
+                declaration.exclude,
+                recursive=declaration.recursive,
+                resource_name=declaration.name,
+            )
+            directory_freshness.extend(snapshots)
+            expansion.extend(directory_entries)
+            for relative_leaf in leaves:
+                source_relative = declaration.source_relative / relative_leaf
+                target_relative = declaration.target_relative / relative_leaf
+                baseline_relative = _directory_baseline(
+                    declaration.baseline_relative, relative_leaf
+                )
+                expanded_resources.append(
+                    Resource(
+                        name=f"{declaration.name}:{relative_leaf.as_posix()}",
+                        kind="copy",
+                        source=roots.source.path / source_relative,
+                        target=roots.target.path / target_relative,
+                        format=None,
+                        fields=MappingProxyType({}),
+                        baseline=roots.inputs.path / baseline_relative,
+                        parents=declaration.parents,
+                        parent_mode=declaration.parent_mode,
+                        mode=declaration.mode,
+                        source_name=source_relative.as_posix(),
+                        target_name=target_relative.as_posix(),
+                    )
+                )
+        else:
+            expanded_resources.append(
+                Resource(
+                    name=declaration.name,
+                    kind=declaration.kind,
+                    source=roots.source.path / declaration.source_relative,
+                    target=roots.target.path / declaration.target_relative,
+                    format=declaration.format,
+                    fields=declaration.fields,
+                    baseline=roots.inputs.path / declaration.baseline_relative,
+                    parents=declaration.parents,
+                    parent_mode=declaration.parent_mode,
+                    mode=declaration.mode,
+                    source_name=declaration.source_relative.as_posix(),
+                    target_name=declaration.target_relative.as_posix(),
+                )
+            )
 
-    target_value = raw_roots.get("target")
-    if not isinstance(target_value, str) or not target_value.strip():
-        raise ManifestError(
-            "version 7 roots.target must be a non-empty path", code="m6_roots"
-        )
-    if Path(target_value).is_absolute():
-        paths["target"] = Path(target_value)
-    else:
-        relative = _declared_relative_path(target_value, field="roots.target")
-        paths["target"] = root / relative
+    _validate_declared_relationships(
+        expanded_resources,
+        selected_declarations,
+        selected_inputs,
+        directory_scopes,
+        roots,
+        manifest_path,
+    )
 
-    names = ("source", "inputs", "target")
-    resolved_paths = {name: paths[name].resolve(strict=False) for name in names}
-    source = resolved_paths["source"]
-    inputs = resolved_paths["inputs"]
-    target = resolved_paths["target"]
-    if _paths_overlap(source, inputs):
-        raise ManifestError(
-            "version 7 source and inputs roots must be distinct and non-overlapping",
-            code="m6_root_overlap",
+    # Observe selected paths only. Excluded packages and their directories have
+    # already been removed before this no-follow metadata pass.
+    direct_declarations = {
+        declaration.name: declaration
+        for declaration in selected_declarations
+        if declaration.kind != "directory"
+    }
+    for resource in expanded_resources:
+        declaration = direct_declarations.get(resource.name)
+        if declaration is not None and inspect_mutable_paths:
+            _inspect_source_resource(declaration, roots)
+            _inspect_output_paths(
+                roots,
+                target_name=resource.target_name,
+                baseline_name=declaration.baseline_relative.as_posix(),
+                parents=resource.parents,
+            )
+
+    # Directory leaves are already statted during enumeration; validate their
+    # output and baseline destinations using the same no-follow path walker.
+    directory_leaf_names = {
+        f"{declaration.name}:{relative}"
+        for declaration in selected_declarations
+        if declaration.kind == "directory"
+        for directory_name, relative, *_ in expansion
+        if directory_name == declaration.name
+    }
+    for resource in expanded_resources:
+        if not inspect_mutable_paths or resource.name not in directory_leaf_names:
+            continue
+        _inspect_output_paths(
+            roots,
+            target_name=resource.target_name,
+            baseline_name=resource.baseline.relative_to(roots.inputs.path).as_posix(),
+            parents=resource.parents,
         )
-    if any(
-        target == protected_root or _is_path_ancestor(protected_root, target)
-        for protected_root in (source, inputs)
-    ):
-        raise ManifestError(
-            "version 7 target root must not be equal to or below source or inputs",
-            code="m6_root_overlap",
-        )
+
+    if inspect_mutable_paths:
+        for binding in selected_inputs.values():
+            for layer in binding.layers:
+                _inspect_input_file(
+                    roots.inputs,
+                    layer.file.relative_to(roots.inputs.path),
+                    optional=layer.optional,
+                )
+            if binding.reverse_to is not None:
+                _inspect_input_file(
+                    roots.inputs,
+                    binding.reverse_to.file.relative_to(roots.inputs.path),
+                    optional=True,
+                )
 
     try:
-        boundaries = {name: capture_directory_boundary(paths[name]) for name in names}
-    except (OSError, NotImplementedError, ValueError):
+        roots.verify()
+    except (OSError, ValueError, NotImplementedError):
         raise ManifestError(
-            "version 7 roots must be existing safe directories",
-            code="m6_root_unreadable",
+            "a declared root changed during manifest loading", code="root_stale"
         ) from None
-    return M6Roots(
+    directory_freshness_tuple = tuple(sorted(set(directory_freshness), key=repr))
+    expansion_tuple = tuple(sorted(expansion, key=repr))
+    resource_tuple = tuple(expanded_resources)
+    content_digest = hashlib.sha256(raw).hexdigest()
+    manifest_without_signature = Manifest(
+        path=manifest_path,
+        profile=profile,
+        roots=roots,
+        resources=resource_tuple,
+        inputs=selected_inputs,
+        packages=ordered_packages,
+        excluded=excluded_packages,
+        content_digest=content_digest,
+        expansion=expansion_tuple,
+        _provenance=_PROVENANCE_TOKEN,
+        _signature="",
+        _manifest_identity=manifest_identity,
+        _directory_sources=tuple(directory_sources),
+        _directory_freshness=directory_freshness_tuple,
+    )
+    signature = _manifest_signature(manifest_without_signature)
+    result = Manifest(
+        path=manifest_without_signature.path,
+        profile=manifest_without_signature.profile,
+        roots=manifest_without_signature.roots,
+        resources=manifest_without_signature.resources,
+        inputs=manifest_without_signature.inputs,
+        packages=manifest_without_signature.packages,
+        excluded=manifest_without_signature.excluded,
+        content_digest=manifest_without_signature.content_digest,
+        expansion=manifest_without_signature.expansion,
+        _provenance=_PROVENANCE_TOKEN,
+        _signature=signature,
+        _manifest_identity=manifest_without_signature._manifest_identity,
+        _directory_sources=manifest_without_signature._directory_sources,
+        _directory_freshness=manifest_without_signature._directory_freshness,
+    )
+    _register_manifest(result)
+    return result
+
+
+def verify_manifest(manifest: Manifest) -> None:
+    """Verify declaration bytes, roots, and declared SOURCE directory expansions."""
+
+    if (
+        not isinstance(manifest, Manifest)
+        or manifest._provenance is not _PROVENANCE_TOKEN
+    ):
+        raise ManifestError("manifest provenance is not trusted", code="provenance")
+    try:
+        registered = _LOADED_MANIFESTS.get(id(manifest))
+        if registered is None or registered[0]() is not manifest:
+            raise ManifestError("manifest provenance is not trusted", code="provenance")
+        registered_signature = registered[2]
+        if _manifest_storage_identity(manifest) != registered[1]:
+            raise ManifestError("manifest storage was changed", code="provenance")
+        signature = _manifest_signature(manifest)
+    except ManifestError:
+        raise
+    except (AttributeError, TypeError, ValueError, RecursionError):
+        raise ManifestError(
+            "manifest provenance is not valid", code="provenance"
+        ) from None
+    if (
+        signature != manifest._signature
+        or signature != registered_signature
+        or manifest._signature != registered_signature
+    ):
+        raise ManifestError("manifest provenance was modified", code="provenance")
+    try:
+        raw, identity = _read_manifest_snapshot(manifest.path)
+        if (
+            identity != manifest._manifest_identity
+            or hashlib.sha256(raw).hexdigest() != manifest.content_digest
+        ):
+            raise ManifestError(
+                "manifest selection or expansion is stale", code="stale"
+            )
+        manifest.roots.verify()
+        directory_freshness: list[tuple[object, ...]] = []
+        expansion: list[tuple[object, ...]] = []
+        for source in manifest._directory_sources:
+            _, snapshots, entries = _expand_directory(
+                manifest.roots.source,
+                source.relative,
+                source.exclude,
+                recursive=source.recursive,
+                resource_name=source.name,
+            )
+            directory_freshness.extend(snapshots)
+            expansion.extend(entries)
+    except ManifestError:
+        raise ManifestError(
+            "manifest selection or expansion is stale", code="stale"
+        ) from None
+    except (OSError, ValueError, NotImplementedError):
+        raise ManifestError(
+            "manifest selection or expansion is stale", code="stale"
+        ) from None
+    directory_freshness_tuple = tuple(sorted(set(directory_freshness), key=repr))
+    expansion_tuple = tuple(sorted(expansion, key=repr))
+    if (
+        directory_freshness_tuple != manifest._directory_freshness
+        or expansion_tuple != manifest.expansion
+    ):
+        raise ManifestError("manifest selection or expansion is stale", code="stale")
+
+
+def _absolute_path(path: Path) -> Path:
+    if not isinstance(path, Path):
+        raise ManifestError("manifest path is invalid", code="manifest_path")
+    try:
+        absolute = Path(os.path.abspath(path.expanduser()))
+        str(absolute).encode("utf-8")
+        capture_directory_boundary(absolute.parent)
+    except (OSError, RuntimeError, ValueError, NotImplementedError):
+        raise ManifestError(
+            "manifest path is not safely accessible", code="manifest_path"
+        ) from None
+    return absolute
+
+
+def _read_manifest(path: Path) -> bytes:
+    """Read manifest bytes after descriptor and namespace identity checks."""
+
+    raw, _ = _read_manifest_snapshot(path)
+    return raw
+
+
+def _read_manifest_snapshot(path: Path) -> tuple[bytes, tuple[int, int]]:
+    """Read a manifest and retain the no-follow identity of its opened file."""
+
+    flags = os.O_RDONLY | _required_flag("O_NOFOLLOW") | getattr(os, "O_NONBLOCK", 0)
+    descriptor = -1
+    parent_descriptor = -1
+    try:
+        parent = capture_directory_boundary(path.parent)
+        parent_descriptor = _open_boundary(parent)
+        descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ManifestError(
+                "manifest must be a regular single-linked file", code="manifest_path"
+            )
+        chunks: list[bytes] = []
+        while True:
+            part = os.read(descriptor, 1024 * 1024)
+            if not part:
+                break
+            chunks.append(part)
+        after = os.fstat(descriptor)
+        current_path = os.stat(
+            path.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if (
+            info.st_dev,
+            info.st_ino,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ) or (current_path.st_dev, current_path.st_ino) != (info.st_dev, info.st_ino):
+            raise ManifestError(
+                "manifest changed while being read", code="manifest_stale"
+            )
+        _verify_directory_binding(parent, Path(), parent_descriptor)
+        return b"".join(chunks), (info.st_dev, info.st_ino)
+    except ManifestError:
+        raise
+    except (OSError, ValueError, TypeError):
+        raise ManifestError(
+            "manifest cannot be read safely", code="manifest_unreadable"
+        ) from None
+    finally:
+        if descriptor >= 0:
+            _close_descriptor(descriptor)
+        if parent_descriptor >= 0:
+            _close_descriptor(parent_descriptor)
+
+
+def _parse_manifest(raw: bytes) -> dict[str, object]:
+    text = ""
+    decoding_failed = False
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        decoding_failed = True
+    if decoding_failed:
+        raise ManifestError("manifest is not valid UTF-8", code="manifest_encoding")
+
+    parsed: object = None
+    parsing_failed = False
+    try:
+        parsed = tomllib.loads(text)
+    except (ValueError, RecursionError):
+        parsing_failed = True
+    if parsing_failed:
+        raise ManifestError("manifest is not valid TOML", code="manifest_toml")
+    if not isinstance(parsed, dict):
+        raise ManifestError("manifest root must be a table", code="manifest_schema")
+    return parsed
+
+
+def _parse_roots(raw: object, *, manifest_root: Path) -> Roots:
+    table = _require_table(raw, "roots", code="roots")
+    _require_exact_keys(
+        table,
+        required={"source", "inputs", "target"},
+        allowed={"source", "inputs", "target"},
+        code="roots",
+    )
+    paths: dict[str, Path] = {}
+    for name in ("source", "inputs"):
+        paths[name] = manifest_root / _relative_path(table[name], field=f"roots.{name}")
+    target_value = table["target"]
+    if not isinstance(target_value, str) or not target_value:
+        raise ManifestError("roots.target must be a non-empty path", code="roots")
+    if Path(target_value).is_absolute():
+        if (
+            "\\" in target_value
+            or "\x00" in target_value
+            or ".." in Path(target_value).parts
+        ):
+            raise ManifestError("roots.target path is unsafe", code="roots")
+        paths["target"] = Path(target_value)
+    else:
+        paths["target"] = manifest_root / _relative_path(
+            target_value, field="roots.target"
+        )
+
+    source_key = _path_key(paths["source"])
+    inputs_key = _path_key(paths["inputs"])
+    target_key = _path_key(paths["target"])
+    if _keys_overlap(source_key, inputs_key):
+        raise ManifestError(
+            "source and inputs roots must not overlap", code="root_overlap"
+        )
+    if _keys_overlap(target_key, source_key) and len(target_key) >= len(source_key):
+        raise ManifestError(
+            "target root must contain source and inputs roots", code="root_overlap"
+        )
+    if _keys_overlap(target_key, inputs_key) and len(target_key) >= len(inputs_key):
+        raise ManifestError(
+            "target root must contain source and inputs roots", code="root_overlap"
+        )
+    try:
+        boundaries = {
+            name: capture_directory_boundary(path) for name, path in paths.items()
+        }
+    except (OSError, ValueError, NotImplementedError):
+        raise ManifestError(
+            "all roots must be existing safe directories", code="root_boundary"
+        ) from None
+    identities = {(item.device, item.inode) for item in boundaries.values()}
+    if len(identities) != 3:
+        raise ManifestError("root paths must not alias", code="root_overlap")
+    return Roots(
         source=boundaries["source"],
         inputs=boundaries["inputs"],
         target=boundaries["target"],
     )
 
 
-def _parse_m6_inputs(
-    raw_inputs: object,
-    *,
-    fields: Mapping[str, str],
-    roots: M6Roots,
-    resource_name: str,
-) -> Mapping[str, Path]:
-    if raw_inputs is None:
-        return MappingProxyType({})
-    if not isinstance(raw_inputs, dict):
-        raise ManifestError(
-            f"resource {resource_name!r} inputs must be a table",
-            code="m6_inputs",
+def _parse_profiles(
+    raw: object,
+) -> Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]]:
+    table = _require_named_table(raw, "profiles", code="profiles")
+    profiles: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+    for name, value in table.items():
+        profile = _require_table(value, "profile", code="profiles")
+        _require_exact_keys(
+            profile,
+            required={"packages", "exclude"},
+            allowed={"packages", "exclude"},
+            code="profiles",
         )
-    parsed: dict[str, Path] = {}
-    for field_name, raw_path in raw_inputs.items():
-        if field_name not in fields:
-            raise ManifestError(
-                f"resource {resource_name!r} input field is not declared",
-                code="m6_inputs",
-            )
-        if not isinstance(raw_path, str) or not raw_path.strip():
-            raise ManifestError(
-                f"resource {resource_name!r} input path must be non-empty",
-                code="m6_inputs",
-            )
-        relative = _declared_relative_path(
-            raw_path, field=f"resource {resource_name!r} input"
+        profiles[name] = (
+            _name_list(profile["packages"], code="profiles"),
+            _name_list(profile["exclude"], code="profiles"),
         )
-        if len(relative.parts) < 2 or relative.parts[0] not in {"global", "local"}:
-            raise ManifestError(
-                f"resource {resource_name!r} input path must start with 'global/' or 'local/'",
-                code="m6_input_provenance",
-            )
-        parsed[field_name] = roots.inputs.path / relative
-    return MappingProxyType(parsed)
+    return MappingProxyType(profiles)
 
 
-def _parse_fields(raw_fields: object, *, resource_name: str) -> Mapping[str, str]:
-    if not isinstance(raw_fields, dict) or not raw_fields:
-        raise ManifestError(
-            f"resource {resource_name!r} fields must be a non-empty table",
-            code="resource_fields",
+def _parse_packages(raw: object) -> Mapping[str, _Package]:
+    table = _require_named_table(raw, "packages", code="packages")
+    packages: dict[str, _Package] = {}
+    for name, value in table.items():
+        package = _require_table(value, "package", code="packages")
+        _require_exact_keys(
+            package,
+            required={"dependencies", "resources"},
+            allowed={"dependencies", "resources"},
+            code="packages",
         )
-    parsed: dict[str, str] = {}
-    for key, value in raw_fields.items():
-        if not isinstance(key, str) or not key:
+        packages[name] = _Package(
+            dependencies=_name_list(package["dependencies"], code="packages"),
+            resources=_name_list(package["resources"], code="packages"),
+        )
+    for package in packages.values():
+        missing = set(package.dependencies) - set(packages)
+        if missing:
             raise ManifestError(
-                f"resource {resource_name!r} fields keys must be non-empty strings",
-                code="resource_fields",
+                "package dependency is not declared", code="package_dependency"
             )
-        if not isinstance(value, str) or value not in {
+    _stable_topological_order(tuple(packages), packages)
+    return MappingProxyType(packages)
+
+
+def _parse_resources(raw: object) -> Mapping[str, _ResourceDeclaration]:
+    table = _require_named_table(raw, "resources", code="resources")
+    declarations: dict[str, _ResourceDeclaration] = {}
+    for name, value in table.items():
+        resource = _require_table(value, "resource", code="resources")
+        kind = resource.get("kind")
+        if not isinstance(kind, str) or kind not in {"template", "copy", "directory"}:
+            raise ManifestError(
+                "resource kind must be template, copy, or directory",
+                code="resource_kind",
+            )
+        common_required = {
+            "kind",
             "source",
-            "live",
-            "merge",
-            "ignore",
-        }:
+            "target",
+            "baseline",
+            "content_sensitivity",
+            "parents",
+            "parent_mode",
+        }
+        common_allowed = common_required | {"mode"}
+        if kind == "template":
+            allowed = common_allowed | {"format", "scope", "fields"}
+            required = common_required | {"format", "scope", "fields"}
+        elif kind == "copy":
+            allowed = common_allowed | {"scope", "owner"}
+            required = common_required | {"scope", "owner"}
+        else:
+            allowed = common_allowed | {"scope", "owner", "exclude", "recursive"}
+            required = common_required | {"scope", "owner"}
+        _require_exact_keys(
+            resource, required=required, allowed=allowed, code="resource_schema"
+        )
+        if resource["content_sensitivity"] != "public":
             raise ManifestError(
-                f"resource {resource_name!r} fields values must be source, live, merge, or ignore",
-                code="resource_fields",
+                "version 8 resources must declare public content",
+                code="resource_sensitivity",
             )
-        parsed[key] = value
-    return MappingProxyType(parsed)
+        parents = resource["parents"]
+        if not isinstance(parents, str) or parents not in {"require", "create"}:
+            raise ManifestError(
+                "resource parents must be require or create", code="resource_parents"
+            )
+        parent_mode = _parse_mode(resource["parent_mode"], code="resource_mode")
+        mode = (
+            _parse_mode(resource["mode"], code="resource_mode")
+            if "mode" in resource
+            else None
+        )
+        if kind == "template":
+            if resource["scope"] != "fields":
+                raise ManifestError(
+                    "template resources must use field scope", code="resource_scope"
+                )
+            format_name = _format(resource["format"])
+            fields = _parse_field_bindings(resource["fields"])
+            exclude: tuple[str, ...] = ()
+            recursive = True
+        else:
+            if resource["scope"] != "whole-file" or resource["owner"] != "source":
+                raise ManifestError(
+                    "copy and directory resources must own whole files",
+                    code="resource_scope",
+                )
+            format_name = None
+            fields = MappingProxyType({})
+            exclude = (
+                _glob_list(resource.get("exclude", [])) if kind == "directory" else ()
+            )
+            recursive_value = (
+                resource.get("recursive", True) if kind == "directory" else True
+            )
+            if type(recursive_value) is not bool:
+                raise ManifestError(
+                    "directory recursive must be a boolean", code="directory_schema"
+                )
+            recursive = recursive_value
+        declarations[name] = _ResourceDeclaration(
+            name=name,
+            kind=kind,
+            source_relative=_relative_path(resource["source"], field="resource.source"),
+            target_relative=_relative_path(resource["target"], field="resource.target"),
+            baseline_relative=_relative_path(
+                resource["baseline"], field="resource.baseline"
+            ),
+            parents=parents,
+            parent_mode=parent_mode,
+            mode=mode,
+            format=format_name,
+            fields=fields,
+            exclude=exclude,
+            recursive=recursive,
+        )
+    return MappingProxyType(declarations)
 
 
-def _parse_reverse_sync(
-    raw_reverse_sync: object,
+def _parse_field_bindings(raw: object) -> Mapping[str, FieldBinding]:
+    table = _require_named_table(raw, "fields", code="fields")
+    if not table:
+        raise ManifestError("template fields must not be empty", code="fields")
+    fields: dict[str, FieldBinding] = {}
+    for alias, value in table.items():
+        field_table = _require_table(value, "field binding", code="fields")
+        _require_exact_keys(
+            field_table,
+            required={"path", "owner"},
+            allowed={"path", "owner", "input"},
+            code="fields",
+        )
+        owner = field_table["owner"]
+        if not isinstance(owner, str) or owner not in _FIELD_OWNERS:
+            raise ManifestError("field owner is unsupported", code="field_owner")
+        path = _leaf_path(field_table["path"], code="field_path")
+        input_name = field_table.get("input")
+        if input_name is not None and (
+            not isinstance(input_name, str) or not _valid_name(input_name)
+        ):
+            raise ManifestError(
+                "field input binding name is invalid", code="field_input"
+            )
+        if owner in {"live", "merge"} and input_name is None:
+            raise ManifestError(
+                "live and merge fields require an input binding", code="field_input"
+            )
+        if owner == "ignore" and input_name is not None:
+            raise ManifestError(
+                "ignored fields cannot use input bindings", code="field_input"
+            )
+        fields[alias] = FieldBinding(path=path, owner=owner, input=input_name)
+    field_values = tuple(fields.values())
+    for index, current in enumerate(field_values):
+        if any(
+            _leaf_paths_overlap(current.path, other.path)
+            for other in field_values[index + 1 :]
+        ):
+            raise ManifestError("field paths must not overlap", code="field_overlap")
+    return MappingProxyType(fields)
+
+
+def _parse_inputs(raw: object, *, roots: Roots) -> Mapping[str, InputBinding]:
+    table = _require_named_table(raw, "inputs", code="inputs")
+    inputs: dict[str, InputBinding] = {}
+    for name, value in table.items():
+        input_table = _require_table(value, "input binding", code="inputs")
+        _require_exact_keys(
+            input_table,
+            required={"layers"},
+            allowed={"layers", "reverse_to"},
+            code="inputs",
+        )
+        raw_layers = input_table["layers"]
+        if not isinstance(raw_layers, list) or not raw_layers:
+            raise ManifestError(
+                "input layers must be a non-empty array", code="input_layers"
+            )
+        layers = tuple(
+            _parse_layer(layer, roots.inputs, optional_allowed=True)
+            for layer in raw_layers
+        )
+        reverse_to = (
+            _parse_layer(
+                input_table["reverse_to"], roots.inputs, optional_allowed=False
+            )
+            if "reverse_to" in input_table
+            else None
+        )
+        inputs[name] = InputBinding(name=name, layers=layers, reverse_to=reverse_to)
+    return MappingProxyType(inputs)
+
+
+def _parse_layer(
+    raw: object, root: DirectoryBoundary, *, optional_allowed: bool
+) -> InputLayer:
+    table = _require_table(raw, "input layer", code="input_layer")
+    allowed = {"file", "path", "format"} | ({"optional"} if optional_allowed else set())
+    required = {"file", "path", "format"}
+    _require_exact_keys(table, required=required, allowed=allowed, code="input_layer")
+    file_relative = _relative_path(table["file"], field="input.file")
+    if len(file_relative.parts) < 2 or file_relative.parts[0] not in {
+        "global",
+        "local",
+    }:
+        raise ManifestError(
+            "input files must be declared below global or local",
+            code="input_provenance",
+        )
+    leaf_path = _leaf_path(table["path"], code="input_path")
+    optional = table.get("optional", False)
+    if type(optional) is not bool:
+        raise ManifestError("input optional must be a boolean", code="input_layer")
+    if not optional_allowed and optional:
+        raise ManifestError(
+            "reverse destinations cannot be optional", code="input_layer"
+        )
+    return InputLayer(
+        file=root.path / file_relative,
+        path=leaf_path,
+        format=_format(table["format"]),
+        optional=optional,
+    )
+
+
+def _validate_package_references(
+    packages: Mapping[str, _Package],
+    resources: Mapping[str, _ResourceDeclaration],
+    inputs: Mapping[str, InputBinding],
+) -> None:
+    for profile in packages.values():
+        if set(profile.resources) - set(resources):
+            raise ManifestError(
+                "package resource is not declared", code="package_resource"
+            )
+    for resource in resources.values():
+        for field_binding in resource.fields.values():
+            if field_binding.input is not None and field_binding.input not in inputs:
+                raise ManifestError(
+                    "field input binding is not declared", code="field_input"
+                )
+
+
+def _select_packages(
+    requested: tuple[str, ...],
+    excluded: tuple[str, ...],
+    packages: Mapping[str, _Package],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if set(requested) - set(packages) or set(excluded) - set(packages):
+        raise ManifestError("profile package is not declared", code="profile_package")
+    excluded_set = set(excluded)
+    selected: set[str] = set()
+    pending = sorted(set(requested) - excluded_set, reverse=True)
+    while pending:
+        name = pending.pop()
+        if name in selected:
+            continue
+        selected.add(name)
+        missing_dependencies = set(packages[name].dependencies) & excluded_set
+        if missing_dependencies:
+            raise ManifestError(
+                "selected package depends on an excluded package",
+                code="package_excluded_dependency",
+            )
+        pending.extend(
+            sorted(set(packages[name].dependencies) - selected, reverse=True)
+        )
+    return tuple(sorted(selected)), tuple(sorted(excluded_set))
+
+
+def _stable_topological_order(
+    names: tuple[str, ...], packages: Mapping[str, _Package]
+) -> tuple[str, ...]:
+    selected = set(names)
+    remaining = {name: set(packages[name].dependencies) & selected for name in selected}
+    result: list[str] = []
+    while remaining:
+        ready = sorted(
+            name for name, dependencies in remaining.items() if not dependencies
+        )
+        if not ready:
+            raise ManifestError(
+                "package dependencies contain a cycle", code="package_cycle"
+            )
+        result.extend(ready)
+        for name in ready:
+            del remaining[name]
+        for dependencies in remaining.values():
+            dependencies.difference_update(ready)
+    return tuple(result)
+
+
+def _selected_resources(
+    ordered_packages: tuple[str, ...], packages: Mapping[str, _Package]
+) -> tuple[str, ...]:
+    seen: set[str] = set()
+    selected: list[str] = []
+    for package_name in ordered_packages:
+        for resource_name in sorted(packages[package_name].resources):
+            if resource_name not in seen:
+                selected.append(resource_name)
+                seen.add(resource_name)
+    return tuple(selected)
+
+
+def _validate_declared_relationships(
+    resources: list[Resource],
+    declarations: tuple[_ResourceDeclaration, ...],
+    inputs: Mapping[str, InputBinding],
+    directory_scopes: list[tuple[str, Path, Path]],
+    roots: Roots,
+    manifest_path: Path,
+) -> None:
+    normalized_paths: dict[Path, tuple[str, ...]] = {}
+
+    def path_key(path: Path) -> tuple[str, ...]:
+        try:
+            return normalized_paths[path]
+        except KeyError:
+            normalized = _path_key(path)
+            normalized_paths[path] = normalized
+            return normalized
+
+    def paths_overlap(left: Path, right: Path) -> bool:
+        return _keys_overlap(path_key(left), path_key(right))
+
+    whole_paths: list[tuple[str, Path]] = [("manifest", manifest_path)]
+    for resource in resources:
+        whole_paths.extend(
+            (
+                ("source", resource.source),
+                ("target", resource.target),
+                ("baseline", resource.baseline),
+            )
+        )
+    for index, (_, left) in enumerate(whole_paths):
+        for _, right in whole_paths[index + 1 :]:
+            if paths_overlap(left, right):
+                raise ManifestError(
+                    "manifest, source, target, and baseline paths must not overlap",
+                    code="path_overlap",
+                )
+    for index, (left_name, left_source, left_target) in enumerate(directory_scopes):
+        for right_name, right_source, right_target in directory_scopes[index + 1 :]:
+            if any(
+                paths_overlap(left_path, right_path)
+                for left_path in (left_source, left_target)
+                for right_path in (right_source, right_target)
+            ):
+                raise ManifestError(
+                    "directory declarations must not overlap",
+                    code="path_overlap",
+                )
+    for name, source_dir, target_dir in directory_scopes:
+        own_sources = {
+            resource.source
+            for resource in resources
+            if resource.name.startswith(f"{name}:")
+        }
+        own_targets = {
+            resource.target
+            for resource in resources
+            if resource.name.startswith(f"{name}:")
+        }
+        for kind, path in whole_paths:
+            is_own_leaf = (kind == "source" and path in own_sources) or (
+                kind == "target" and path in own_targets
+            )
+            if is_own_leaf:
+                continue
+            if paths_overlap(path, source_dir) or paths_overlap(path, target_dir):
+                raise ManifestError(
+                    "directory resource paths must not overlap other resources",
+                    code="path_overlap",
+                )
+
+    input_locations: list[tuple[tuple[str, ...], Path, tuple[str, ...], str, str]] = []
+    reverse_locations: list[
+        tuple[tuple[str, ...], Path, tuple[str, ...], str, str]
+    ] = []
+    for name, binding in inputs.items():
+        for layer in binding.layers:
+            file_key = path_key(layer.file)
+            input_locations.append(
+                (file_key, layer.file, layer.path, name, layer.format)
+            )
+        if binding.reverse_to is not None:
+            destination = binding.reverse_to
+            file_key = path_key(destination.file)
+            reverse_locations.append(
+                (file_key, destination.file, destination.path, name, destination.format)
+            )
+    for index, (
+        left_key,
+        left_file,
+        left_path,
+        left_name,
+        left_format,
+    ) in enumerate(input_locations):
+        for (
+            right_key,
+            right_file,
+            right_path,
+            right_name,
+            right_format,
+        ) in input_locations[index + 1 :]:
+            if not _keys_overlap(left_key, right_key):
+                continue
+            if left_key != right_key or left_file != right_file:
+                raise ManifestError(
+                    "input file paths must not alias", code="path_overlap"
+                )
+            if left_format != right_format:
+                raise ManifestError(
+                    "shared input documents must use one format",
+                    code="input_format",
+                )
+            if _leaf_paths_overlap(left_path, right_path):
+                code = (
+                    "input_path_overlap"
+                    if left_name != right_name
+                    else "input_layer_overlap"
+                )
+                raise ManifestError(
+                    "shared input files must bind distinct fields", code=code
+                )
+
+    for index, (
+        left_key,
+        left_file,
+        left_path,
+        left_name,
+        left_format,
+    ) in enumerate(reverse_locations):
+        for (
+            right_key,
+            right_file,
+            right_path,
+            right_name,
+            right_format,
+        ) in reverse_locations[index + 1 :]:
+            if not _keys_overlap(left_key, right_key):
+                continue
+            if left_key != right_key or left_file != right_file:
+                raise ManifestError(
+                    "reverse destinations must not alias", code="write_alias"
+                )
+            if left_format != right_format:
+                raise ManifestError(
+                    "shared input documents must use one format",
+                    code="input_format",
+                )
+            if left_name != right_name and _leaf_paths_overlap(left_path, right_path):
+                raise ManifestError(
+                    "reverse destinations must not alias", code="write_alias"
+                )
+
+    for file_key, destination_file_path, path, name, format_name in reverse_locations:
+        destination_file = inputs[name].reverse_to
+        assert destination_file is not None
+        for (
+            input_file,
+            input_path,
+            input_leaf,
+            input_name,
+            input_format,
+        ) in input_locations:
+            if not _keys_overlap(input_file, file_key):
+                continue
+            if input_file != file_key or input_path != destination_file_path:
+                raise ManifestError(
+                    "reverse destination aliases an input file", code="write_alias"
+                )
+            if input_format != format_name:
+                raise ManifestError(
+                    "shared input documents must use one format",
+                    code="input_format",
+                )
+            if input_name != name and _leaf_paths_overlap(path, input_leaf):
+                raise ManifestError(
+                    "reverse destination aliases another input field",
+                    code="write_alias",
+                )
+
+    protected_paths = [path for _, path in whole_paths]
+    for binding in inputs.values():
+        for layer in binding.layers:
+            if any(paths_overlap(layer.file, path) for path in protected_paths):
+                raise ManifestError(
+                    "input paths must not alias manifest, source, target, or baseline paths",
+                    code="path_overlap",
+                )
+        if binding.reverse_to is not None:
+            destination = binding.reverse_to.file
+            for path in protected_paths:
+                if paths_overlap(destination, path):
+                    raise ManifestError(
+                        "reverse destinations must not alias write paths",
+                        code="write_alias",
+                    )
+    for declaration in declarations:
+        source = roots.source.path / declaration.source_relative
+        target = roots.target.path / declaration.target_relative
+        if paths_overlap(target, roots.source.path) or paths_overlap(
+            target, roots.inputs.path
+        ):
+            raise ManifestError(
+                "target paths must remain outside source and inputs roots",
+                code="root_overlap",
+            )
+        if declaration.kind == "directory" and paths_overlap(source, roots.inputs.path):
+            raise ManifestError(
+                "directory source paths escape their authority", code="root_overlap"
+            )
+
+
+def _inspect_source_resource(
+    declaration: _ResourceDeclaration, roots: Roots
+) -> tuple[tuple[object, ...], ...]:
+    return _inspect_file(
+        roots.source,
+        declaration.source_relative,
+        optional=False,
+        allow_missing_parents=False,
+    )
+
+
+def _inspect_output_paths(
+    roots: Roots,
     *,
-    fields: Mapping[str, str],
-    resource_name: str,
-) -> Mapping[str, str]:
-    """Parse v4's narrow literal-JSON source-input mapping."""
-
-    if raw_reverse_sync is None:
-        return MappingProxyType({})
-    if not isinstance(raw_reverse_sync, dict):
-        raise ManifestError(
-            f"resource {resource_name!r} reverse_sync must be a table",
-            code="reverse_sync_shape",
+    target_name: str,
+    baseline_name: str,
+    parents: str,
+) -> tuple[tuple[object, ...], ...]:
+    snapshots = list(
+        _inspect_file(
+            roots.target,
+            Path(target_name),
+            optional=True,
+            allow_missing_parents=parents == "create",
         )
-    unknown = set(raw_reverse_sync) - {"format", "fields"}
-    if unknown:
-        raise ManifestError(
-            f"resource {resource_name!r} reverse_sync has unsupported field(s)",
-            code="reverse_sync_unknown_field",
+    )
+    snapshots.extend(
+        _inspect_file(
+            roots.inputs,
+            Path(baseline_name),
+            optional=True,
+            allow_missing_parents=False,
         )
-    if raw_reverse_sync.get("format") != "literal-json":
-        raise ManifestError(
-            f"resource {resource_name!r} reverse_sync format must be 'literal-json'",
-            code="reverse_sync_format",
-        )
-    raw_mappings = raw_reverse_sync.get("fields")
-    if not isinstance(raw_mappings, dict) or not raw_mappings:
-        raise ManifestError(
-            f"resource {resource_name!r} reverse_sync fields must be a non-empty table",
-            code="reverse_sync_fields",
-        )
-    parsed: dict[str, str] = {}
-    source_names: set[str] = set()
-    for field_name, source_name in raw_mappings.items():
-        if field_name not in fields:
-            raise ManifestError(
-                f"resource {resource_name!r} reverse_sync field is not declared",
-                code="reverse_sync_undeclared_field",
-            )
-        if fields[field_name] not in {"live", "merge"}:
-            raise ManifestError(
-                f"resource {resource_name!r} reverse_sync field is not live-owned",
-                code="reverse_sync_owner",
-            )
-        if not isinstance(source_name, str) or not source_name:
-            raise ManifestError(
-                f"resource {resource_name!r} reverse_sync source key must be non-empty",
-                code="reverse_sync_source_key",
-            )
-        if source_name != field_name:
-            raise ManifestError(
-                f"resource {resource_name!r} reverse_sync requires an identity field mapping",
-                code="reverse_sync_owner",
-            )
-        if source_name in source_names:
-            raise ManifestError(
-                f"resource {resource_name!r} reverse_sync source keys must be unique",
-                code="reverse_sync_duplicate_source",
-            )
-        parsed[field_name] = source_name
-        source_names.add(source_name)
-    return MappingProxyType(parsed)
+    )
+    return tuple(snapshots)
 
 
-def _parse_providers(
-    raw_providers: object,
+def _inspect_input_file(
+    root: DirectoryBoundary, relative: Path, *, optional: bool
+) -> tuple[tuple[object, ...], ...]:
+    return _inspect_file(root, relative, optional=optional, allow_missing_parents=False)
+
+
+def _inspect_file(
+    root: DirectoryBoundary,
+    relative: Path,
     *,
-    resource_name: str,
-) -> Mapping[str, ProviderReference]:
-    """Parse version-6 provider references without retaining mutable TOML data."""
-
-    if not isinstance(raw_providers, dict) or not raw_providers:
+    optional: bool,
+    allow_missing_parents: bool,
+) -> tuple[tuple[object, ...], ...]:
+    if not relative.parts:
         raise ManifestError(
-            f"resource {resource_name!r} providers must be a non-empty table",
-            code="resource_providers",
+            "declared path must name an entry below its root", code="path_boundary"
         )
+    snapshots: list[tuple[object, ...]] = []
+    descriptor = -1
+    try:
+        descriptor = _open_boundary(root)
+        for index, component in enumerate(relative.parts[:-1]):
+            prefix = Path(*relative.parts[: index + 1])
+            try:
+                info = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                if allow_missing_parents:
+                    snapshots.append(_missing_snapshot(root, prefix))
+                    _verify_directory_binding(
+                        root, Path(*relative.parts[:index]), descriptor
+                    )
+                    return tuple(snapshots)
+                raise ManifestError(
+                    "declared path parent does not exist", code="path_missing"
+                ) from None
+            if not stat.S_ISDIR(info.st_mode):
+                raise ManifestError(
+                    "declared path parent is not a safe directory",
+                    code="path_boundary",
+                )
+            child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            opened = os.fstat(child)
+            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                _close_descriptor(child)
+                raise ManifestError(
+                    "declared path changed during validation", code="path_stale"
+                )
+            snapshots.append(_stat_snapshot(root, prefix, opened))
+            _close_descriptor(descriptor)
+            descriptor = child
+        leaf = relative.parts[-1]
+        try:
+            info = os.stat(leaf, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            if optional:
+                snapshots.append(_missing_snapshot(root, relative))
+                _verify_directory_binding(root, relative.parent, descriptor)
+                return tuple(snapshots)
+            raise ManifestError(
+                "declared file does not exist", code="path_missing"
+            ) from None
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ManifestError(
+                "declared file must be regular and single-linked",
+                code="path_boundary",
+            )
+        opened = os.open(leaf, _file_flags(), dir_fd=descriptor)
+        try:
+            current = os.fstat(opened)
+            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                raise ManifestError(
+                    "declared file changed during validation", code="path_stale"
+                )
+            latest = os.stat(leaf, dir_fd=descriptor, follow_symlinks=False)
+            if (latest.st_dev, latest.st_ino) != (info.st_dev, info.st_ino):
+                raise ManifestError(
+                    "declared file changed during validation", code="path_stale"
+                )
+            snapshots.append(_stat_snapshot(root, relative, current))
+            _verify_directory_binding(root, relative.parent, descriptor)
+        finally:
+            _close_descriptor(opened)
+        return tuple(snapshots)
+    except ManifestError:
+        raise
+    except (OSError, ValueError, TypeError, NotImplementedError):
+        raise ManifestError(
+            "declared path is not safely accessible", code="path_boundary"
+        ) from None
+    finally:
+        if descriptor >= 0:
+            _close_descriptor(descriptor)
 
-    parsed: dict[str, ProviderReference] = {}
-    for alias, raw_provider in sorted(raw_providers.items()):
-        if not isinstance(alias, str) or not _PROVIDER_ALIAS_RE.fullmatch(alias):
-            raise ManifestError(
-                f"resource {resource_name!r} provider alias is invalid",
-                code="provider_alias",
-            )
-        if alias.casefold() in _RESERVED_PROVIDER_ALIASES:
-            raise ManifestError(
-                f"resource {resource_name!r} provider alias is reserved",
-                code="provider_alias",
-            )
-        if not isinstance(raw_provider, dict):
-            raise ManifestError(
-                f"resource {resource_name!r} provider declaration is not a table",
-                code="provider_shape",
-            )
-        unknown = set(raw_provider) - {"type", "item", "field"}
-        if unknown:
-            raise ManifestError(
-                f"resource {resource_name!r} provider has unsupported field(s)",
-                code="provider_unknown_field",
-            )
 
-        provider_type = _provider_string(
-            raw_provider.get("type"),
-            resource_name=resource_name,
-            field_name="type",
-        )
-        if provider_type != "rbw":
-            raise ManifestError(
-                f"resource {resource_name!r} provider type is unsupported",
-                code="provider_type",
-            )
-        item = _provider_argv_value(
-            raw_provider.get("item"),
-            resource_name=resource_name,
-            field_name="item",
-        )
-        provider_field = _provider_argv_value(
-            raw_provider.get("field"),
-            resource_name=resource_name,
-            field_name="field",
-        )
-        parsed[alias] = ProviderReference(
-            type=provider_type,
-            item=item,
-            field=provider_field,
-            alias=alias,
-        )
-    return MappingProxyType(parsed)
-
-
-def _required_string(
-    resource: Mapping[str, Any],
-    field: str,
+def _expand_directory(
+    root: DirectoryBoundary,
+    relative: Path,
+    patterns: tuple[str, ...],
     *,
+    recursive: bool,
     resource_name: str,
-) -> str:
-    value = resource.get(field)
-    if not isinstance(value, str) or not value.strip():
+) -> tuple[list[Path], tuple[tuple[object, ...], ...], list[tuple[object, ...]]]:
+    leaves: list[Path] = []
+    snapshots: list[tuple[object, ...]] = []
+    expansion: list[tuple[object, ...]] = []
+    descriptor = -1
+    try:
+        descriptor = _open_boundary(root)
+        for index, component in enumerate(relative.parts):
+            info = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            if not stat.S_ISDIR(info.st_mode):
+                raise ManifestError(
+                    "directory source must contain only safe directories and files",
+                    code="directory_boundary",
+                )
+            child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            opened = os.fstat(child)
+            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                _close_descriptor(child)
+                raise ManifestError(
+                    "directory source changed during validation",
+                    code="directory_stale",
+                )
+            prefix = Path(*relative.parts[: index + 1])
+            snapshots.append(_stat_snapshot(root, prefix, opened))
+            _close_descriptor(descriptor)
+            descriptor = child
+        _scan_directory(
+            descriptor,
+            root,
+            relative,
+            Path(),
+            patterns,
+            recursive=recursive,
+            resource_name=resource_name,
+            leaves=leaves,
+            snapshots=snapshots,
+            expansion=expansion,
+        )
+        _verify_directory_binding(root, relative, descriptor)
+        leaves.sort(key=lambda item: item.as_posix())
+        return leaves, tuple(snapshots), expansion
+    except ManifestError:
+        raise
+    except FileNotFoundError:
         raise ManifestError(
-            f"resource {resource_name!r} field {field!r} must be a non-empty string",
-            code="resource_field",
+            "directory source does not exist", code="path_missing"
+        ) from None
+    except (OSError, ValueError, TypeError, NotImplementedError):
+        raise ManifestError(
+            "directory source is not safely accessible", code="directory_boundary"
+        ) from None
+    finally:
+        if descriptor >= 0:
+            _close_descriptor(descriptor)
+
+
+def _scan_directory(
+    descriptor: int,
+    root: DirectoryBoundary,
+    source_relative: Path,
+    prefix: Path,
+    patterns: tuple[str, ...],
+    *,
+    recursive: bool,
+    resource_name: str,
+    leaves: list[Path],
+    snapshots: list[tuple[object, ...]],
+    expansion: list[tuple[object, ...]],
+) -> None:
+    before = os.fstat(descriptor)
+    try:
+        names = sorted(os.listdir(descriptor))
+    except OSError:
+        raise ManifestError(
+            "directory entries cannot be read safely", code="directory_boundary"
+        ) from None
+    for name in names:
+        try:
+            name.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ManifestError(
+                "directory contains an unsafe entry name", code="directory_entry"
+            ) from None
+        if (
+            not name
+            or name in {".", ".."}
+            or "/" in name
+            or "\\" in name
+            or _has_control_chars(name)
+        ):
+            raise ManifestError(
+                "directory contains an unsafe entry name", code="directory_entry"
+            )
+        relative_entry = prefix / name
+        relative_text = relative_entry.as_posix()
+        if any(_glob_matches(relative_text, pattern) for pattern in patterns):
+            continue
+        try:
+            info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except OSError:
+            raise ManifestError(
+                "directory changed during expansion", code="directory_stale"
+            ) from None
+        source_entry = source_relative / relative_entry
+        if stat.S_ISDIR(info.st_mode):
+            child = os.open(name, _directory_flags(), dir_fd=descriptor)
+            try:
+                current = os.fstat(child)
+                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                    raise ManifestError(
+                        "directory changed during expansion", code="directory_stale"
+                    )
+                snapshots.append(_stat_snapshot(root, source_entry, current))
+                if recursive:
+                    _scan_directory(
+                        child,
+                        root,
+                        source_relative,
+                        relative_entry,
+                        patterns,
+                        recursive=recursive,
+                        resource_name=resource_name,
+                        leaves=leaves,
+                        snapshots=snapshots,
+                        expansion=expansion,
+                    )
+            finally:
+                _close_descriptor(child)
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ManifestError(
+                "directory source must contain only safe files",
+                code="directory_boundary",
+            )
+        file_descriptor = os.open(name, _file_flags(), dir_fd=descriptor)
+        try:
+            current = os.fstat(file_descriptor)
+            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                raise ManifestError(
+                    "directory changed during expansion", code="directory_stale"
+                )
+            latest = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if (latest.st_dev, latest.st_ino) != (info.st_dev, info.st_ino):
+                raise ManifestError(
+                    "directory changed during expansion", code="directory_stale"
+                )
+            snapshot = _stat_snapshot(root, source_entry, current)
+            snapshots.append(snapshot)
+            leaves.append(relative_entry)
+            expansion.append((resource_name, relative_text, *snapshot[2:]))
+        finally:
+            _close_descriptor(file_descriptor)
+    after = os.fstat(descriptor)
+    if (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_ctime_ns) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    ):
+        raise ManifestError(
+            "directory changed during expansion", code="directory_stale"
+        )
+    _verify_directory_binding(root, source_relative / prefix, descriptor)
+
+
+def _directory_baseline(prefix: Path, relative_leaf: Path) -> Path:
+    suffix = quote(relative_leaf.as_posix(), safe="")
+    return prefix.with_name(f"{prefix.name}.leaf-{suffix}")
+
+
+def _parse_mode(value: object, *, code: str) -> int:
+    if isinstance(value, str) and re.fullmatch(r"0?[0-7]{3}", value):
+        parsed = int(value, 8)
+    elif type(value) is int and 0 <= value <= 0o777:
+        parsed = value
+    else:
+        raise ManifestError("file modes must be valid octal permissions", code=code)
+    if parsed > 0o777:
+        raise ManifestError("file modes must be valid octal permissions", code=code)
+    return parsed
+
+
+def _format(value: object) -> str:
+    if not isinstance(value, str) or value not in _FORMATS:
+        raise ManifestError(
+            "document format must be json, jsonc, or toml", code="format"
         )
     return value
 
 
-def _declared_relative_path(value: str, *, field: str) -> Path:
-    if "\x00" in value:
-        raise ManifestError(f"{field} contains a NUL byte", code="path_invalid")
-
-    candidate = Path(value)
-    if candidate.is_absolute() or any(part == ".." for part in candidate.parts):
+def _leaf_path(value: object, *, code: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value or len(value) > _MAX_PATH_SEGMENTS:
         raise ManifestError(
-            f"{field} must be a relative path without '..'",
+            "field paths must contain between 1 and 256 keys", code=code
+        )
+    parts: list[str] = []
+    for part in value:
+        if (
+            not isinstance(part, str)
+            or not part
+            or _has_control_chars(part)
+            or _is_sensitive_name(part)
+        ):
+            raise ManifestError(
+                "field paths must contain only non-empty public keys", code=code
+            )
+        parts.append(part)
+    return tuple(parts)
+
+
+def _relative_path(value: object, *, field: str) -> Path:
+    del field
+    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+        raise ManifestError(
+            "declared paths must be non-empty safe relative paths",
             code="path_boundary",
         )
-
-    parts = tuple(part for part in candidate.parts if part not in ("", "."))
-    if not parts:
-        raise ManifestError(f"{field} must not be empty", code="path_invalid")
-    return Path(*parts)
-
-
-def _declared_external_absolute_path(value: str, *, root: Path, field: str) -> Path:
-    """Validate the version-6 absolute target boundary without touching it."""
-
-    if "\x00" in value:
-        raise ManifestError(f"{field} contains a NUL byte", code="path_invalid")
-    candidate = Path(value)
-    if not candidate.is_absolute():
+    pure = PurePosixPath(value)
+    if pure.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
         raise ManifestError(
-            f"{field} must be an absolute path outside the manifest root",
-            code="target_boundary",
+            "declared paths must be non-empty safe relative paths",
+            code="path_boundary",
         )
-    if candidate == root or root in candidate.parents:
+    if not pure.parts:
         raise ManifestError(
-            f"{field} must be outside the manifest root",
-            code="target_boundary",
+            "declared paths must name an entry below their root",
+            code="path_boundary",
         )
-    try:
-        resolved = candidate.resolve(strict=False)
-        inside_root = resolved == root or root in resolved.parents
-    except (OSError, RuntimeError):
+    if any(_has_control_chars(part) for part in pure.parts):
         raise ManifestError(
-            f"{field} must be an absolute path outside the manifest root",
-            code="target_boundary",
-        ) from None
-    if inside_root:
-        raise ManifestError(
-            f"{field} must be outside the manifest root",
-            code="target_boundary",
+            "declared paths contain an unsafe component", code="path_boundary"
         )
-    return candidate
+    return Path(*pure.parts)
 
 
-def _provider_string(
-    value: object,
-    *,
-    resource_name: str,
-    field_name: str,
-) -> str:
-    if not isinstance(value, str) or not value:
+def _glob_list(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
         raise ManifestError(
-            f"resource {resource_name!r} provider {field_name!r} must be non-empty",
-            code="provider_field",
+            "directory excludes must be an array of relative globs",
+            code="directory_schema",
         )
+    patterns: list[str] = []
+    for pattern in value:
+        if (
+            not isinstance(pattern, str)
+            or not pattern
+            or "\\" in pattern
+            or "\x00" in pattern
+        ):
+            raise ManifestError(
+                "directory excludes must be safe relative globs",
+                code="directory_schema",
+            )
+        pure = PurePosixPath(pattern)
+        pattern_parts = pattern.split("/")
+        if pure.is_absolute() or any(
+            part in {"", ".", ".."} or _has_control_chars(part)
+            for part in pattern_parts
+        ):
+            raise ManifestError(
+                "directory excludes must be safe relative globs",
+                code="directory_schema",
+            )
+        patterns.append(pattern)
+    if len(set(patterns)) != len(patterns):
+        raise ManifestError(
+            "directory exclude patterns must be unique", code="directory_schema"
+        )
+    return tuple(patterns)
+
+
+def _glob_matches(path: str, pattern: str) -> bool:
+    path_parts = path.split("/")
+    pattern_parts = pattern.split("/")
+    memo: dict[tuple[int, int], bool] = {}
+
+    def match(path_index: int, pattern_index: int) -> bool:
+        key = (path_index, pattern_index)
+        if key in memo:
+            return memo[key]
+        if pattern_index == len(pattern_parts):
+            result = path_index == len(path_parts)
+        elif pattern_parts[pattern_index] == "**":
+            result = match(path_index, pattern_index + 1) or (
+                path_index < len(path_parts) and match(path_index + 1, pattern_index)
+            )
+        else:
+            result = (
+                path_index < len(path_parts)
+                and fnmatch.fnmatchcase(
+                    path_parts[path_index], pattern_parts[pattern_index]
+                )
+                and match(path_index + 1, pattern_index + 1)
+            )
+        memo[key] = result
+        return result
+
+    return match(0, 0)
+
+
+def _require_table(value: object, label: str, *, code: str) -> dict[str, object]:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise ManifestError(f"{label} must be a TOML table", code=code)
     return value
 
 
-def _provider_argv_value(
-    value: object,
+def _require_named_table(value: object, label: str, *, code: str) -> dict[str, object]:
+    table = _require_table(value, label, code=code)
+    if any(not _valid_name(name) for name in table):
+        raise ManifestError(f"{label} names must be stable identifiers", code=code)
+    return table
+
+
+def _require_exact_keys(
+    table: Mapping[str, object],
     *,
-    resource_name: str,
-    field_name: str,
-) -> str:
-    value = _provider_string(
-        value,
-        resource_name=resource_name,
-        field_name=field_name,
-    )
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError:
+    required: set[str],
+    allowed: set[str],
+    code: str,
+) -> None:
+    if required - set(table) or set(table) - allowed:
         raise ManifestError(
-            f"resource {resource_name!r} provider {field_name!r} is invalid",
-            code="provider_field",
-        ) from None
-    if len(encoded) > 256 or value.startswith("-"):
-        raise ManifestError(
-            f"resource {resource_name!r} provider {field_name!r} is invalid",
-            code="provider_field",
+            "version 8 manifest schema has missing or unsupported fields", code=code
         )
-    if any(unicodedata.category(character).startswith("C") for character in value):
-        raise ManifestError(
-            f"resource {resource_name!r} provider {field_name!r} is invalid",
-            code="provider_field",
-        )
-    return value
 
 
-def _copy_supported_value(value: Any, *, field: str) -> object:
-    value_type = type(value)
-    if value is None or value_type in (str, int, float, bool):
-        return value
-    if isinstance(value, list):
-        return [
-            _copy_supported_value(item, field=f"{field}[{index}]")
-            for index, item in enumerate(value)
-        ]
-    if isinstance(value, dict):
-        copied: dict[str, object] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise ManifestError(
-                    f"{field} keys must be strings",
-                    code="resource_variables",
-                )
-            if _is_sensitive_variable_key(key):
-                raise ManifestError(
-                    f"{field}.{key} is not accepted in the public M1 input boundary",
-                    code="resource_secret_field",
-                )
-            copied[key] = _copy_supported_value(item, field=f"{field}.{key}")
-        return copied
-    raise ManifestError(
-        f"{field} contains an unsupported value type",
-        code="resource_variables",
-    )
+def _name_list(value: object, *, code: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not _valid_name(item) for item in value
+    ):
+        raise ManifestError("package lists must contain stable identifiers", code=code)
+    if len(set(value)) != len(value):
+        raise ManifestError("package lists must not repeat identifiers", code=code)
+    return tuple(value)
 
 
-def _is_sensitive_variable_key(key: str) -> bool:
-    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).casefold()
-    normalized = normalized.replace("-", "_")
-    return normalized in _SENSITIVE_VARIABLE_KEYS or normalized.endswith(
+def _valid_name(value: str) -> bool:
+    return bool(_NAME_RE.fullmatch(value))
+
+
+def _is_sensitive_name(value: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", value)
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized).casefold()
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+    return normalized in _SENSITIVE_NAMES or normalized.endswith(
         ("_credential", "_credentials", "_key", "_password", "_secret", "_token")
     )
 
 
-def _freeze_public_value(value: object) -> object:
-    if isinstance(value, dict):
-        return MappingProxyType(
-            {key: _freeze_public_value(item) for key, item in value.items()}
+def _has_control_chars(value: str) -> bool:
+    return any(unicodedata.category(character) in {"Cc", "Cs"} for character in value)
+
+
+def _path_key(path: Path) -> tuple[str, ...]:
+    absolute = Path(os.path.abspath(path))
+    return tuple(
+        unicodedata.normalize("NFC", part).casefold() for part in absolute.parts
+    )
+
+
+def _path_keys_overlap(left: Path, right: Path) -> bool:
+    return _keys_overlap(_path_key(left), _path_key(right))
+
+
+def _keys_overlap(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
+    common = min(len(left), len(right))
+    return left[:common] == right[:common]
+
+
+def _leaf_paths_overlap(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
+    left_key = tuple(unicodedata.normalize("NFKC", part).casefold() for part in left)
+    right_key = tuple(unicodedata.normalize("NFKC", part).casefold() for part in right)
+    common = min(len(left_key), len(right_key))
+    return left_key[:common] == right_key[:common]
+
+
+def _directory_flags() -> int:
+    return os.O_RDONLY | _required_flag("O_DIRECTORY") | _required_flag("O_NOFOLLOW")
+
+
+def _file_flags() -> int:
+    return os.O_RDONLY | _required_flag("O_NOFOLLOW") | getattr(os, "O_NONBLOCK", 0)
+
+
+def _required_flag(name: str) -> int:
+    try:
+        return getattr(os, name)
+    except AttributeError:
+        raise ManifestError(
+            "platform lacks required no-follow filesystem support", code="platform"
+        ) from None
+
+
+def _close_descriptor(descriptor: int) -> None:
+    try:
+        os.close(descriptor)
+    except OSError:
+        raise ManifestError(
+            "filesystem descriptor could not be closed safely", code="filesystem"
+        ) from None
+
+
+def _open_boundary(root: DirectoryBoundary) -> int:
+    descriptor = _open_directory(root.path)
+    try:
+        info = os.fstat(descriptor)
+        if (info.st_dev, info.st_ino) != (root.device, root.inode):
+            raise ManifestError("declared root identity changed", code="root_stale")
+        return descriptor
+    except BaseException:
+        _close_descriptor(descriptor)
+        raise
+
+
+def _verify_directory_binding(
+    root: DirectoryBoundary, relative: Path, descriptor: int
+) -> None:
+    current = -1
+    try:
+        current = _open_boundary(root)
+        for component in relative.parts:
+            child = os.open(component, _directory_flags(), dir_fd=current)
+            _close_descriptor(current)
+            current = child
+        expected_info = os.fstat(descriptor)
+        current_info = os.fstat(current)
+        if (expected_info.st_dev, expected_info.st_ino) != (
+            current_info.st_dev,
+            current_info.st_ino,
+        ):
+            raise ManifestError(
+                "declared directory identity changed", code="path_stale"
+            )
+    except ManifestError:
+        raise
+    except (OSError, ValueError, TypeError):
+        raise ManifestError(
+            "declared directory identity changed", code="path_stale"
+        ) from None
+    finally:
+        if current >= 0:
+            _close_descriptor(current)
+
+
+def _open_directory(path: Path) -> int:
+    if not path.is_absolute() or ".." in path.parts:
+        raise ManifestError(
+            "directory path is not absolute and safe", code="path_boundary"
         )
-    if isinstance(value, list):
-        return tuple(_freeze_public_value(item) for item in value)
-    return value
+    descriptor = os.open(path.anchor, _directory_flags())
+    try:
+        for component in path.parts[1:]:
+            child = os.open(component, _directory_flags(), dir_fd=descriptor)
+            _close_descriptor(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        _close_descriptor(descriptor)
+        raise
+
+
+def _stat_snapshot(
+    root: DirectoryBoundary, relative: Path, info: os.stat_result
+) -> tuple[object, ...]:
+    return (
+        str(root.path),
+        relative.as_posix(),
+        info.st_dev,
+        info.st_ino,
+        stat.S_IFMT(info.st_mode),
+        stat.S_IMODE(info.st_mode),
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _missing_snapshot(root: DirectoryBoundary, relative: Path) -> tuple[object, ...]:
+    return (str(root.path), relative.as_posix(), "missing")
+
+
+def _manifest_signature(manifest: Manifest) -> str:
+    """Sign declared selection and resolved paths, not mutable filesystem state."""
+
+    roots = tuple(
+        (
+            str(boundary.path),
+            boundary.device,
+            boundary.inode,
+        )
+        for boundary in (
+            manifest.roots.source,
+            manifest.roots.inputs,
+            manifest.roots.target,
+        )
+    )
+    resources = tuple(
+        (
+            resource.name,
+            resource.kind,
+            str(resource.source),
+            str(resource.target),
+            resource.format,
+            tuple(
+                (alias, binding.path, binding.owner, binding.input)
+                for alias, binding in sorted(resource.fields.items())
+            ),
+            str(resource.baseline),
+            resource.parents,
+            resource.parent_mode,
+            resource.mode,
+            resource.source_name,
+            resource.target_name,
+        )
+        for resource in manifest.resources
+    )
+    inputs = tuple(
+        (
+            name,
+            tuple(
+                (str(layer.file), layer.path, layer.format, layer.optional)
+                for layer in binding.layers
+            ),
+            None
+            if binding.reverse_to is None
+            else (
+                str(binding.reverse_to.file),
+                binding.reverse_to.path,
+                binding.reverse_to.format,
+                binding.reverse_to.optional,
+            ),
+        )
+        for name, binding in sorted(manifest.inputs.items())
+    )
+    directory_sources = tuple(
+        (source.name, source.relative.as_posix(), source.exclude, source.recursive)
+        for source in manifest._directory_sources
+    )
+    payload = (
+        str(manifest.path),
+        manifest.profile,
+        roots,
+        resources,
+        inputs,
+        directory_sources,
+        manifest.packages,
+        manifest.excluded,
+        manifest.content_digest,
+    )
+    return hashlib.sha256(
+        repr(payload).encode("utf-8", errors="surrogatepass")
+    ).hexdigest()

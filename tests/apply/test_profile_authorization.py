@@ -8,13 +8,14 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from luwu import m7_engine, m7_manifest
-from luwu.m7_engine import (
+from luwu import engine as engine_module
+from luwu import manifest as manifest_module
+from luwu.engine import (
     accept_baseline,
     adopt_resource,
     apply_plan,
 )
-from luwu.m7_filesystem import FileObservation
+from luwu.filesystem import FileObservation
 from tests.support import profile_case
 
 _CheckInputs = Callable[[], None] | None
@@ -24,17 +25,17 @@ class ProfileAuthorizationTests(profile_case.ProfileEngineCase):
     def test_reauthorization_reuses_manifest_and_keeps_full_fresh_guards(self) -> None:
         plan = self._plan()
         before = self._snapshot()
-        original_verify = m7_engine.verify_manifest
-        original_observe = m7_engine._observe_all
+        original_verify = engine_module.verify_manifest
+        original_observe = engine_module._observe_all
         with (
             patch(
-                "luwu.m7_manifest._load_manifest",
+                "luwu.manifest._load_manifest",
                 side_effect=AssertionError("reauthorization reloaded the manifest"),
             ),
-            patch("luwu.m7_engine.verify_manifest", wraps=original_verify) as verify,
-            patch("luwu.m7_engine._observe_all", wraps=original_observe) as observe,
+            patch("luwu.engine.verify_manifest", wraps=original_verify) as verify,
+            patch("luwu.engine._observe_all", wraps=original_observe) as observe,
         ):
-            authorized = m7_engine._require_plan(plan, operation="apply")
+            authorized = engine_module._require_plan(plan, operation="apply")
 
         self.assertIs(authorized.manifest, plan.manifest)
         self.assertEqual(verify.call_count, 2)
@@ -142,7 +143,7 @@ parent_mode = "0700"
         object.__setattr__(
             binding_plan.manifest,
             "_signature",
-            m7_manifest._manifest_signature(binding_plan.manifest),
+            manifest_module._manifest_signature(binding_plan.manifest),
         )
         with self.subTest(mutation="field binding"):
             self._assert_invalid_reauthorization_is_readonly(binding_plan)
@@ -153,7 +154,7 @@ parent_mode = "0700"
         object.__setattr__(
             layer_plan.manifest,
             "_signature",
-            m7_manifest._manifest_signature(layer_plan.manifest),
+            manifest_module._manifest_signature(layer_plan.manifest),
         )
         with self.subTest(mutation="input layer"):
             self._assert_invalid_reauthorization_is_readonly(layer_plan)
@@ -165,13 +166,13 @@ parent_mode = "0700"
         plan = self._plan()
         expected = plan._resources[0].write_data
         self.assertIsNotNone(expected)
-        original_specs = m7_engine._forward_specs
+        original_specs = engine_module._forward_specs
 
         def mutate_original_plan(resources, manifest):
             object.__setattr__(plan._resources[0], "write_data", b"forged\n")
             return original_specs(resources, manifest)
 
-        with patch("luwu.m7_engine._forward_specs", side_effect=mutate_original_plan):
+        with patch("luwu.engine._forward_specs", side_effect=mutate_original_plan):
             result = apply_plan(plan, confirm=True)
 
         self.assertEqual(result.outcome, "committed")
@@ -185,12 +186,12 @@ parent_mode = "0700"
         inputs["overrides"]["theme"] = "overlay-theme-v2"
         local.write_text(json.dumps(inputs) + "\n", encoding="utf-8")
         target = self._target()
-        original_spec = m7_engine._forward_specs_for_item
+        original_spec = engine_module._forward_specs_for_item
         calls = 0
 
         def poison_cached_spec(
-            item: m7_engine._ResourcePlan, manifest: m7_engine.Manifest
-        ) -> m7_engine._WriteSpec | None:
+            item: engine_module._ResourcePlan, manifest: engine_module.Manifest
+        ) -> engine_module._WriteSpec | None:
             nonlocal calls
             spec = original_spec(item, manifest)
             calls += 1
@@ -199,7 +200,7 @@ parent_mode = "0700"
             return spec
 
         with patch(
-            "luwu.m7_engine._forward_specs_for_item",
+            "luwu.engine._forward_specs_for_item",
             side_effect=poison_cached_spec,
         ):
             result = apply_plan(self._plan(), confirm=True)
@@ -237,11 +238,11 @@ parent_mode = "0700"
         )
         preview = apply_plan(plan, confirm=False)
         self.assertEqual(preview.outcome, "not_attempted")
-        self.assertEqual(preview.error_code, "m7_review_required")
+        self.assertEqual(preview.error_code, "review_required")
         result = apply_plan(plan, confirm=True)
 
         self.assertEqual(result.outcome, "not_attempted")
-        self.assertEqual(result.error_code, "m7_review_required")
+        self.assertEqual(result.error_code, "review_required")
         self.assertTrue(
             all(action.state == "not_attempted" for action in result.actions)
         )
@@ -260,7 +261,7 @@ parent_mode = "0700"
         )
         stale = apply_plan(no_op_plan, confirm=True)
         self.assertEqual(stale.outcome, "not_attempted")
-        self.assertEqual(stale.error_code, "m7_stale_plan")
+        self.assertEqual(stale.error_code, "stale_plan")
 
         (self.source / "a.txt").write_text("source-a-v2\n", encoding="utf-8")
         (self.source / "b.txt").write_text("source-b-v2\n", encoding="utf-8")
@@ -305,7 +306,7 @@ parent_mode = "0700"
         )
         adopt_resource(self._plan(), resource="a", confirm=True)
         adopt_resource(self._plan(), resource="b", confirm=True)
-        original_write = m7_engine.write_file
+        original_write = engine_module.write_file
         target_b = self.home / "b.txt"
 
         def write_then_change_other_resource(
@@ -330,7 +331,7 @@ parent_mode = "0700"
             return identity
 
         with patch(
-            "luwu.m7_engine.write_file", side_effect=write_then_change_other_resource
+            "luwu.engine.write_file", side_effect=write_then_change_other_resource
         ):
             partial = apply_plan(self._plan(), confirm=True)
         self.assertEqual(partial.outcome, "partial")
@@ -363,7 +364,7 @@ parent_mode = "0700"
                 f"source-{name}-v2\n", encoding="utf-8"
             )
 
-        original_write = m7_engine.write_file
+        original_write = engine_module.write_file
         target_c = self.home / "c.txt"
 
         def write_then_stale_future(
@@ -387,14 +388,14 @@ parent_mode = "0700"
                 target_c.write_text("external-c-v3\n", encoding="utf-8")
             return identity
 
-        with patch("luwu.m7_engine.write_file", side_effect=write_then_stale_future):
+        with patch("luwu.engine.write_file", side_effect=write_then_stale_future):
             result = apply_plan(self._plan(), confirm=True)
 
         states = {
             (action.resource, action.kind): action.state for action in result.actions
         }
         self.assertEqual(result.outcome, "partial")
-        self.assertEqual(result.error_code, "m7_stale_plan")
+        self.assertEqual(result.error_code, "stale_plan")
         self.assertEqual(states[("a", "target_write")], "committed")
         self.assertEqual(states[("b", "target_write")], "committed")
         self.assertEqual(states[("c", "target_write")], "not_attempted")
@@ -420,7 +421,7 @@ parent_mode = "0700"
             )
         (self.source / "write.txt").write_text("source-write-v2\n", encoding="utf-8")
         plan = self._plan()
-        original_write = m7_engine.write_file
+        original_write = engine_module.write_file
         noop_target = self.home / "noop.txt"
 
         def write_then_change_noop(
@@ -443,11 +444,11 @@ parent_mode = "0700"
             noop_target.write_text("external-noop-v3\n", encoding="utf-8")
             return identity
 
-        with patch("luwu.m7_engine.write_file", side_effect=write_then_change_noop):
+        with patch("luwu.engine.write_file", side_effect=write_then_change_noop):
             result = apply_plan(plan, confirm=True)
 
         self.assertEqual(result.outcome, "committed_but_verification_failed")
-        self.assertEqual(result.error_code, "m7_stale_plan")
+        self.assertEqual(result.error_code, "stale_plan")
         self.assertEqual(
             [(action.resource, action.state) for action in result.actions],
             [("write", "committed")],
@@ -475,7 +476,7 @@ parent_mode = "0700"
         input_data["overrides"]["theme"] = "overlay-theme-v2"
         local.write_text(json.dumps(input_data) + "\n", encoding="utf-8")
         plan = self._plan()
-        specs = m7_engine._forward_specs(plan._resources, plan.manifest)
+        specs = engine_module._forward_specs(plan._resources, plan.manifest)
         self.assertEqual(len(specs), 2)
         first = specs[0]
         future_resource_name = next(
@@ -495,7 +496,7 @@ parent_mode = "0700"
             spec for spec in specs if spec.resource.name == future_resource_name
         )
         expected_future_bytes = future_spec.data
-        original_write = m7_engine.write_file
+        original_write = engine_module.write_file
         changed_future_plan = False
 
         def write_then_tamper_future(
@@ -517,11 +518,11 @@ parent_mode = "0700"
                 check_inputs=check_inputs,
             )
             if path == first.path:
-                object.__setattr__(future_item, "write_data", b"M7_FORGED_FUTURE_WRITE")
+                object.__setattr__(future_item, "write_data", b"FORGED_FUTURE_WRITE")
                 changed_future_plan = True
             return identity
 
-        with patch("luwu.m7_engine.write_file", side_effect=write_then_tamper_future):
+        with patch("luwu.engine.write_file", side_effect=write_then_tamper_future):
             result = apply_plan(plan, confirm=True)
 
         self.assertTrue(changed_future_plan)
@@ -533,4 +534,4 @@ parent_mode = "0700"
         self.assertEqual(states[(future_resource_name, "target_write")], "committed")
         self.assertTrue(first.path.is_file())
         self.assertEqual(future_target.read_bytes(), expected_future_bytes)
-        self.assertNotEqual(future_target.read_bytes(), b"M7_FORGED_FUTURE_WRITE")
+        self.assertNotEqual(future_target.read_bytes(), b"FORGED_FUTURE_WRITE")

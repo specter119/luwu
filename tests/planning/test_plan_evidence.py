@@ -11,9 +11,9 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from luwu import m7_engine
-from luwu.m7_engine import M7EngineError, Plan, accept_baseline, apply_plan, build_plan
-from luwu.m7_formats import (
+from luwu import engine as engine_module
+from luwu.engine import EngineError, Plan, accept_baseline, apply_plan, build_plan
+from luwu.formats import (
     Document,
     _JsonMember,
     _Node,
@@ -23,8 +23,8 @@ from luwu.m7_formats import (
     _TomlInlineTable,
     parse_document,
 )
-from luwu.m7_manifest import load_manifest
-from luwu.m7_plan_evidence import (
+from luwu.manifest import load_manifest
+from luwu.plan_evidence import (
     _capture_plan_evidence,
     _matches_plan_evidence,
     _NodeRecord,
@@ -159,7 +159,7 @@ def _changed_value(value: object) -> object:
         return (*value, "changed")
     if type(value) is dict:
         changed = dict(value)
-        key = "__m7_evidence_change__"
+        key = "__evidence_change__"
         while key in changed:
             key += "_"
         changed[key] = None
@@ -308,7 +308,7 @@ class PlanEvidenceV8Tests(unittest.TestCase):
         evidence = _capture_plan_evidence({"value": [1, True, Decimal("1.00")]})
 
         with patch(
-            "luwu.m7_plan_evidence._scalar_evidence",
+            "luwu.plan_evidence._scalar_evidence",
             side_effect=AssertionError("capture helper used during matching"),
         ):
             self.assertTrue(
@@ -469,7 +469,7 @@ class PlanEvidenceV8Tests(unittest.TestCase):
 
 class PlanGraphV8Tests(unittest.TestCase):
     def setUp(self) -> None:
-        temporary = tempfile.TemporaryDirectory(prefix="luwu-m7-plan-graph-")
+        temporary = tempfile.TemporaryDirectory(prefix="luwu-test-plan-graph-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.source = self.root / "source"
@@ -586,15 +586,15 @@ input = "beta"
         error = None
         with (
             patch.object(
-                m7_engine, "write_file", wraps=m7_engine.write_file
+                engine_module, "write_file", wraps=engine_module.write_file
             ) as write_file,
             patch.object(
-                m7_engine, "create_parent", wraps=m7_engine.create_parent
+                engine_module, "create_parent", wraps=engine_module.create_parent
             ) as create_parent,
         ):
             try:
                 result = apply_plan(self.plan, confirm=True)
-            except M7EngineError as caught:
+            except EngineError as caught:
                 error = caught
 
         error_code = (
@@ -612,7 +612,7 @@ input = "beta"
             else result.outcome
         )
         with self.subTest(check="plan error"):
-            self.assertEqual(error_code, "m7_plan_invalid")
+            self.assertEqual(error_code, "plan_invalid")
         with self.subTest(check="no writer calls"):
             self.assertEqual(write_file.call_count, 0)
         with self.subTest(check="no parent creation"):

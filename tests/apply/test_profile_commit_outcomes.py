@@ -6,12 +6,12 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
-from luwu import m7_engine
-from luwu.m7_engine import (
+from luwu import engine as engine_module
+from luwu.engine import (
     adopt_resource,
     apply_plan,
 )
-from luwu.m7_filesystem import FileObservation
+from luwu.filesystem import FileObservation
 from tests.support import profile_case
 
 _CheckInputs = Callable[[], None] | None
@@ -21,8 +21,8 @@ class ProfileCommitOutcomeTests(profile_case.ProfileEngineCase):
     def test_observation_failure_after_successful_write_preserves_commit(self) -> None:
         self._accept_template_baseline()
         plan = self._plan()
-        original_write = m7_engine.write_file
-        original_observe = m7_engine.observe_file
+        original_write = engine_module.write_file
+        original_observe = engine_module.observe_file
         target = self._target()
         write_returned = False
 
@@ -50,19 +50,19 @@ class ProfileCommitOutcomeTests(profile_case.ProfileEngineCase):
 
         def observe_after_write(root: Path, path: Path):
             if write_returned and path == target:
-                raise m7_engine.M7FilesystemError(
-                    "private injected failure", code="m7_observe_failed"
+                raise engine_module.FilesystemError(
+                    "private injected failure", code="observe_failed"
                 )
             return original_observe(root, path)
 
         with (
-            patch("luwu.m7_engine.write_file", side_effect=write_then_arm),
-            patch("luwu.m7_engine.observe_file", side_effect=observe_after_write),
+            patch("luwu.engine.write_file", side_effect=write_then_arm),
+            patch("luwu.engine.observe_file", side_effect=observe_after_write),
         ):
             result = apply_plan(plan, confirm=True)
 
         self.assertEqual(result.outcome, "committed_but_verification_failed")
-        self.assertEqual(result.error_code, "m7_observe_failed")
+        self.assertEqual(result.error_code, "observe_failed")
         target_action = next(
             action for action in result.actions if action.kind == "target_write"
         )
@@ -74,10 +74,10 @@ class ProfileCommitOutcomeTests(profile_case.ProfileEngineCase):
         target = self._target()
         target.parent.mkdir(parents=True, exist_ok=True)
         with patch(
-            "luwu.m7_engine.write_file",
-            side_effect=m7_engine.M7FilesystemError(
+            "luwu.engine.write_file",
+            side_effect=engine_module.FilesystemError(
                 "private injected failure",
-                code="m7_write_failed",
+                code="write_failed",
                 state="not_replaced",
                 committed=False,
             ),
@@ -90,7 +90,7 @@ class ProfileCommitOutcomeTests(profile_case.ProfileEngineCase):
         self.assertEqual(not_replaced_action.state, "not_replaced")
         self.assertFalse(target.exists())
 
-        original_write = m7_engine.write_file
+        original_write = engine_module.write_file
 
         def write_then_raise(
             root: Path,
@@ -110,15 +110,15 @@ class ProfileCommitOutcomeTests(profile_case.ProfileEngineCase):
                 check_inputs=check_inputs,
             )
             if path == target:
-                raise m7_engine.M7FilesystemError(
+                raise engine_module.FilesystemError(
                     "private injected failure",
-                    code="m7_write_unknown",
+                    code="write_unknown",
                     state="uncertain",
                     committed=True,
                 )
             return identity
 
-        with patch("luwu.m7_engine.write_file", side_effect=write_then_raise):
+        with patch("luwu.engine.write_file", side_effect=write_then_raise):
             committed = apply_plan(self._plan(), confirm=True)
         committed_action = next(
             action for action in committed.actions if action.kind == "target_write"
@@ -181,7 +181,7 @@ parent_mode = "0700"
                 f"source-{name}-v2\n", encoding="utf-8"
             )
 
-        original_write = m7_engine.write_file
+        original_write = engine_module.write_file
         second_target = self.home / "second.txt"
 
         def fail_second_write(
@@ -194,9 +194,9 @@ parent_mode = "0700"
             check_inputs: _CheckInputs = None,
         ) -> tuple[int, int]:
             if path == second_target:
-                raise m7_engine.M7FilesystemError(
+                raise engine_module.FilesystemError(
                     "private injected failure",
-                    code="m7_write_failed",
+                    code="write_failed",
                     state="not_replaced",
                     committed=False,
                 )
@@ -209,7 +209,7 @@ parent_mode = "0700"
                 check_inputs=check_inputs,
             )
 
-        with patch("luwu.m7_engine.write_file", side_effect=fail_second_write):
+        with patch("luwu.engine.write_file", side_effect=fail_second_write):
             result = apply_plan(self._plan(), confirm=True)
 
         states = {

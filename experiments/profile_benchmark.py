@@ -42,13 +42,13 @@ EXPECTED_MISSING_TARGET_EFFECTIVE_MODE = "0o0644"
 MODULES = (
     "luwu",
     "luwu.cli",
-    "luwu.m7_manifest",
-    "luwu.m7_baseline",
-    "luwu.m7_formats",
-    "luwu.m7_filesystem",
-    "luwu.m7_inputs",
-    "luwu.m7_engine",
-    "luwu.m7_plan_evidence",
+    "luwu.manifest",
+    "luwu.baseline",
+    "luwu.formats",
+    "luwu.filesystem",
+    "luwu.inputs",
+    "luwu.engine",
+    "luwu.plan_evidence",
 )
 _PLAN_FIELDS = frozenset(
     {"schema_version", "command", "profile", "packages", "excluded", "resources"}
@@ -113,8 +113,8 @@ import json
 import sys
 from pathlib import Path
 
-from luwu.m7_baseline import make_copy_baseline, make_field_baseline
-from luwu.m7_manifest import load_manifest
+from luwu.baseline import make_copy_baseline, make_field_baseline
+from luwu.manifest import load_manifest
 
 manifest_path = Path(sys.argv[1])
 descriptor_path = Path(sys.argv[2])
@@ -682,7 +682,9 @@ def _timed_sample(
     python: Path,
     source_root: Path | None,
 ) -> dict[str, object]:
-    with tempfile.TemporaryDirectory(prefix="luwu-m7-bench-", dir=scratch) as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="luwu-test-bench-", dir=scratch
+    ) as directory:
         fixture = _write_fixture(Path(directory), size)
         _seed_baselines(fixture, python, source_root)
         _assert_targets_and_baselines(

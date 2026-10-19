@@ -7,13 +7,13 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
-from luwu import m7_engine
-from luwu.m7_engine import (
+from luwu import engine as engine_module
+from luwu.engine import (
     accept_baseline,
     adopt_resource,
     apply_plan,
 )
-from luwu.m7_filesystem import FileObservation
+from luwu.filesystem import FileObservation
 from tests.support import profile_case
 
 _CheckInputs = Callable[[], None] | None
@@ -22,7 +22,7 @@ _CheckInputs = Callable[[], None] | None
 class ProfileParentAndModeTests(profile_case.ProfileEngineCase):
     def test_external_mode_change_to_created_parent_is_not_waived(self) -> None:
         self._accept_template_baseline()
-        original_create = m7_engine.create_parent
+        original_create = engine_module.create_parent
 
         def create_then_change_mode(
             root: Path,
@@ -36,11 +36,11 @@ class ProfileParentAndModeTests(profile_case.ProfileEngineCase):
                 path.chmod(0o600)
             return identity
 
-        with patch("luwu.m7_engine.create_parent", side_effect=create_then_change_mode):
+        with patch("luwu.engine.create_parent", side_effect=create_then_change_mode):
             result = apply_plan(self._plan(), confirm=True)
 
         self.assertEqual(result.outcome, "committed_state_unknown")
-        self.assertEqual(result.error_code, "m7_parent_create_unknown")
+        self.assertEqual(result.error_code, "parent_create_unknown")
         states = {(action.kind, action.path): action.state for action in result.actions}
         self.assertEqual(states[("mkdir", ".config")], "uncertain")
         self.assertEqual(states[("mkdir", ".config/app")], "not_attempted")
@@ -53,7 +53,7 @@ class ProfileParentAndModeTests(profile_case.ProfileEngineCase):
         self,
     ) -> None:
         self._accept_template_baseline()
-        original_create = m7_engine.create_parent
+        original_create = engine_module.create_parent
         first_parent = self.home / ".config"
 
         def create_then_replace(
@@ -71,11 +71,11 @@ class ProfileParentAndModeTests(profile_case.ProfileEngineCase):
                 path.chmod(mode)
             return identity
 
-        with patch("luwu.m7_engine.create_parent", side_effect=create_then_replace):
+        with patch("luwu.engine.create_parent", side_effect=create_then_replace):
             result = apply_plan(self._plan(), confirm=True)
 
         self.assertEqual(result.outcome, "committed_state_unknown")
-        self.assertEqual(result.error_code, "m7_parent_create_unknown")
+        self.assertEqual(result.error_code, "parent_create_unknown")
         states = {(action.kind, action.path): action.state for action in result.actions}
         self.assertEqual(states[("mkdir", ".config")], "uncertain")
         self.assertEqual(states[("mkdir", ".config/app")], "not_attempted")
@@ -87,7 +87,7 @@ class ProfileParentAndModeTests(profile_case.ProfileEngineCase):
     def test_successful_write_does_not_adopt_a_foreign_mode_change(self) -> None:
         self._accept_template_baseline()
         plan = self._plan()
-        original_write = m7_engine.write_file
+        original_write = engine_module.write_file
         target = self._target()
 
         def write_then_change_mode(
@@ -111,11 +111,11 @@ class ProfileParentAndModeTests(profile_case.ProfileEngineCase):
                 path.chmod(0o644)
             return identity
 
-        with patch("luwu.m7_engine.write_file", side_effect=write_then_change_mode):
+        with patch("luwu.engine.write_file", side_effect=write_then_change_mode):
             result = apply_plan(plan, confirm=True)
 
         self.assertEqual(result.outcome, "committed_state_unknown")
-        self.assertEqual(result.error_code, "m7_write_unknown")
+        self.assertEqual(result.error_code, "write_unknown")
         target_action = next(
             action for action in result.actions if action.kind == "target_write"
         )
@@ -179,7 +179,7 @@ parent_mode = "0750"
         self.assertEqual(planned_modes, {"0o0700", "0o0750"})
         result = apply_plan(plan, confirm=True)
         self.assertEqual(result.outcome, "not_attempted")
-        self.assertEqual(result.error_code, "m7_parent_mode_conflict")
+        self.assertEqual(result.error_code, "parent_mode_conflict")
         self.assertTrue(
             all(action.state == "not_attempted" for action in result.actions)
         )
@@ -204,7 +204,7 @@ parent_mode = "0750"
         result = apply_plan(self._plan(), confirm=True)
 
         self.assertEqual(result.outcome, "not_attempted")
-        self.assertEqual(result.error_code, "m7_parent_mode_unsafe")
+        self.assertEqual(result.error_code, "parent_mode_unsafe")
         self.assertTrue(
             all(action.state == "not_attempted" for action in result.actions)
         )

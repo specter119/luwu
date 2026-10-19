@@ -1,3 +1,0 @@
-.config/m7/profile.ini
-.config/m7/shared/settings.jsonc
-.config/m7/shared/runtime.toml

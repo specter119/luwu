@@ -1,0 +1,3 @@
+.config/demo/profile.ini
+.config/demo/shared/settings.jsonc
+.config/demo/shared/runtime.toml

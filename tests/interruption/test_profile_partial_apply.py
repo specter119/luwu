@@ -25,8 +25,8 @@ class ProfilePartialApplyTests(profile_cli.ProfileScenarioCase):
         source_package = ROOT / "src"
         if source_package.is_dir() and str(source_package) not in sys.path:
             sys.path.insert(0, str(source_package))
-        engine = importlib.import_module("luwu.m7_engine")
-        manifest_module = importlib.import_module("luwu.m7_manifest")
+        engine = importlib.import_module("luwu.engine")
+        manifest_module = importlib.import_module("luwu.manifest")
 
         def build_current_plan():
             manifest = manifest_module.load_manifest(case.manifest, profile="synthetic")
@@ -66,10 +66,10 @@ class ProfilePartialApplyTests(profile_cli.ProfileScenarioCase):
             patch.object(
                 engine, "create_parent", wraps=engine.create_parent
             ) as create_parent,
-            self.assertRaises(engine.M7EngineError) as raised,
+            self.assertRaises(engine.EngineError) as raised,
         ):
             engine.apply_plan(plan, confirm=True)
-        self.assertEqual(raised.exception.code, "m7_plan_invalid")
+        self.assertEqual(raised.exception.code, "plan_invalid")
         self.assertEqual(write_file.call_count, 0)
         self.assertEqual(create_parent.call_count, 0)
         self._assert_snapshot_equal(case.snapshot(), before, "tampered plan apply")
@@ -228,7 +228,7 @@ class ProfilePartialApplyTests(profile_cli.ProfileScenarioCase):
             profile="finite_batch",
         )
         self.assertEqual(result.get("outcome"), "not_attempted")
-        self.assertEqual(result.get("error_code"), "m7_stale_plan")
+        self.assertEqual(result.get("error_code"), "stale_plan")
         self.assertEqual(
             json.loads(report.read_text(encoding="utf-8")),
             {"mutated": True, "counts": {"create_parent": 0, "write_file": 0}},
@@ -317,10 +317,12 @@ class ProfilePartialApplyTests(profile_cli.ProfileScenarioCase):
             parent_case.cli("apply", "--yes", expected_code=0).get("outcome"),
             "committed",
         )
-        nested_target = parent_case.target_root / ".config/m7/deep/profile/runtime.toml"
+        nested_target = (
+            parent_case.target_root / ".config/demo/deep/profile/runtime.toml"
+        )
         nested_target.unlink()
-        (parent_case.target_root / ".config/m7/deep/profile").rmdir()
-        (parent_case.target_root / ".config/m7/deep").rmdir()
+        (parent_case.target_root / ".config/demo/deep/profile").rmdir()
+        (parent_case.target_root / ".config/demo/deep").rmdir()
         partial_parent = parent_case.cli_with_engine_hook(
             FAIL_PARENT_HOOK,
             Path("profile"),
@@ -329,8 +331,10 @@ class ProfilePartialApplyTests(profile_cli.ProfileScenarioCase):
             expected_code=2,
         )
         self._assert_outcome(partial_parent, "partial")
-        self.assertTrue((parent_case.target_root / ".config/m7/deep").is_dir())
-        self.assertFalse((parent_case.target_root / ".config/m7/deep/profile").exists())
+        self.assertTrue((parent_case.target_root / ".config/demo/deep").is_dir())
+        self.assertFalse(
+            (parent_case.target_root / ".config/demo/deep/profile").exists()
+        )
         self.assertFalse(nested_target.exists())
         mkdir_states = {
             action.get("path"): action.get("state")
@@ -340,8 +344,8 @@ class ProfilePartialApplyTests(profile_cli.ProfileScenarioCase):
         self.assertEqual(
             mkdir_states,
             {
-                ".config/m7/deep": "committed",
-                ".config/m7/deep/profile": "not_attempted",
+                ".config/demo/deep": "committed",
+                ".config/demo/deep/profile": "not_attempted",
             },
         )
 
@@ -358,7 +362,7 @@ class ProfilePartialApplyTests(profile_cli.ProfileScenarioCase):
             write_case.expected("local-runtime.after-source-update.toml")
         )
         old_settings = (
-            write_case.target_root / ".config/m7/settings.jsonc"
+            write_case.target_root / ".config/demo/settings.jsonc"
         ).read_bytes()
         partial_write = write_case.cli_with_engine_hook(
             FAIL_WRITE_HOOK,
@@ -370,13 +374,13 @@ class ProfilePartialApplyTests(profile_cli.ProfileScenarioCase):
         self._assert_outcome(partial_write, "partial")
         self._assert_bytes_equal(
             (
-                write_case.target_root / ".config/m7/deep/profile/runtime.toml"
+                write_case.target_root / ".config/demo/deep/profile/runtime.toml"
             ).read_bytes(),
             write_case.expected("nested.after-worker-source-update.toml"),
             "committed first target",
         )
         self._assert_bytes_equal(
-            (write_case.target_root / ".config/m7/settings.jsonc").read_bytes(),
+            (write_case.target_root / ".config/demo/settings.jsonc").read_bytes(),
             old_settings,
             "failed second target remains unchanged",
         )

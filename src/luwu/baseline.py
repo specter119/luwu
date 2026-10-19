@@ -1,453 +1,32 @@
-"""Safe public baseline parsing and atomic persistence for M3b."""
+"""Schema-2 public baselines bound to complete declarations."""
 
 from __future__ import annotations
 
+import hashlib
 import json
-import os
-import stat
 from collections.abc import Callable, Mapping
-from decimal import Decimal
+from dataclasses import dataclass, field
+from decimal import Decimal, DecimalException
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
-from .errors import MutationError
-from .filesystem import (
-    FileChangedError,
-    NotRegularFileError,
-    create_temporary_file,
-    lock_directory,
-    open_parent_directory,
-    read_regular_file_at,
-    sync_directory,
-    unlock_directory,
-    verify_directory_identity,
+from .errors import LuwuError, MutationError
+from .filesystem import DirectoryBoundary, FileObservation, observe_file, write_file
+from .formats import MISSING, semantic_equal
+from .manifest import InputBinding, InputLayer, Manifest, Resource
+from .semantic import (
+    _contains_surrogate,
+    _exceeds_nesting_limit,
+    _object_pairs_without_duplicates,
+    _reject_non_finite_number,
 )
-from .manifest import Resource
-from .semantic import _parse_strict_json
-
-_MISSING = object()
-_BASELINE_KEYS = frozenset(
-    {"schema_version", "resource", "source", "target", "owners", "values"}
-)
-
-
-def parse_public_object(
-    data: bytes, *, code: str = "mutation_input_invalid"
-) -> dict[str, Any]:
-    """Parse one strict public JSON object without exposing invalid content."""
-
-    value, error = _parse_strict_json(data)
-    if error is not None or not isinstance(value, dict):
-        raise MutationError("JSON input must be a strict object", code=code)
-    return value
 
 
 def encode_public_json(value: Any) -> bytes:
     """Encode the supported JSON model without turning Decimal into a string."""
 
     return (_encode_value(value) + "\n").encode("utf-8")
-
-
-def read_baseline(root: Path, resource: Resource) -> bytes | None:
-    """Read a declared baseline through no-follow descriptor operations."""
-
-    if resource.baseline is None:
-        return None
-    try:
-        parent, name = open_parent_directory(root, resource.baseline)
-    except FileNotFoundError:
-        return None
-    except (OSError, NotImplementedError, ValueError):
-        raise MutationError(
-            "baseline cannot be read safely", code="baseline_invalid"
-        ) from None
-    try:
-        try:
-            data, _ = read_regular_file_at(parent, name)
-        except FileNotFoundError:
-            return None
-        except (NotRegularFileError, FileChangedError, OSError, RuntimeError):
-            raise MutationError(
-                "baseline cannot be read safely", code="baseline_invalid"
-            ) from None
-        return data
-    finally:
-        os.close(parent)
-
-
-def baseline_values(
-    data: bytes,
-    *,
-    resource: Resource,
-) -> dict[str, Any]:
-    """Validate and return only the public values in a baseline envelope."""
-
-    envelope = parse_public_object(data, code="baseline_invalid")
-    if set(envelope) != _BASELINE_KEYS:
-        raise MutationError("baseline envelope is invalid", code="baseline_invalid")
-    version = envelope["schema_version"]
-    if isinstance(version, bool) or version != Decimal(1):
-        raise MutationError("baseline envelope is invalid", code="baseline_invalid")
-    if (envelope["resource"], envelope["source"], envelope["target"]) != (
-        resource.name,
-        resource.source_name,
-        resource.target_name,
-    ):
-        raise MutationError(
-            "baseline identity does not match the manifest", code="baseline_stale"
-        )
-    owners = envelope["owners"]
-    values = envelope["values"]
-    if owners != dict(resource.fields) or not isinstance(values, dict):
-        raise MutationError("baseline envelope is invalid", code="baseline_invalid")
-    allowed = {name for name, owner in resource.fields.items() if owner != "ignore"}
-    if set(values) - allowed:
-        raise MutationError("baseline envelope is invalid", code="baseline_invalid")
-    return dict(values)
-
-
-def make_baseline(
-    *,
-    resource: Resource,
-    current: Mapping[str, Any],
-    selected_fields: tuple[str, ...],
-    existing: bytes | None,
-) -> bytes:
-    """Create a baseline envelope by explicitly accepting selected fields."""
-
-    if resource.baseline is None:
-        raise MutationError(
-            "resource has no declared baseline", code="baseline_required"
-        )
-    if len(set(selected_fields)) != len(selected_fields):
-        raise MutationError(
-            "fields must be selected at most once", code="field_duplicate"
-        )
-    values = (
-        baseline_values(existing, resource=resource) if existing is not None else {}
-    )
-    for name in selected_fields:
-        owner = resource.fields.get(name)
-        if owner is None:
-            raise MutationError("field is not declared", code="field_not_declared")
-        if owner == "ignore":
-            raise MutationError(
-                "ignored fields cannot be accepted", code="field_not_selectable"
-            )
-        value = current.get(name, _MISSING)
-        if value is _MISSING:
-            values.pop(name, None)
-        else:
-            values[name] = value
-    envelope = {
-        "schema_version": 1,
-        "resource": resource.name,
-        "source": resource.source_name,
-        "target": resource.target_name,
-        "owners": dict(resource.fields),
-        "values": values,
-    }
-    return encode_public_json(envelope)
-
-
-def write_baseline(
-    root: Path,
-    resource: Resource,
-    data: bytes,
-    *,
-    expected_data: bytes | None,
-    check_inputs: Callable[[], None] | None = None,
-) -> None:
-    """Atomically replace a baseline while preserving an existing mode."""
-
-    if resource.baseline is None:
-        raise MutationError(
-            "resource has no declared baseline", code="baseline_required"
-        )
-    try:
-        parent, name = open_parent_directory(root, resource.baseline)
-    except (OSError, NotImplementedError, ValueError):
-        raise MutationError(
-            "baseline parent cannot be opened safely", code="baseline_write_failed"
-        ) from None
-    temporary: str | None = None
-    locked = False
-    committed = False
-    replace_attempted = False
-    cleanup_error: MutationError | None = None
-    pending_error: BaseException | None = None
-    try:
-        lock_directory(parent)
-        locked = True
-        _verify_parent(parent, resource.baseline.parent)
-        old_identity: tuple[int, int, int] | None = None
-        try:
-            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            if not stat.S_ISREG(info.st_mode):
-                raise MutationError(
-                    "baseline is not a regular file", code="baseline_invalid"
-                )
-            mode = info.st_mode & 0o777
-            old_identity = _entry_identity(info)
-        except FileNotFoundError:
-            mode = 0o644
-            current = None
-        else:
-            try:
-                current, _ = read_regular_file_at(parent, name)
-            except FileNotFoundError:
-                current = None
-            except (NotRegularFileError, FileChangedError, OSError, RuntimeError):
-                raise MutationError(
-                    "baseline cannot be read safely", code="baseline_invalid"
-                ) from None
-        if current != expected_data:
-            raise MutationError(
-                "baseline changed; run the mutation again", code="stale_plan"
-            )
-        descriptor, temporary = create_temporary_file(parent, prefix=f".{name}.luwu-")
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fchmod(handle.fileno(), mode)
-                os.fsync(handle.fileno())
-        except BaseException:
-            if temporary is not None:
-                try:
-                    _remove_temporary(parent, temporary)
-                except OSError as exc:
-                    raise MutationError(
-                        "baseline temporary entry could not be cleaned up",
-                        code="cleanup_failed",
-                        outcome="not_committed",
-                    ) from exc
-            raise
-        temporary_name = temporary
-        if temporary_name is None:
-            raise MutationError(
-                "baseline temporary entry was not created",
-                code="baseline_write_failed",
-            )
-        staged_identity = _entry_identity_at(parent, temporary_name)
-        if staged_identity is None:
-            raise MutationError(
-                "baseline temporary entry disappeared", code="baseline_write_failed"
-            )
-        if check_inputs is not None:
-            check_inputs()
-        _check_current_baseline(parent, name, expected_data)
-        _verify_parent(parent, resource.baseline.parent)
-        replace_attempted = True
-        try:
-            os.replace(temporary_name, name, src_dir_fd=parent, dst_dir_fd=parent)
-        except (OSError, NotImplementedError) as exc:
-            state, temporary_present = _classify_replace_failure(
-                parent,
-                resource.baseline.parent,
-                name,
-                temporary_name,
-                old_identity,
-                staged_identity,
-            )
-            if temporary_present is False:
-                temporary = None
-            if state == "replaced":
-                committed = True
-                raise MutationError(
-                    "baseline replacement occurred but its outcome is not fully confirmed",
-                    code="baseline_state_unknown",
-                    committed=True,
-                    outcome="committed_state_unknown",
-                ) from exc
-            if state == "indeterminate":
-                raise MutationError(
-                    "baseline replacement state could not be determined",
-                    code="baseline_state_unknown",
-                    committed=False,
-                    outcome="indeterminate",
-                ) from exc
-            raise MutationError(
-                "baseline replacement did not occur",
-                code="baseline_write_failed",
-                committed=False,
-                outcome="not_committed",
-            ) from exc
-        committed = True
-        temporary = None
-        try:
-            _verify_parent(parent, resource.baseline.parent)
-        except MutationError as exc:
-            raise MutationError(
-                "baseline path changed after replacement",
-                code="baseline_state_unknown",
-                committed=True,
-                outcome="committed_state_unknown",
-            ) from exc
-        if check_inputs is not None:
-            try:
-                check_inputs()
-            except Exception as exc:
-                raise MutationError(
-                    "baseline inputs changed after replacement",
-                    code="baseline_state_unknown",
-                    committed=True,
-                    outcome="committed_state_unknown",
-                ) from exc
-        sync_directory(parent)
-        if check_inputs is not None:
-            try:
-                check_inputs()
-            except Exception as exc:
-                raise MutationError(
-                    "baseline inputs changed after directory sync",
-                    code="baseline_state_unknown",
-                    committed=True,
-                    outcome="committed_state_unknown",
-                ) from exc
-    except MutationError as exc:
-        pending_error = exc
-    except (OSError, NotImplementedError) as exc:
-        pending_error = MutationError(
-            "baseline write could not be confirmed",
-            code=(
-                "baseline_state_unknown"
-                if replace_attempted and committed
-                else "baseline_write_failed"
-            ),
-            committed=committed,
-            outcome=(
-                "committed_state_unknown"
-                if replace_attempted and committed
-                else "not_committed"
-            ),
-        )
-        pending_error.__cause__ = exc
-    except Exception as exc:  # noqa: BLE001 - retain the original write failure
-        pending_error = exc
-    finally:
-        if temporary is not None:
-            try:
-                _remove_temporary(parent, temporary)
-            except OSError as exc:
-                cleanup_error = MutationError(
-                    "baseline temporary entry could not be cleaned up",
-                    code="cleanup_failed",
-                    committed=committed,
-                    outcome=(
-                        "committed_state_unknown" if committed else "not_committed"
-                    ),
-                )
-                cleanup_error.__cause__ = exc
-        if locked:
-            try:
-                unlock_directory(parent)
-            except OSError as exc:
-                if cleanup_error is None:
-                    cleanup_error = MutationError(
-                        "baseline directory unlock could not be confirmed",
-                        code="cleanup_failed",
-                        committed=committed,
-                        outcome=(
-                            "committed_state_unknown" if committed else "not_committed"
-                        ),
-                    )
-                    cleanup_error.__cause__ = exc
-        try:
-            os.close(parent)
-        except OSError as exc:
-            if cleanup_error is None:
-                cleanup_error = MutationError(
-                    "baseline parent close could not be confirmed",
-                    code="cleanup_failed",
-                    committed=committed,
-                    outcome=(
-                        "committed_state_unknown" if committed else "not_committed"
-                    ),
-                )
-                cleanup_error.__cause__ = exc
-
-    if cleanup_error is not None:
-        if replace_attempted:
-            pending_error = MutationError(
-                "baseline write state could not be fully confirmed",
-                code="baseline_state_unknown",
-                committed=committed,
-                outcome=("committed_state_unknown" if committed else "indeterminate"),
-            )
-            pending_error.__cause__ = cleanup_error
-        else:
-            pending_error = cleanup_error
-    if pending_error is not None:
-        raise pending_error
-
-
-def _verify_parent(parent: int, path: Path) -> None:
-    try:
-        verify_directory_identity(parent, path)
-    except (FileChangedError, OSError, NotImplementedError) as exc:
-        raise MutationError(
-            "baseline parent changed; run the mutation again",
-            code="stale_plan",
-        ) from exc
-
-
-def _check_current_baseline(
-    parent: int, name: str, expected_data: bytes | None
-) -> None:
-    try:
-        current, _ = read_regular_file_at(parent, name)
-    except FileNotFoundError:
-        current = None
-    except (NotRegularFileError, FileChangedError, OSError, RuntimeError) as exc:
-        raise MutationError(
-            "baseline cannot be rechecked safely", code="baseline_invalid"
-        ) from exc
-    if current != expected_data:
-        raise MutationError(
-            "baseline changed; run the mutation again", code="stale_plan"
-        )
-
-
-def _remove_temporary(parent: int, name: str) -> None:
-    try:
-        os.unlink(name, dir_fd=parent)
-    except FileNotFoundError:
-        pass
-
-
-def _entry_identity(info: os.stat_result) -> tuple[int, int, int]:
-    return info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)
-
-
-def _entry_identity_at(parent: int, name: str) -> tuple[int, int, int] | None:
-    try:
-        return _entry_identity(os.stat(name, dir_fd=parent, follow_symlinks=False))
-    except FileNotFoundError:
-        return None
-
-
-def _classify_replace_failure(
-    parent: int,
-    parent_path: Path,
-    target_name: str,
-    temporary_name: str,
-    old_identity: tuple[int, int, int] | None,
-    staged_identity: tuple[int, int, int],
-) -> tuple[str, bool | None]:
-    """Classify a failed replace without inferring from bytes alone."""
-
-    try:
-        _verify_parent(parent, parent_path)
-        target_identity = _entry_identity_at(parent, target_name)
-        temporary_identity = _entry_identity_at(parent, temporary_name)
-    except (MutationError, OSError, NotImplementedError):
-        return "indeterminate", None
-    if target_identity == staged_identity and temporary_identity is None:
-        return "replaced", False
-    if target_identity == old_identity and temporary_identity == staged_identity:
-        return "not_replaced", True
-    return "indeterminate", temporary_identity is not None
 
 
 def _encode_value(value: Any) -> str:
@@ -488,4 +67,334 @@ def _encode_value(value: Any) -> str:
         return "{" + ",".join(members) + "}"
     raise MutationError(
         "JSON input contains an unsupported value", code="mutation_input_invalid"
+    )
+
+
+class BaselineError(LuwuError):
+    """A fixed-message error for invalid or stale schema-2 baselines."""
+
+
+@dataclass(frozen=True, slots=True)
+class Baseline:
+    """Validated baseline values and their private on-disk observation."""
+
+    values: Mapping[str, object] = field(repr=False)
+    whole_file_digest: str | None = field(repr=False)
+    whole_file_mode: int | None = field(repr=False)
+    observation: FileObservation = field(repr=False)
+    data: bytes = field(repr=False)
+
+
+def read_baseline(manifest: Manifest, resource: Resource) -> Baseline | None:
+    """Read and validate a resource baseline without exposing its contents."""
+
+    return load_baseline(manifest, resource)[1]
+
+
+def load_baseline(
+    manifest: Manifest, resource: Resource
+) -> tuple[FileObservation, Baseline | None]:
+    """Return the baseline leaf observation and its validated schema-2 value."""
+
+    root = manifest.roots.inputs.path
+    path = _absolute(root, resource.baseline)
+    observation = observe_file(root, path)
+    if observation.data is None:
+        return observation, None
+    validated_values, whole_file_digest, whole_file_mode = _validate_baseline_data(
+        observation.data, manifest, resource
+    )
+    return observation, Baseline(
+        values=MappingProxyType(validated_values),
+        whole_file_digest=whole_file_digest,
+        whole_file_mode=whole_file_mode,
+        observation=observation,
+        data=observation.data,
+    )
+
+
+def make_field_baseline(
+    manifest: Manifest,
+    resource: Resource,
+    *,
+    current: Mapping[str, object],
+    selected_fields: tuple[str, ...],
+    existing: Baseline | None,
+) -> bytes:
+    """Accept selected declared fields while preserving other accepted values."""
+
+    fields = resource.fields
+    if not selected_fields or len(set(selected_fields)) != len(selected_fields):
+        raise BaselineError("baseline field selection is invalid", code="field_invalid")
+    values = {} if existing is None else dict(existing.values)
+    for name in selected_fields:
+        binding = fields.get(name)
+        if binding is None or binding.owner == "ignore":
+            raise BaselineError(
+                "baseline field is not selectable", code="field_invalid"
+            )
+        value = current.get(name, MISSING)
+        if value is MISSING:
+            values.pop(name, None)
+        elif not _is_public_scalar(value):
+            raise BaselineError(
+                "baseline value is outside the public scalar boundary",
+                code="baseline_invalid",
+            )
+        else:
+            values[name] = value
+    return _encode_envelope(manifest, resource, values)
+
+
+def make_copy_baseline(
+    manifest: Manifest,
+    resource: Resource,
+    *,
+    accepted_data: bytes,
+    accepted_mode: int,
+) -> bytes:
+    """Accept only a whole-file digest for a declared copy resource."""
+
+    if (
+        type(accepted_data) is not bytes
+        or type(accepted_mode) is not int
+        or not 0 <= accepted_mode <= 0o777
+        or resource.kind != "copy"
+    ):
+        raise BaselineError("whole-file adoption is invalid", code="adopt_invalid")
+    return _encode_envelope(
+        manifest,
+        resource,
+        {
+            "whole_file": {
+                "algorithm": "sha256",
+                "digest": hashlib.sha256(accepted_data).hexdigest(),
+            },
+            "mode": accepted_mode,
+        },
+    )
+
+
+def write_baseline(
+    manifest: Manifest,
+    resource: Resource,
+    *,
+    data: bytes,
+    expected: FileObservation,
+    check_inputs: Callable[[], None] | None = None,
+) -> tuple[int, int]:
+    """Atomically replace a baseline under the declared input root."""
+
+    root = manifest.roots.inputs.path
+    path = _absolute(root, resource.baseline)
+    return write_file(
+        root, path, data, expected=expected, mode=0o600, check_inputs=check_inputs
+    )
+
+
+def baseline_identity(manifest: Manifest, resource: Resource) -> dict[str, object]:
+    """Return this resource's stable declaration identity for its baseline."""
+
+    root_identity = {
+        "source": _root_identity(manifest.roots.source),
+        "inputs": _root_identity(manifest.roots.inputs),
+        "target": _root_identity(manifest.roots.target),
+    }
+    bindings = resource.fields
+    input_names = sorted(
+        {binding.input for binding in bindings.values() if binding.input is not None}
+    )
+    input_identity = {
+        name: _binding_identity(manifest.inputs[name], manifest.roots.inputs.path)
+        for name in input_names
+    }
+    mapping = {
+        name: {
+            "path": list(binding.path),
+            "owner": binding.owner,
+            "input": binding.input,
+        }
+        for name, binding in sorted(bindings.items())
+    }
+    return {
+        "resource": resource.name,
+        "kind": resource.kind,
+        "source": resource.source_name,
+        "target": resource.target_name,
+        "baseline": _relative_name(manifest.roots.inputs.path, resource.baseline),
+        "format": resource.format,
+        "profile": manifest.profile,
+        "roots": root_identity,
+        "mapping": mapping,
+        "inputs": input_identity,
+        "parents": resource.parents,
+        "parent_mode": resource.parent_mode,
+        "mode": resource.mode,
+    }
+
+
+def _encode_envelope(
+    manifest: Manifest,
+    resource: Resource,
+    values: Mapping[str, object],
+) -> bytes:
+    envelope = {
+        "schema_version": 2,
+        "identity": baseline_identity(manifest, resource),
+        "values": dict(values),
+    }
+    data: bytes | None = None
+    try:
+        data = encode_public_json(envelope)
+    except UnicodeEncodeError:
+        pass
+    if data is None:
+        raise BaselineError(
+            "baseline envelope is invalid", code="baseline_invalid"
+        ) from None
+    _validate_baseline_data(data, manifest, resource)
+    return data
+
+
+def _validate_baseline_data(
+    data: bytes, manifest: Manifest, resource: Resource
+) -> tuple[dict[str, object], str | None, int | None]:
+    envelope = _parse_schema2_json(data)
+    if not isinstance(envelope, dict) or set(envelope) != {
+        "schema_version",
+        "identity",
+        "values",
+    }:
+        raise BaselineError("baseline envelope is invalid", code="baseline_invalid")
+    if (
+        type(envelope.get("schema_version")) is not int
+        or envelope["schema_version"] != 2
+    ):
+        raise BaselineError("baseline envelope is invalid", code="baseline_invalid")
+    expected_identity = baseline_identity(manifest, resource)
+    if not semantic_equal(envelope["identity"], expected_identity):
+        raise BaselineError(
+            "baseline identity does not match the manifest", code="baseline_stale"
+        )
+    values = envelope["values"]
+    if not isinstance(values, dict):
+        raise BaselineError("baseline values are invalid", code="baseline_invalid")
+    if resource.kind == "copy":
+        if set(values) != {"whole_file", "mode"}:
+            raise BaselineError("baseline values are invalid", code="baseline_invalid")
+        whole_file = values["whole_file"]
+        whole_file_mode = values["mode"]
+        algorithm: object = (
+            whole_file.get("algorithm") if isinstance(whole_file, dict) else None
+        )
+        digest: object = (
+            whole_file.get("digest") if isinstance(whole_file, dict) else None
+        )
+        if (
+            not isinstance(whole_file, dict)
+            or set(whole_file) != {"algorithm", "digest"}
+            or algorithm != "sha256"
+            or not isinstance(digest, str)
+            or not _valid_digest(digest)
+            or type(whole_file_mode) is not int
+            or not 0 <= whole_file_mode <= 0o777
+        ):
+            raise BaselineError("baseline values are invalid", code="baseline_invalid")
+        return {}, digest, whole_file_mode
+
+    allowed = {
+        name for name, binding in resource.fields.items() if binding.owner != "ignore"
+    }
+    if set(values) - allowed or any(
+        not _is_public_scalar(value) for value in values.values()
+    ):
+        raise BaselineError("baseline values are invalid", code="baseline_invalid")
+    return dict(values), None, None
+
+
+def _parse_schema2_json(data: bytes) -> object:
+    if type(data) is not bytes:
+        raise BaselineError("baseline envelope is invalid", code="baseline_invalid")
+
+    parse_failed = False
+    value: object = None
+    try:
+        text = data.decode("utf-8", errors="strict")
+        if _exceeds_nesting_limit(text):
+            parse_failed = True
+        else:
+            value = json.loads(
+                text,
+                object_pairs_hook=_object_pairs_without_duplicates,
+                parse_constant=_reject_non_finite_number,
+                parse_float=Decimal,
+                parse_int=int,
+                strict=True,
+            )
+            if _contains_surrogate(value):
+                parse_failed = True
+    except (UnicodeDecodeError, ValueError, DecimalException, RecursionError):
+        parse_failed = True
+
+    if parse_failed:
+        raise BaselineError("baseline envelope is invalid", code="baseline_invalid")
+    return value
+
+
+def _root_identity(root: DirectoryBoundary) -> dict[str, object]:
+    path = root.path
+    return {"path": str(path)}
+
+
+def _binding_identity(binding: InputBinding, root: Path) -> dict[str, object]:
+    def layer_identity(layer: InputLayer) -> dict[str, object]:
+        path = _relative_name(root, layer.file)
+        return {
+            "file": path,
+            "path": list(layer.path),
+            "format": layer.format,
+            "optional": layer.optional,
+        }
+
+    reverse_to = binding.reverse_to
+    return {
+        "layers": [layer_identity(layer) for layer in binding.layers],
+        "reverse_to": None if reverse_to is None else layer_identity(reverse_to),
+    }
+
+
+def _relative_name(root: Path, path: Path) -> str:
+    candidate = path if path.is_absolute() else root / path
+    try:
+        return candidate.relative_to(root).as_posix()
+    except ValueError:
+        raise BaselineError(
+            "input mapping is outside its root", code="baseline_invalid"
+        ) from None
+
+
+def _absolute(root: Path, path: Path) -> Path:
+    candidate = path if path.is_absolute() else root / path
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise BaselineError(
+            "baseline is outside its root", code="unsafe_path"
+        ) from None
+    return candidate
+
+
+def _valid_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _is_public_scalar(value: object) -> bool:
+    return (
+        value is None
+        or type(value) in {str, bool, int}
+        or (isinstance(value, Decimal) and value.is_finite())
     )

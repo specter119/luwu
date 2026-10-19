@@ -12,22 +12,22 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
-from luwu import m7_engine
-from luwu.m7_engine import (
-    M7EngineError,
+from luwu import engine as engine_module
+from luwu.engine import (
+    EngineError,
     Plan,
     accept_baseline,
     apply_plan,
     build_plan,
 )
-from luwu.m7_manifest import load_manifest
+from luwu.manifest import load_manifest
 
 _CheckInputs = Callable[[], None] | None
 
 
 class ProfileEngineCase(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="luwu-m7-engine-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="luwu-test-engine-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.source = self.root / "source"
@@ -157,14 +157,14 @@ input = "brand"
     def _assert_stale_reauthorization_is_readonly(self, plan: Plan) -> None:
         before = self._snapshot()
         with (
-            patch("luwu.m7_engine.write_file", wraps=m7_engine.write_file) as writer,
+            patch("luwu.engine.write_file", wraps=engine_module.write_file) as writer,
             patch(
-                "luwu.m7_engine.create_parent", wraps=m7_engine.create_parent
+                "luwu.engine.create_parent", wraps=engine_module.create_parent
             ) as mkdir,
         ):
             result = apply_plan(plan, confirm=True)
         self.assertEqual(result.outcome, "not_attempted")
-        self.assertEqual(result.error_code, "m7_stale_plan")
+        self.assertEqual(result.error_code, "stale_plan")
         self.assertTrue(
             all(action.state == "not_attempted" for action in result.actions)
         )
@@ -175,14 +175,14 @@ input = "brand"
     def _assert_invalid_reauthorization_is_readonly(self, plan: Plan) -> None:
         before = self._snapshot()
         with (
-            patch("luwu.m7_engine.write_file", wraps=m7_engine.write_file) as writer,
+            patch("luwu.engine.write_file", wraps=engine_module.write_file) as writer,
             patch(
-                "luwu.m7_engine.create_parent", wraps=m7_engine.create_parent
+                "luwu.engine.create_parent", wraps=engine_module.create_parent
             ) as mkdir,
-            self.assertRaises(M7EngineError) as raised,
+            self.assertRaises(EngineError) as raised,
         ):
             apply_plan(plan, confirm=True)
-        self.assertEqual(raised.exception.code, "m7_plan_invalid")
+        self.assertEqual(raised.exception.code, "plan_invalid")
         self.assertEqual(writer.call_count, 0)
         self.assertEqual(mkdir.call_count, 0)
         self.assertEqual(self._snapshot(), before)
