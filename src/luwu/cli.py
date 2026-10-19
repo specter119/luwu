@@ -57,11 +57,24 @@ def build_parser() -> argparse.ArgumentParser:
     _add_confirm_argument(adopt)
 
     reverse = commands.add_parser(
-        "reverse-sync", help="explicitly write selected live-owned fields to inputs"
+        "reverse-sync",
+        help="explicitly write selected live-owned fields to inputs, "
+        "or undeclared live changes to a literal template source",
     )
     _add_common_arguments(reverse)
     _add_resource_argument(reverse)
-    _add_field_argument(reverse)
+    reverse_scope = reverse.add_mutually_exclusive_group(required=True)
+    reverse_scope.add_argument(
+        "--field",
+        action="append",
+        help="declared field name; repeat to select several fields",
+    )
+    reverse_scope.add_argument(
+        "--undeclared",
+        action="store_true",
+        help="write live changes outside the declared fields into the template "
+        "source when they can be proven to render back unchanged",
+    )
     _add_confirm_argument(reverse)
     return parser
 
@@ -146,6 +159,10 @@ def _run_command(args: argparse.Namespace, manifest: object) -> int:
         )
     elif args.command == "adopt":
         result = engine.adopt_resource(plan, resource=args.resource, confirm=args.yes)
+    elif args.command == "reverse-sync" and args.undeclared:
+        result = engine.reverse_undeclared(
+            plan, resource=args.resource, confirm=args.yes
+        )
     elif args.command == "reverse-sync":
         result = engine.reverse_inputs(
             plan,

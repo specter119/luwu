@@ -45,6 +45,7 @@ from .formats import (
     patch_document,
     semantic_equal,
     unselected_equal,
+    unselected_scalar_changes,
 )
 from .inputs import (
     InputContext,
@@ -68,6 +69,7 @@ from .plan_evidence import (
     _PlanEvidence,
 )
 from .rendering import render_source
+from .sensitivity import is_sensitive_name
 
 _SCHEMA_VERSION = 8
 _PATH_TYPE = type(Path())
@@ -107,6 +109,7 @@ _SAFE_ERROR_CODES = frozenset(
         "stale_plan",
         "unsafe_file",
         "unsafe_path",
+        "undeclared_unsafe",
         "unsafe_stage",
         "write_failed",
         "write_unknown",
@@ -129,6 +132,7 @@ class EngineError(MutationError):
         "reverse_delete": "reverse sync cannot delete an input value",
         "reverse_destination": "reverse destination cannot accept the selected value",
         "reverse_consumer_change": "reverse sync would change another declared consumer",
+        "undeclared_unsafe": "undeclared changes cannot be written to the source safely",
         "write_failed": "write was not committed",
         "write_unknown": "write outcome is uncertain",
     }
@@ -1741,6 +1745,204 @@ def reverse_inputs(
     )
 
 
+def reverse_undeclared(plan: Plan, *, resource: str, confirm: bool) -> Result:
+    """Write live changes outside the declared fields into a literal template.
+
+    This is the only operation that writes the source tree. It proceeds only
+    when the rewritten template is proven, by rendering it in memory, to
+    reproduce the live undeclared content while leaving every declared field
+    as it was.
+    """
+
+    record = _mutation_record(plan, operation="reverse-sync")
+    if record is None:
+        return Result("reverse-sync", "not_attempted", error_code="stale_plan")
+    item = _resource_by_name(record.resources, resource)
+    data = _undeclared_source_update(record, item)
+    names = frozenset({resource})
+    if data is None:
+        try:
+            _assert_fresh(record, resource_names=names)
+        except EngineError as exc:
+            return Result("reverse-sync", "not_attempted", error_code=exc.code)
+        return Result("reverse-sync", "no_changes", verification_status="verified")
+    observation = item.source_observation
+    if observation is None:
+        raise EngineError(
+            "review_required", operation="reverse-sync", resource=resource
+        )
+    root = record.manifest.roots.source.path
+    path = item.resource.source
+    spec = _WriteSpec(
+        "source_write", item.resource, root, path, data, observation, None, ()
+    )
+    actions = _initial_action_results((spec,))
+    if not confirm:
+        return Result("reverse-sync", "confirmation_required", tuple(actions))
+    try:
+        _assert_fresh(record, resource_names=names)
+        identity = write_file(
+            root,
+            path,
+            data,
+            expected=observation,
+            mode=None,
+            check_inputs=lambda: _recheck_fresh(record, resource_names=names),
+        )
+    except EngineError as exc:
+        return _finish_actions("reverse-sync", actions, "not_attempted", exc.code)
+    except FilesystemError as exc:
+        return _write_failure_result(
+            "reverse-sync",
+            actions,
+            kind="source_write",
+            resource=item.resource,
+            root=root,
+            path=path,
+            fields=(),
+            error=exc,
+            committed_before=False,
+        )
+    expected_written = _expected_write_observation(observation, data, identity, None)
+    _mark_action(
+        actions, "source_write", resource, _relative_path(root, path), "committed"
+    )
+    try:
+        written = observe_file(root, path)
+    except FilesystemError as exc:
+        return _finish_actions(
+            "reverse-sync", actions, "committed_but_verification_failed", exc.code
+        )
+    if not _matches_own_write(expected_written, written, identity, data, None):
+        return _finish_actions(
+            "reverse-sync", actions, "committed_state_unknown", "write_unknown"
+        )
+    try:
+        fresh = _resource_by_name(
+            _assert_fresh(record, expected_sources={path: written}), resource
+        )
+    except EngineError as exc:
+        return _finish_actions(
+            "reverse-sync", actions, "committed_but_verification_failed", exc.code
+        )
+    if (
+        fresh.status == "blocked"
+        or fresh.undeclared_changed
+        or not _mapping_values_equal(
+            fresh.desired_values, item.desired_values, tuple(item.resource.fields)
+        )
+    ):
+        return _finish_actions(
+            "reverse-sync", actions, "committed_but_verification_failed", "stale_plan"
+        )
+    return _finish_actions(
+        "reverse-sync", actions, "committed", None, verification_status="verified"
+    )
+
+
+def _undeclared_source_update(record: _PlanRecord, item: _ResourcePlan) -> bytes | None:
+    """Return the rewritten template bytes, or None when nothing differs."""
+
+    resource = item.resource
+    name = resource.name
+
+    def refuse(code: str = "undeclared_unsafe") -> EngineError:
+        return EngineError(code, operation="reverse-sync", resource=name)
+
+    if resource.kind != "template":
+        raise refuse("operation_invalid")
+    if (
+        item.status in {"blocked", "conflict", "unbased", "adopt_required"}
+        or item.desired_document is None
+        or item.target_document is None
+        or item.inputs is None
+        or item.source_observation is None
+        or item.source_observation.data is None
+    ):
+        raise refuse("review_required")
+    if not item.undeclared_changed:
+        return None
+    selected = tuple(binding.path for binding in resource.fields.values())
+    changes = unselected_scalar_changes(
+        item.desired_document, item.target_document, selected
+    )
+    if not changes:
+        raise refuse()
+    public = resource.public_names
+    fmt = resource.format or ""
+    try:
+        source_text = item.source_observation.data.decode("utf-8")
+        template = parse_document(
+            item.source_observation.data, format=fmt, public_names=public
+        )
+    except (UnicodeDecodeError, LuwuError):
+        raise refuse() from None
+    if "{%" in source_text or "{#" in source_text:
+        raise refuse()
+    for path, value in changes.items():
+        if any(
+            _has_template_markup(segment) or is_sensitive_name(segment, public=public)
+            for segment in path
+        ):
+            raise refuse()
+        if isinstance(value, str) and (
+            "\n" in value or "\r" in value or _has_template_markup(value)
+        ):
+            raise refuse()
+        if not _literal_in_both(template, item.desired_document, path):
+            raise refuse()
+    try:
+        patched = patch_document(template, dict(changes))
+        rendered = render_source(
+            patched.decode("utf-8"),
+            dict(item.inputs.template_variables()),
+            resource_name=name,
+        ).encode("utf-8")
+        reparsed = parse_document(rendered, format=fmt, public_names=public)
+    except (UnicodeDecodeError, LuwuError):
+        raise refuse() from None
+    if not unselected_equal(reparsed, item.target_document, selected):
+        raise refuse()
+    if not _mapping_values_equal(
+        _project(reparsed, resource.fields), item.desired_values, tuple(resource.fields)
+    ):
+        raise refuse()
+    return patched
+
+
+def _has_template_markup(text: str) -> bool:
+    return "{{" in text or "{%" in text or "{#" in text
+
+
+def _literal_in_both(template: Document, rendered: Document, path: LeafPath) -> bool:
+    """Whether a path and its ancestors read the same in the source and its render."""
+
+    for depth in range(1, len(path)):
+        prefix = path[:depth]
+        source_value = _tree_value(template.value, prefix)
+        rendered_value = _tree_value(rendered.value, prefix)
+        if source_value is MISSING and rendered_value is MISSING:
+            continue
+        if not (isinstance(source_value, dict) and isinstance(rendered_value, dict)):
+            return False
+    source_leaf = _tree_value(template.value, path)
+    rendered_leaf = _tree_value(rendered.value, path)
+    if isinstance(source_leaf, (dict, list)) or isinstance(rendered_leaf, (dict, list)):
+        return False
+    if isinstance(source_leaf, str) and _has_template_markup(source_leaf):
+        return False
+    return semantic_equal(source_leaf, rendered_leaf)
+
+
+def _tree_value(root: object, path: LeafPath) -> object:
+    current = root
+    for segment in path:
+        if not isinstance(current, dict) or segment not in current:
+            return MISSING
+        current = current[segment]
+    return current
+
+
 def _observe_all(manifest: Manifest) -> tuple[_ResourcePlan, ...]:
     return tuple(
         _observe_resource(manifest, resource) for resource in manifest.resources
@@ -2685,7 +2887,9 @@ def _assert_fresh(
     expected_baselines: Mapping[Path, FileObservation] | None = None,
     expected_inputs: Mapping[Path, FileObservation] | None = None,
     expected_directories: Mapping[Path, tuple[tuple[int, int], int]] | None = None,
+    expected_sources: Mapping[Path, FileObservation] | None = None,
 ) -> tuple[_ResourcePlan, ...]:
+    expected_sources = {} if expected_sources is None else expected_sources
     expected_targets = {} if expected_targets is None else expected_targets
     expected_baselines = {} if expected_baselines is None else expected_baselines
     expected_inputs = {} if expected_inputs is None else expected_inputs
@@ -2716,7 +2920,10 @@ def _assert_fresh(
         raise EngineError("stale_plan")
     for current in fresh:
         old = _resource_by_name(record.resources, current.resource.name)
-        if old.source_observation != current.source_observation:
+        source_expected = expected_sources.get(
+            old.resource.source, old.source_observation
+        )
+        if source_expected != current.source_observation:
             raise EngineError("stale_plan", resource=old.resource.name)
         target_path = old.resource.target
         target_expected = expected_targets.get(target_path, old.target_observation)
@@ -2738,7 +2945,7 @@ def _assert_fresh(
                 raise EngineError("stale_plan", resource=old.resource.name)
         if old.desired_data != current.desired_data:
             changed_inputs = set(old_files) & set(expected_inputs)
-            if not changed_inputs:
+            if not changed_inputs and old.resource.source not in expected_sources:
                 raise EngineError("stale_plan", resource=old.resource.name)
         paths = set(old.parent_states) | set(current.parent_states)
         for path in paths:

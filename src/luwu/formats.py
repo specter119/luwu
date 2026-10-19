@@ -317,6 +317,65 @@ def unselected_equal(
 ) -> bool:
     """Compare full trees, masking edits and only their newly created ancestors."""
 
+    return semantic_equal(*_unselected_projections(left, right, paths))
+
+
+def unselected_scalar_changes(
+    left: Document, right: Document, paths: Collection[LeafPath]
+) -> dict[LeafPath, object] | None:
+    """Return the scalar values that make ``right`` differ outside ``paths``.
+
+    Each entry is a leaf of ``right`` that is new or has another scalar value
+    than ``left``. The result is ``None`` when the difference is anything else:
+    a removed key, a changed array, an empty added table, or a scalar that
+    became a table or the reverse.
+    """
+
+    left_view, right_view = _unselected_projections(left, right, paths)
+    changes: dict[LeafPath, object] = {}
+    if not _collect_scalar_changes(left_view, right_view, (), changes):
+        return None
+    return changes
+
+
+def _collect_scalar_changes(
+    left: object, right: object, path: LeafPath, changes: dict[LeafPath, object]
+) -> bool:
+    if isinstance(left, dict) and isinstance(right, dict):
+        for key, right_child in right.items():
+            if key in left:
+                if not _collect_scalar_changes(
+                    left[key], right_child, (*path, key), changes
+                ):
+                    return False
+            elif not _collect_added_leaves(right_child, (*path, key), changes):
+                return False
+        return all(key in right for key in left)
+    if isinstance(left, (dict, list)) or isinstance(right, (dict, list)):
+        return semantic_equal(left, right)
+    if not semantic_equal(left, right):
+        changes[path] = right
+    return True
+
+
+def _collect_added_leaves(
+    value: object, path: LeafPath, changes: dict[LeafPath, object]
+) -> bool:
+    if isinstance(value, list):
+        return False
+    if isinstance(value, dict):
+        return bool(value) and all(
+            _collect_added_leaves(child, (*path, key), changes)
+            for key, child in value.items()
+        )
+    changes[path] = value
+    return True
+
+
+def _unselected_projections(
+    left: Document, right: Document, paths: Collection[LeafPath]
+) -> tuple[object, object]:
+
     trie: dict[object, object] = {}
     terminal = object()
     selected_paths: list[LeafPath] = []
@@ -375,7 +434,7 @@ def unselected_equal(
             return MISSING
         return projected
 
-    return semantic_equal(project(left.value, trie), project(right.value, trie))
+    return project(left.value, trie), project(right.value, trie)
 
 
 class _JsonParser:
