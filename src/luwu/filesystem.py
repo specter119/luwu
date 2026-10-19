@@ -15,7 +15,7 @@ import os
 import stat
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from luwu.errors import LuwuError
@@ -276,7 +276,11 @@ def read_stable_file(parent: int, name: str) -> tuple[bytes, os.stat_result]:
 
 @dataclass(frozen=True, slots=True)
 class FileObservation:
-    """A stable snapshot of one regular file or an absent leaf."""
+    """A stable snapshot of one regular file, symlink, or absent leaf.
+
+    A symlink observation (``observe_link``) carries ``link_target`` and no
+    content. ``foreign`` marks an entry that is neither absent nor a symlink.
+    """
 
     data: bytes | None = field(repr=False)
     identity: tuple[int, int] | None
@@ -284,6 +288,8 @@ class FileObservation:
     mode: int | None
     existing_ancestors: tuple[tuple[Path, tuple[int, int]], ...] = ()
     missing_chain: tuple[Path, ...] = ()
+    link_target: str | None = None
+    foreign: bool = False
 
 
 class FilesystemError(LuwuError):
@@ -323,6 +329,18 @@ _CLEANUP_FAILED = "failed"
 def observe_file(root: Path, path: Path) -> FileObservation:
     """Observe a no-follow regular file beneath ``root`` or return absent."""
 
+    return _observe_leaf(root, path, _observe_entry)
+
+
+def observe_link(root: Path, path: Path) -> FileObservation:
+    """Observe a leaf as an absent entry, a symlink, or a foreign entry."""
+
+    return _observe_leaf(root, path, _observe_link_entry)
+
+
+def _observe_leaf(
+    root: Path, path: Path, observe_entry: Callable[[int, str], FileObservation]
+) -> FileObservation:
     boundary, relative = _capture_paths(root, path)
     existing, missing = _capture_ancestry(boundary, root, relative)
     if missing:
@@ -339,7 +357,7 @@ def observe_file(root: Path, path: Path) -> FileObservation:
 
     try:
         try:
-            observation = _observe_entry(parent, name)
+            observation = observe_entry(parent, name)
         except FileNotFoundError:
             observation = _ABSENT
         _verify_root_parent(boundary, parent, path.parent)
@@ -683,6 +701,114 @@ def write_file(
     return staged_identity
 
 
+def create_link(
+    root: Path,
+    path: Path,
+    link_value: str,
+    *,
+    expected: FileObservation,
+    check_inputs: Callable[[], object] | None = None,
+) -> tuple[int, int]:
+    """Create one symlink where nothing exists and return its identity.
+
+    ``os.symlink`` fails with ``EEXIST`` instead of replacing an entry, so the
+    leaf is never overwritten even when it appears after the recheck.
+    """
+
+    boundary, relative = _capture_paths(root, path)
+    if (
+        type(link_value) is not str
+        or not link_value.startswith("/")
+        or "\x00" in link_value
+    ):
+        raise _error("filesystem content is invalid", "invalid_content")
+    if (
+        not isinstance(expected, FileObservation)
+        or expected.identity is not None
+        or expected.link_target is not None
+    ):
+        raise _error("filesystem observation is invalid", "invalid_observation")
+    try:
+        parent, name = open_parent_directory(root, path)
+    except (OSError, NotImplementedError, ValueError):
+        raise _error("filesystem parent is unsafe", "unsafe_path") from None
+
+    locked = False
+    attempted = False
+    created = False
+    failure: FilesystemError | None = None
+    identity: tuple[int, int] | None = None
+    try:
+        lock_directory(parent)
+        locked = True
+        _verify_root_parent(boundary, parent, path.parent)
+        _verify_expected_ancestry(boundary, root, relative, expected)
+        _require_missing_entry(parent, name)
+
+        _run_check_inputs(check_inputs)
+        _verify_root_parent(boundary, parent, path.parent)
+        _verify_expected_ancestry(boundary, root, relative, expected)
+
+        attempted = True
+        try:
+            os.symlink(link_value, name, dir_fd=parent)
+        except FileExistsError:
+            attempted = False
+            raise _error("filesystem inputs are stale", "stale_inputs") from None
+        created = True
+        sync_directory(parent)
+        written = _observe_link_entry(parent, name)
+        if written.link_target != link_value or written.identity is None:
+            raise _error(
+                "filesystem link result is uncertain",
+                "write_unknown",
+                state=_UNCERTAIN,
+                committed=True,
+            )
+        identity = written.identity
+        _verify_root_parent(boundary, parent, path.parent)
+        _verify_expected_ancestry(boundary, root, relative, expected)
+    except FilesystemError as exc:
+        failure = (
+            _error(str(exc), exc.code, state=_UNCERTAIN, committed=True)
+            if created
+            else exc
+        )
+    except Exception:  # noqa: BLE001 - classify unexpected failures at the symlink boundary
+        failure = _error(
+            "filesystem link outcome is uncertain"
+            if attempted
+            else "filesystem link was not created",
+            "write_unknown" if attempted else "write_failed",
+            state=_UNCERTAIN if attempted else _NOT_REPLACED,
+            committed=created,
+        )
+    finally:
+        cleanup_failed = False
+        if locked:
+            try:
+                unlock_directory(parent)
+            except (OSError, NotImplementedError):
+                cleanup_failed = True
+        try:
+            os.close(parent)
+        except (OSError, ValueError):
+            cleanup_failed = True
+        if cleanup_failed:
+            failure = _error(
+                "filesystem link cleanup could not be confirmed",
+                "write_unknown" if attempted else "cleanup_unknown",
+                state=_UNCERTAIN if attempted else _NOT_REPLACED,
+                committed=created,
+                cleanup_state=_CLEANUP_FAILED,
+            )
+
+    if failure is not None:
+        raise failure from None
+    assert identity is not None
+    return identity
+
+
 def _capture_paths(root: Path, path: Path) -> tuple[DirectoryBoundary, Path]:
     if (
         not root.is_absolute()
@@ -848,14 +974,7 @@ def _with_ancestry(
     existing: tuple[tuple[Path, tuple[int, int]], ...],
     missing: tuple[Path, ...],
 ) -> FileObservation:
-    return FileObservation(
-        data=observation.data,
-        identity=observation.identity,
-        digest=observation.digest,
-        mode=observation.mode,
-        existing_ancestors=existing,
-        missing_chain=missing,
-    )
+    return replace(observation, existing_ancestors=existing, missing_chain=missing)
 
 
 def _same_file(left: FileObservation, right: FileObservation) -> bool:
@@ -886,6 +1005,20 @@ def _observe_entry(parent: int, name: str) -> FileObservation:
         digest=hashlib.sha256(data).hexdigest(),
         mode=stat.S_IMODE(info.st_mode),
     )
+
+
+def _observe_link_entry(parent: int, name: str) -> FileObservation:
+    try:
+        info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISLNK(info.st_mode):
+            return FileObservation(None, _identity(info), None, None, foreign=True)
+        link_target = os.readlink(name, dir_fd=parent)
+        latest = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return _ABSENT
+    if _identity(latest) != _identity(info) or not stat.S_ISLNK(latest.st_mode):
+        raise _error("filesystem entry changed during observation", "unsafe_file")
+    return FileObservation(None, _identity(info), None, None, link_target=link_target)
 
 
 def _verify_staged_entry(

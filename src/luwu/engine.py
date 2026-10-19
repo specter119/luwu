@@ -25,9 +25,11 @@ from .filesystem import (
     FileObservation,
     FilesystemError,
     capture_directory_boundary,
+    create_link,
     create_parent,
     missing_parents,
     observe_file,
+    observe_link,
     open_child_directory,
     open_parent_directory,
     write_file,
@@ -223,6 +225,7 @@ class _ResourcePlan:
     baseline_missing_parents: tuple[Path, ...] = field(repr=False)
     input_missing_parents: Mapping[Path, tuple[Path, ...]] = field(repr=False)
     parent_states: Mapping[Path, tuple[int, int] | None] = field(repr=False)
+    link_value: str | None = field(default=None, repr=False)
 
     def to_dict(self, manifest: Manifest) -> dict[str, object]:
         ownership = None
@@ -383,6 +386,7 @@ class _WriteSpec:
     expected: FileObservation = field(repr=False)
     mode: int | None
     fields: tuple[str, ...] = ()
+    link: str | None = None
 
 
 @dataclass(slots=True)
@@ -609,24 +613,34 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                 "apply", actions, "partial" if committed else "not_attempted", exc.code
             )
 
-        try:
-            identity = write_file(
-                fresh_spec.root,
-                fresh_spec.path,
-                fresh_spec.data,
-                expected=expected,
-                mode=fresh_spec.mode,
-                check_inputs=lambda resource_names=resource_names: (
-                    _recheck_forward_fresh(
-                        record,
-                        resource_names=resource_names,
-                        expected_targets=expected_targets,
-                        expected_baselines=expected_baselines,
-                        expected_inputs=expected_inputs,
-                        expected_directories=expected_directories,
-                    )
-                ),
+        def recheck(resource_names: frozenset[str] = resource_names) -> None:
+            _recheck_forward_fresh(
+                record,
+                resource_names=resource_names,
+                expected_targets=expected_targets,
+                expected_baselines=expected_baselines,
+                expected_inputs=expected_inputs,
+                expected_directories=expected_directories,
             )
+
+        try:
+            if fresh_spec.link is not None:
+                identity = create_link(
+                    fresh_spec.root,
+                    fresh_spec.path,
+                    fresh_spec.link,
+                    expected=expected,
+                    check_inputs=recheck,
+                )
+            else:
+                identity = write_file(
+                    fresh_spec.root,
+                    fresh_spec.path,
+                    fresh_spec.data,
+                    expected=expected,
+                    mode=fresh_spec.mode,
+                    check_inputs=recheck,
+                )
         except FilesystemError as exc:
             return _write_failure_result(
                 "apply",
@@ -640,9 +654,17 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                 committed_before=committed,
             )
 
-        expected_written = _expected_write_observation(
-            expected, fresh_spec.data, identity, fresh_spec.mode
-        )
+        if fresh_spec.link is not None:
+            expected_written = replace(
+                expected,
+                identity=identity,
+                link_target=fresh_spec.link,
+                missing_chain=(),
+            )
+        else:
+            expected_written = _expected_write_observation(
+                expected, fresh_spec.data, identity, fresh_spec.mode
+            )
         expected_targets[fresh_spec.path] = expected_written
         committed = True
         executed_specs.append(fresh_spec)
@@ -655,7 +677,10 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
             fresh_spec.fields,
         )
         try:
-            written = observe_file(fresh_spec.root, fresh_spec.path)
+            if fresh_spec.link is not None:
+                written = observe_link(fresh_spec.root, fresh_spec.path)
+            else:
+                written = observe_file(fresh_spec.root, fresh_spec.path)
         except FilesystemError as exc:
             return _finish_actions(
                 "apply",
@@ -663,8 +688,12 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                 "committed_but_verification_failed",
                 exc.code,
             )
-        if not _matches_own_write(
-            expected_written, written, identity, fresh_spec.data, fresh_spec.mode
+        if not (
+            _matches_own_link(expected_written, written, identity)
+            if fresh_spec.link is not None
+            else _matches_own_write(
+                expected_written, written, identity, fresh_spec.data, fresh_spec.mode
+            )
         ):
             return _finish_actions(
                 "apply", actions, "committed_state_unknown", "write_unknown"
@@ -1476,6 +1505,8 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
         parent_states=MappingProxyType({}),
     )
     try:
+        if resource.kind == "symlink":
+            return _observe_link_resource(manifest, resource)
         roots = manifest.roots
         source = observe_file(roots.source.path, resource.source)
         if source.data is None:
@@ -1794,6 +1825,66 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
         return _replace_blocked(empty, code="resource_blocked")
 
 
+def _observe_link_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
+    roots = manifest.roots
+    source = observe_file(roots.source.path, resource.source)
+    if source.data is None:
+        raise EngineError("review_required")
+    link_value = str(resource.source)
+    target = observe_link(roots.target.path, resource.target)
+    target_missing = missing_parents(roots.target.path, resource.target)
+    parent_states: dict[Path, tuple[int, int] | None] = {}
+    _extend_parent_states(parent_states, roots.target.path, resource.target)
+    _extend_parent_states(parent_states, roots.source.path, resource.source)
+    forward_fields: tuple[str, ...] = ()
+    if target.link_target == link_value:
+        status, action, reason = "in_sync", "noop", "link points at the source"
+    elif target.identity is not None:
+        status, action, reason = (
+            "blocked",
+            "blocked",
+            "target is a symlink to a different path"
+            if target.link_target is not None
+            else "target exists and is not a symlink",
+        )
+    elif target_missing and resource.parents == "require":
+        status, action, reason = "blocked", "blocked", "target parents are missing"
+    else:
+        status, action, reason = (
+            "missing",
+            "create",
+            "target is absent and requires explicit apply",
+        )
+        forward_fields = ("link",)
+    return _ResourcePlan(
+        resource=resource,
+        status=status,
+        action=action,
+        reason=reason,
+        error_code=None,
+        desired_data=None,
+        desired_document=None,
+        desired_values=MappingProxyType({}),
+        source_observation=source,
+        target_observation=target,
+        target_document=None,
+        live_values=MappingProxyType({}),
+        baseline_observation=None,
+        baseline=None,
+        inputs=None,
+        ownership=None,
+        undeclared_changed=False,
+        forward_fields=forward_fields,
+        reverse_fields=(),
+        write_data=None,
+        target_missing_parents=target_missing,
+        baseline_missing_parents=(),
+        input_missing_parents=MappingProxyType({}),
+        parent_states=MappingProxyType(parent_states),
+        link_value=link_value,
+    )
+
+
 def _replace_blocked(item: _ResourcePlan, *, code: str) -> _ResourcePlan:
     return _ResourcePlan(
         resource=item.resource,
@@ -1820,6 +1911,7 @@ def _replace_blocked(item: _ResourcePlan, *, code: str) -> _ResourcePlan:
         baseline_missing_parents=item.baseline_missing_parents,
         input_missing_parents=item.input_missing_parents,
         parent_states=item.parent_states,
+        link_value=item.link_value,
     )
 
 
@@ -2250,7 +2342,10 @@ def _verify_forward_results(
         current = _resource_by_name(fresh, item.resource.name)
         if current.status == "blocked" or current.target_observation is None:
             return False
-        if item.resource.kind == "copy":
+        if item.resource.kind == "symlink":
+            if current.status != "in_sync":
+                return False
+        elif item.resource.kind == "copy":
             source_observation = current.source_observation
             if (
                 source_observation is None
@@ -2409,6 +2504,18 @@ def _recheck_forward_fresh(
         expected_baselines=expected_baselines,
         expected_inputs=expected_inputs,
         expected_directories=expected_directories,
+    )
+
+
+def _matches_own_link(
+    expected: FileObservation, observed: FileObservation, identity: tuple[int, int]
+) -> bool:
+    return (
+        observed.identity == identity
+        and observed.link_target == expected.link_target
+        and not observed.foreign
+        and observed.existing_ancestors == expected.existing_ancestors
+        and not observed.missing_chain
     )
 
 
@@ -2665,6 +2772,7 @@ def _plan_projection(plan: Plan) -> list[object]:
             if item.baseline_observation is not None
             else None,
             "desired_data": item.desired_data,
+            "link_value": item.link_value,
             "desired_document": _document_value(item.desired_document),
             "target_document": _document_value(item.target_document),
             "write_data": item.write_data,
@@ -2793,6 +2901,8 @@ def _observation_value(observation: FileObservation) -> dict[str, object]:
             for path, identity in observation.existing_ancestors
         ],
         "missing_chain": [_projection_path(path) for path in observation.missing_chain],
+        "link_target": observation.link_target,
+        "foreign": observation.foreign,
     }
 
 
@@ -2964,11 +3074,21 @@ def _extend_parent_states(
 def _forward_specs_for_item(
     item: _ResourcePlan, manifest: Manifest
 ) -> _WriteSpec | None:
-    if (
-        item.action not in {"forward", "create"}
-        or item.write_data is None
-        or item.target_observation is None
-    ):
+    if item.action not in {"forward", "create"} or item.target_observation is None:
+        return None
+    if item.link_value is not None:
+        return _WriteSpec(
+            "link_create",
+            item.resource,
+            manifest.roots.target.path,
+            item.resource.target,
+            b"",
+            item.target_observation,
+            None,
+            item.forward_fields,
+            link=item.link_value,
+        )
+    if item.write_data is None:
         return None
     return _WriteSpec(
         "target_write",
@@ -3206,6 +3326,8 @@ def _mode_text(mode: int) -> str:
 def _effective_mode_text(
     resource: Resource, target: FileObservation | None
 ) -> str | None:
+    if resource.kind == "symlink":
+        return None
     if resource.mode is not None:
         return _mode_text(resource.mode)
     if target is None:
