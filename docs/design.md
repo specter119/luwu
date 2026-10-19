@@ -29,7 +29,11 @@ a best-effort success.
 
 ## Shared primitives
 
-Each primitive has one implementation, and every caller imports it:
+Each primitive has one implementation, and every caller imports it. Two
+exceptions are recorded debt: `luwu/manifest.py` and `luwu/engine.py` still
+carry their own descriptor-relative directory walks, and the baseline and
+format modules each call `json.loads` for their own parse. The ceilings in
+`tests/tooling/test_primitive_ownership.py` stop these copies from growing.
 
 - `luwu/filesystem.py` is the only place that opens, stages, replaces, locks,
   or creates directories. Inputs, baselines, and targets all write through
@@ -40,8 +44,9 @@ Each primitive has one implementation, and every caller imports it:
 - `luwu/semantic.py` holds strict JSON parsing and value equality for
   baselines and ownership.
 
-A second copy of one of these is a defect, not a local convenience. The
-maintainer workflow for catching it is in
+A second copy of one of these is a defect, not a local convenience.
+`tests/tooling/test_primitive_ownership.py` enforces the owner of each
+primitive call. The maintainer workflow is in
 [maintenance](maintenance.md#preventing-duplicate-implementations).
 
 ## Observation and semantic comparison

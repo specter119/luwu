@@ -93,6 +93,11 @@ match a later implementation; record the later fact in the current owner.
 1. Read this file, then read the owner document for the requested change.
 1. Inspect the actual code, schema, fixtures, tests, and current status needed
    to distinguish implemented behavior from intent or history.
+1. Before writing code that touches files, parses JSON or TOML, or classifies
+   a name as secret-bearing, find its owner in
+   [docs/design.md](docs/design.md#shared-primitives) and extend that owner.
+   Do not add a private copy. `tests/tooling/test_primitive_ownership.py`
+   fails when a module outside the owner calls the primitive.
 1. Classify each proposed statement as product intent, public contract,
    current fact, design mechanism, workflow, historical evidence, or review
    pattern. If two owners appear possible, stop and resolve the classification

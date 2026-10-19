@@ -43,6 +43,8 @@ fixtures and are open. The [roadmap](roadmap.md) owns the plan to close them.
   way to apply a single resource.
 - A key written by the application outside the declared fields blocks that
   resource until the declaration or the content is corrected by hand.
+- Several no-follow directory walks in `manifest.py` and `engine.py` duplicate
+  `luwu/filesystem.py`. The guard test caps them, and they are not yet merged.
 - The sensitive-name check is deliberately conservative: a declared or
   parsed key such as `env_key` is rejected even when it holds no secret.
 - Adopting a copy records the live bytes as the baseline, so the next apply

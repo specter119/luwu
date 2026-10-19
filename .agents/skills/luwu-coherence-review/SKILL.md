@@ -42,7 +42,7 @@ Read `AGENTS.md` and the owner of the fact before judging. Then ask:
 
 Attack file and class names that carry a delivery label, duplicated helpers
 that exist because each delivery copied its own (judged by
-`luwu-duplication-review`), fixtures named for the
+`luwu-primitive-reuse`), fixtures named for the
 delivery that needed them, and documents that restate dated outcomes as if
 they were current. Also attack the opposite failure: a merge that hides a
 real compatibility difference. Behavior that differs by manifest version is a

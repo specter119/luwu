@@ -79,22 +79,28 @@ is a command or test that can be rerun, not a captured result.
 
 Several rounds of work each added a complete, correct copy of a primitive
 (atomic write, no-follow open, baseline read, sensitive-name test) beside the
-earlier copy instead of extending it. Each change was reviewed against its own
-contract, so each copy looked fine. The duplication became visible only when
-someone read across modules. Before adding or changing a primitive:
+earlier copy instead of extending it. Reviews checked each diff against its own
+contract, each copy had its own tests, and "independent" version contracts
+were read as permission to copy the writer. Nothing compared the copies, and
+they drifted: five secret-name predicates disagreed on `apikey`, dashes, and
+camel case.
 
-1. Search for an existing implementation by behavior, not by name:
-   `rg "os.replace|O_NOFOLLOW|fsync|casefold" src`. A match in another module
-   is a reason to extend that module.
-1. Put the primitive in the module named in
-   [design](design.md#shared-primitives) and import it from the caller. Do not
-   add a private variant "for now".
-1. When a new capability needs different behavior, add a parameter or a second
-   function in the shared module, with a test for each caller's case.
-1. When review finds a second copy, deleting one is part of the same change.
-   The project skill `luwu-duplication-review` lists the symptoms, why the
-   earlier copies went unnoticed, and the ablation that proves a copy
+A review cannot see this, because the copy is created while writing. Three
+controls act at that moment:
+
+1. `AGENTS.md` tells the author to find the owner in
+   [design](design.md#shared-primitives) before writing the code.
+1. `tests/tooling/test_primitive_ownership.py` fails when a module outside the
+   owner calls a primitive such as `os.replace`, `os.open`, or `json.loads`,
+   and names the owner in the message. Its ceilings record known debt and may
+   only go down.
+1. The project skill `luwu-primitive-reuse` lists the moments a duplicate is
+   written and the review checks, including the ablation that proves a guard
    redundant.
+
+When a capability needs different behavior, add a parameter or a second
+function in the shared module, with a test for each caller's case. When review
+finds a second copy, removing one is part of the same change.
 
 ## Performance acceptance
 
