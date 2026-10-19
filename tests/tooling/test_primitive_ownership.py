@@ -64,9 +64,9 @@ class PrimitiveOwnershipTests(unittest.TestCase):
         problems: list[str] = []
         for path in sorted(SOURCE.glob("*.py")):
             counts = _calls(path)
-            for primitive in OWNERS:
+            for primitive, modules in OWNERS.items():
                 used = counts[primitive]
-                allowed = OWNERS[primitive].get(path.name, 0)
+                allowed = modules.get(path.name, 0)
                 if allowed is not None and used > allowed:
                     owner = OWNER_HINT.get(primitive, OTHER_HINT)
                     problems.append(
