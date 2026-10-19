@@ -10,20 +10,20 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from luwu import m7_engine
-from luwu.errors import LuwuError
-from luwu.m7_baseline import M7BaselineError, load_baseline
-from luwu.m7_engine import (
-    M7EngineError,
+from luwu import engine as engine_module
+from luwu.baseline import BaselineError, load_baseline
+from luwu.engine import (
+    EngineError,
     Plan,
     accept_baseline,
     apply_plan,
     build_plan,
 )
-from luwu.m7_filesystem import FileObservation
-from luwu.m7_formats import M7FormatError, parse_document
-from luwu.m7_inputs import M7InputError, load_inputs
-from luwu.m7_manifest import load_manifest
+from luwu.errors import LuwuError
+from luwu.filesystem import FileObservation
+from luwu.formats import FormatError, parse_document
+from luwu.inputs import InputError, load_inputs
+from luwu.manifest import load_manifest
 from tests.support import profile_case
 
 _CheckInputs = Callable[[], None] | None
@@ -59,60 +59,65 @@ class ProfilePlanTests(profile_case.ProfileEngineCase):
     def test_input_and_baseline_decode_errors_are_detached(self) -> None:
         manifest = self._load()
         resource = manifest.resources[0]
-        marker = "M7_RAW_UTF8_MARKER"
+        marker = "RAW_UTF8_MARKER"
 
         (self.inputs / "global" / "settings.json").write_bytes(
             b'{"values":{"theme":"' + marker.encode() + b'\xff"}}'
         )
-        with self.assertRaises(M7InputError) as input_error:
+        with self.assertRaises(InputError) as input_error:
             load_inputs(manifest, resource)
         self._assert_detached_error(input_error.exception, marker)
 
         (self.inputs / "baselines" / "settings.json").write_bytes(
             b'{"schema_version":2,"private_marker":"' + marker.encode() + b'\xff"}'
         )
-        with self.assertRaises(M7BaselineError) as baseline_error:
+        with self.assertRaises(BaselineError) as baseline_error:
             load_baseline(manifest, resource)
         self._assert_detached_error(baseline_error.exception, marker)
 
     def test_unknown_error_codes_are_not_serialized(self) -> None:
-        marker = "m7_SYNTHETIC_MARKER"
+        marker = "SYNTHETIC_MARKER"
         with patch(
-            "luwu.m7_engine.load_inputs",
+            "luwu.engine.load_inputs",
             side_effect=LuwuError("hidden", code=marker),
         ):
             plan = self._plan()
 
         resource = plan.to_dict()["resources"][0]
         assert isinstance(resource, dict)
-        self.assertEqual(resource["error_code"], "m7_resource_blocked")
+        self.assertEqual(resource["error_code"], "resource_blocked")
         public_output = json.dumps(plan.to_dict(), sort_keys=True) + repr(plan)
         self.assertNotIn(marker, public_output)
         self.assertNotIn("hidden", public_output)
-        self.assertEqual(m7_engine._safe_code(123), "m7_resource_blocked")
-        self.assertEqual(m7_engine._safe_code(marker), "m7_resource_blocked")
-        self.assertEqual(m7_engine._safe_code("m7_input_invalid"), "m7_input_invalid")
+        self.assertEqual(engine_module._safe_code(123), "resource_blocked")
+        self.assertEqual(engine_module._safe_code(marker), "resource_blocked")
+        self.assertEqual(engine_module._safe_code("input_invalid"), "input_invalid")
 
     def test_plan_evidence_rechecks_complete_projection(self) -> None:
         plan = self._plan()
-        evidence = m7_engine._PLAN_REGISTRY[plan].evidence
+        evidence = engine_module._PLAN_REGISTRY[plan].evidence
         self.assertTrue(
-            m7_engine._matches_plan_evidence(m7_engine._plan_projection(plan), evidence)
+            engine_module._matches_plan_evidence(
+                engine_module._plan_projection(plan), evidence
+            )
         )
 
         plan._resources[0].desired_document._root.start = -1
         self.assertFalse(
-            m7_engine._matches_plan_evidence(m7_engine._plan_projection(plan), evidence)
+            engine_module._matches_plan_evidence(
+                engine_module._plan_projection(plan), evidence
+            )
         )
 
         self.assertFalse(
-            m7_engine._matches_plan_evidence(
-                [True], m7_engine._capture_plan_evidence([1])
+            engine_module._matches_plan_evidence(
+                [True], engine_module._capture_plan_evidence([1])
             )
         )
         self.assertFalse(
-            m7_engine._matches_plan_evidence(
-                [Decimal("1.00")], m7_engine._capture_plan_evidence([Decimal("1.0")])
+            engine_module._matches_plan_evidence(
+                [Decimal("1.00")],
+                engine_module._capture_plan_evidence([Decimal("1.0")]),
             )
         )
 
@@ -120,8 +125,8 @@ class ProfilePlanTests(profile_case.ProfileEngineCase):
         shared_graph = [shared, shared]
         duplicated_graph = [["same", {"leaf": 1}], ["same", {"leaf": 1}]]
         self.assertTrue(
-            m7_engine._matches_plan_evidence(
-                duplicated_graph, m7_engine._capture_plan_evidence(shared_graph)
+            engine_module._matches_plan_evidence(
+                duplicated_graph, engine_module._capture_plan_evidence(shared_graph)
             )
         )
 
@@ -130,30 +135,32 @@ class ProfilePlanTests(profile_case.ProfileEngineCase):
             with self.subTest(depth=depth):
                 data = b'{"k":' * depth + b"1" + b"}" * depth
                 document = parse_document(data, format="json")
-                projection = m7_engine._document_value(document)
-                evidence = m7_engine._capture_plan_evidence(projection)
+                projection = engine_module._document_value(document)
+                evidence = engine_module._capture_plan_evidence(projection)
                 self.assertLess(len(evidence.records), depth * 20)
-                self.assertTrue(m7_engine._matches_plan_evidence(projection, evidence))
+                self.assertTrue(
+                    engine_module._matches_plan_evidence(projection, evidence)
+                )
 
                 reparsed = parse_document(data, format="json")
                 self.assertTrue(
-                    m7_engine._matches_plan_evidence(
-                        m7_engine._document_value(reparsed), evidence
+                    engine_module._matches_plan_evidence(
+                        engine_module._document_value(reparsed), evidence
                     )
                 )
                 document._root.start = -1
                 self.assertFalse(
-                    m7_engine._matches_plan_evidence(
-                        m7_engine._document_value(document), evidence
+                    engine_module._matches_plan_evidence(
+                        engine_module._document_value(document), evidence
                     )
                 )
 
         deep_dag: object = {"leaf": 1}
         for _ in range(64):
             deep_dag = [deep_dag, deep_dag]
-        evidence = m7_engine._capture_plan_evidence(deep_dag)
+        evidence = engine_module._capture_plan_evidence(deep_dag)
         self.assertLess(len(evidence.records), 500)
-        self.assertTrue(m7_engine._matches_plan_evidence(deep_dag, evidence))
+        self.assertTrue(engine_module._matches_plan_evidence(deep_dag, evidence))
 
     def test_cyclic_plan_graph_is_rejected_before_writing(self) -> None:
         plan = self._plan()
@@ -163,10 +170,10 @@ class ProfilePlanTests(profile_case.ProfileEngineCase):
         desired_value = document.value
         desired_value["cycle"] = desired_value
 
-        with self.assertRaises(M7EngineError) as raised:
+        with self.assertRaises(EngineError) as raised:
             apply_plan(plan, confirm=True)
 
-        self.assertEqual(raised.exception.code, "m7_plan_invalid")
+        self.assertEqual(raised.exception.code, "plan_invalid")
         self.assertEqual(self._snapshot(), before)
 
     def test_plan_reauthorization_covers_jsonc_toml_and_shared_inputs(self) -> None:
@@ -177,19 +184,19 @@ class ProfilePlanTests(profile_case.ProfileEngineCase):
             "jsonc": (
                 "jsonc.jsonc.j2",
                 '{"settings":{/* keep comment */"brand":{{ inputs.brand | tojson }}}}\n',
-                ".config/m7-jsonc.jsonc",
+                ".config/demo-jsonc.jsonc",
                 "jsonc",
             ),
             "toml_table": (
                 "toml-table.toml.j2",
                 "[settings]\nbrand = {{ inputs.brand | tojson }}\n",
-                ".config/m7-table.toml",
+                ".config/demo-table.toml",
                 "toml",
             ),
             "toml_inline": (
                 "toml-inline.toml.j2",
                 "settings = { brand = {{ inputs.brand | tojson }} }\n",
-                ".config/m7-inline.toml",
+                ".config/demo-inline.toml",
                 "toml",
             ),
         }
@@ -251,7 +258,7 @@ layers = [
         )
 
         plan = build_plan(load_manifest(self.manifest_path, profile="work"))
-        authorized = m7_engine._require_plan(plan, operation="apply")
+        authorized = engine_module._require_plan(plan, operation="apply")
         self.assertEqual(
             {
                 item.resource.name: item.desired_document._format
@@ -273,20 +280,20 @@ layers = [
         (self.inputs / "local" / "shared.json").write_text(
             '{"brand":"shared-v2"}\n', encoding="utf-8"
         )
-        with self.assertRaises(M7EngineError) as stale:
-            m7_engine._require_plan(plan, operation="apply")
-        self.assertEqual(stale.exception.code, "m7_stale_plan")
+        with self.assertRaises(EngineError) as stale:
+            engine_module._require_plan(plan, operation="apply")
+        self.assertEqual(stale.exception.code, "stale_plan")
 
         fresh_plan = build_plan(load_manifest(self.manifest_path, profile="work"))
-        fresh_authorized = m7_engine._require_plan(fresh_plan, operation="apply")
+        fresh_authorized = engine_module._require_plan(fresh_plan, operation="apply")
         self.assertEqual(len(fresh_authorized.resources), 3)
 
     def test_json_parser_depth_boundary_is_a_fixed_format_error(self) -> None:
         depth = 1500
         data = b'{"nested":' * depth + b"0" + b"}" * depth
-        with self.assertRaises(M7FormatError) as raised:
+        with self.assertRaises(FormatError) as raised:
             parse_document(data, format="json")
-        self.assertEqual(raised.exception.code, "m7_format")
+        self.assertEqual(raised.exception.code, "format")
         self.assertEqual(
             str(raised.exception), "document format or syntax is unsupported"
         )
@@ -465,16 +472,16 @@ layers = [
         self.assertEqual(self._plan().to_dict()["schema_version"], 8)
 
         target = self._target()
-        original_observe = m7_engine.observe_file
+        original_observe = engine_module.observe_file
 
         def fail_target_observation(root: Path, path: Path) -> FileObservation:
             if path == target:
-                raise m7_engine.M7FilesystemError(
-                    "private injected failure", code="m7_unsafe_path"
+                raise engine_module.FilesystemError(
+                    "private injected failure", code="unsafe_path"
                 )
             return original_observe(root, path)
 
-        with patch("luwu.m7_engine.observe_file", side_effect=fail_target_observation):
+        with patch("luwu.engine.observe_file", side_effect=fail_target_observation):
             unavailable = self._plan().to_dict()["resources"][0]
         self.assertIsNone(unavailable["effective_mode"])
 
@@ -491,22 +498,22 @@ layers = [
         for candidate in (replace(plan), Plan(plan.manifest, ())):
             with (
                 self.subTest(candidate=repr(candidate)),
-                self.assertRaises(M7EngineError) as raised,
+                self.assertRaises(EngineError) as raised,
             ):
                 apply_plan(candidate, confirm=True)
-            self.assertEqual(raised.exception.code, "m7_plan_invalid")
+            self.assertEqual(raised.exception.code, "plan_invalid")
         self.assertEqual(self._snapshot(), before)
         plan._resources[0].desired_document.value["settings"]["theme"] = (
             "mutated-private-plan-value"
         )
-        with self.assertRaises(M7EngineError) as raised:
+        with self.assertRaises(EngineError) as raised:
             apply_plan(plan, confirm=True)
-        self.assertEqual(raised.exception.code, "m7_plan_invalid")
+        self.assertEqual(raised.exception.code, "plan_invalid")
         self.assertEqual(self._snapshot(), before)
 
         plan = self._plan()
         object.__setattr__(plan._resources[0], "write_data", b'{"x":999}')
-        with self.assertRaises(M7EngineError) as raised:
+        with self.assertRaises(EngineError) as raised:
             apply_plan(plan, confirm=True)
-        self.assertEqual(raised.exception.code, "m7_plan_invalid")
+        self.assertEqual(raised.exception.code, "plan_invalid")
         self.assertEqual(self._snapshot(), before)

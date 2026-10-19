@@ -9,16 +9,16 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
-from luwu import m7_engine
-from luwu.m7_engine import (
-    M7EngineError,
+from luwu import engine as engine_module
+from luwu.engine import (
+    EngineError,
     accept_baseline,
     adopt_resource,
     apply_plan,
     reverse_inputs,
 )
-from luwu.m7_filesystem import FileObservation
-from luwu.m7_manifest import Manifest, Resource
+from luwu.filesystem import FileObservation
+from luwu.manifest import Manifest, Resource
 from tests.support import profile_case
 
 _CheckInputs = Callable[[], None] | None
@@ -72,7 +72,7 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
         self.assertTrue(resource["undeclared_changed"])
         self.assertEqual(resource["status"], "review")
         self.assertEqual(resource["action"], "blocked")
-        self.assertEqual(resource["error_code"], "m7_review_required")
+        self.assertEqual(resource["error_code"], "review_required")
         self.assertEqual(
             resource["reason"],
             "undeclared content changed; inspect declared scope or correct it manually, then re-plan",
@@ -84,7 +84,7 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
         self.assertNotIn("live-unknown-secret-sentinel", encoded)
         self.assertNotIn("unmanaged", encoded)
         before = self._snapshot()
-        with self.assertRaises(M7EngineError) as raised:
+        with self.assertRaises(EngineError) as raised:
             accept_baseline(
                 plan,
                 resource="settings",
@@ -92,11 +92,11 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
                 value_from="desired",
                 confirm=True,
             )
-        self.assertEqual(raised.exception.code, "m7_review_required")
+        self.assertEqual(raised.exception.code, "review_required")
         self.assertEqual(self._snapshot(), before)
         apply_result = apply_plan(plan, confirm=True)
         self.assertEqual(apply_result.outcome, "not_attempted")
-        self.assertEqual(apply_result.error_code, "m7_review_required")
+        self.assertEqual(apply_result.error_code, "review_required")
         self.assertTrue(
             all(action.state == "not_attempted" for action in apply_result.actions)
         )
@@ -161,6 +161,121 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
         )
         self.assertNotIn("app-theme-v2", json.dumps(result.to_dict()))
 
+    def test_reverse_creates_an_absent_optional_local_layer(self) -> None:
+        local = self.inputs / "local" / "settings.json"
+        local.unlink()
+        (self.source / "templates" / "settings.json.j2").write_text(
+            '{"settings":{"theme":{{ inputs.theme | tojson }},'
+            '"brand":{{ inputs.brand | tojson }}},'
+            '"unmanaged":{"source":"unmanaged-source-v1"}}\n',
+            encoding="utf-8",
+        )
+        manifest = self.manifest_path.read_text(encoding="utf-8")
+        self.manifest_path.write_text(
+            manifest.replace(
+                '{ file = "local/settings.json", path = ["overrides", "theme"], format = "json" },',
+                '{ file = "local/settings.json", path = ["overrides", "theme"], format = "json", optional = true },',
+            ).replace(
+                '{ file = "local/settings.json", path = ["branding"], format = "json" },',
+                '{ file = "local/settings.json", path = ["branding"], format = "json", optional = true },',
+            ),
+            encoding="utf-8",
+        )
+        self._deploy_template()
+        target = self._target()
+        changed = json.loads(target.read_bytes())
+        changed["settings"]["theme"] = "app-theme-v2"
+        target.write_text(json.dumps(changed) + "\n", encoding="utf-8")
+
+        result = reverse_inputs(
+            self._plan(),
+            resource="settings",
+            fields=("theme",),
+            confirm=True,
+        )
+
+        self.assertEqual(result.outcome, "committed")
+        self.assertEqual(result.verification_status, "verified")
+        self.assertEqual(
+            json.loads(local.read_text(encoding="utf-8"))["overrides"]["theme"],
+            "app-theme-v2",
+        )
+
+    def test_reverse_creates_missing_destination_parents_only_when_declared(
+        self,
+    ) -> None:
+        (self.inputs / "local" / "settings.json").unlink()
+        (self.source / "templates" / "settings.json.j2").write_text(
+            '{"settings":{"theme":{{ inputs.theme | tojson }},'
+            '"brand":{{ inputs.brand | tojson }}},'
+            '"unmanaged":{"source":"unmanaged-source-v1"}}\n',
+            encoding="utf-8",
+        )
+        nested = "local/nested/settings.json"
+        original = self.manifest_path.read_text(encoding="utf-8")
+        optional_layers = original.replace("local/settings.json", nested).replace(
+            'format = "json" },', 'format = "json", optional = true },'
+        )
+        for parents, expected in (
+            ("require", "not_attempted"),
+            ("create", "committed"),
+        ):
+            with self.subTest(parents=parents):
+                self.manifest_path.write_text(
+                    optional_layers.replace(
+                        'parents = "create"', f'parents = "{parents}"'
+                    ),
+                    encoding="utf-8",
+                )
+                self._target().unlink(missing_ok=True)
+                (self.inputs / "baselines" / "settings.json").unlink(missing_ok=True)
+                self._target().parent.mkdir(parents=True, exist_ok=True)
+                self._deploy_template()
+                target = self._target()
+                changed = json.loads(target.read_bytes())
+                changed["settings"]["theme"] = "app-theme-v2"
+                target.write_text(json.dumps(changed) + "\n", encoding="utf-8")
+
+                result = reverse_inputs(
+                    self._plan(),
+                    resource="settings",
+                    fields=("theme",),
+                    confirm=True,
+                )
+
+                self.assertEqual(result.outcome, expected)
+                self.assertEqual(
+                    (self.inputs / nested).exists(), expected == "committed"
+                )
+
+    def test_reverse_into_a_layer_below_the_winner_is_rejected(self) -> None:
+        manifest = self.manifest_path.read_text(encoding="utf-8")
+        global_layer = '{ file = "global/settings.json", path = ["values", "theme"], format = "json" },'
+        local_layer = '{ file = "local/settings.json", path = ["overrides", "theme"], format = "json" },'
+        self.manifest_path.write_text(
+            manifest.replace(
+                f"{global_layer}\n  {local_layer}", f"{local_layer}\n  {global_layer}"
+            ),
+            encoding="utf-8",
+        )
+        self._deploy_template()
+        target = self._target()
+        changed = json.loads(target.read_bytes())
+        changed["settings"]["theme"] = "app-theme-v2"
+        target.write_text(json.dumps(changed) + "\n", encoding="utf-8")
+        before = self._snapshot()
+
+        with self.assertRaises(EngineError) as raised:
+            reverse_inputs(
+                self._plan(),
+                resource="settings",
+                fields=("theme",),
+                confirm=True,
+            )
+
+        self.assertEqual(raised.exception.code, "reverse_destination")
+        self.assertEqual(self._snapshot(), before)
+
     def test_same_resource_conflict_blocks_reverse_and_deletion_is_rejected(
         self,
     ) -> None:
@@ -176,14 +291,14 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
         before = self._snapshot()
         plan = self._plan()
         self.assertEqual(plan.to_dict()["resources"][0]["status"], "conflict")
-        with self.assertRaises(M7EngineError) as raised:
+        with self.assertRaises(EngineError) as raised:
             reverse_inputs(
                 plan,
                 resource="settings",
                 fields=("theme",),
                 confirm=True,
             )
-        self.assertEqual(raised.exception.code, "m7_review_required")
+        self.assertEqual(raised.exception.code, "review_required")
         self.assertEqual(self._snapshot(), before)
 
         target = self._target()
@@ -194,14 +309,14 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
         source_input["overrides"]["theme"] = "overlay-theme-v1"
         local.write_text(json.dumps(source_input) + "\n", encoding="utf-8")
         before = self._snapshot()
-        with self.assertRaises(M7EngineError) as raised:
+        with self.assertRaises(EngineError) as raised:
             reverse_inputs(
                 self._plan(),
                 resource="settings",
                 fields=("theme",),
                 confirm=True,
             )
-        self.assertEqual(raised.exception.code, "m7_reverse_delete")
+        self.assertEqual(raised.exception.code, "reverse_delete")
         self.assertEqual(self._snapshot(), before)
 
     def test_old_tampered_and_identity_stale_baselines_block(self) -> None:
@@ -213,7 +328,7 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
         plan = self._plan()
         resource = plan.to_dict()["resources"][0]
         self.assertEqual(resource["status"], "blocked")
-        self.assertEqual(resource["error_code"], "m7_baseline_invalid")
+        self.assertEqual(resource["error_code"], "baseline_invalid")
 
         baseline_path.write_text(
             json.dumps(
@@ -229,7 +344,7 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
             encoding="utf-8",
         )
         self.assertEqual(
-            self._plan().to_dict()["resources"][0]["error_code"], "m7_baseline_invalid"
+            self._plan().to_dict()["resources"][0]["error_code"], "baseline_invalid"
         )
 
         baseline_path.unlink()
@@ -242,8 +357,27 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
             encoding="utf-8",
         )
         stale = self._plan().to_dict()["resources"][0]
-        self.assertEqual(stale["status"], "blocked")
-        self.assertEqual(stale["error_code"], "m7_baseline_stale")
+        self.assertEqual(stale["status"], "unbased")
+        self.assertEqual(stale["error_code"], "baseline_stale")
+
+    def test_declaration_change_is_recoverable_by_accepting_again(self) -> None:
+        self._deploy_template()
+        body = self.manifest_path.read_text(encoding="utf-8")
+        self.manifest_path.write_text(
+            body.replace('parent_mode = "0700"', 'parent_mode = "0750"'),
+            encoding="utf-8",
+        )
+        stale = self._plan().to_dict()["resources"][0]
+        self.assertEqual(stale["status"], "unbased")
+        self.assertEqual(stale["action"], "accept_baseline")
+        self.assertEqual(stale["error_code"], "baseline_stale")
+        self.assertIn("different declaration", stale["reason"])
+
+        self._accept_template_baseline()
+
+        recovered = self._plan().to_dict()["resources"][0]
+        self.assertEqual(recovered["status"], "in_sync")
+        self.assertIsNone(recovered["error_code"])
 
     def test_copy_adoption_is_baseline_only_and_live_changes_conflict(self) -> None:
         (self.source / "note.txt").write_text("source-note-v2\n", encoding="utf-8")
@@ -306,7 +440,7 @@ parent_mode = "0700"
             baseline_path.write_text(json.dumps(tampered), encoding="utf-8")
             blocked = self._plan().to_dict()["resources"][0]
             self.assertEqual(blocked["status"], "blocked")
-            self.assertEqual(blocked["error_code"], "m7_baseline_invalid")
+            self.assertEqual(blocked["error_code"], "baseline_invalid")
         baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
         accepted_mode = stat.S_IMODE(target.stat().st_mode)
         target.chmod(0o600)
@@ -317,7 +451,7 @@ parent_mode = "0700"
         conflict_plan = self._plan()
         self.assertEqual(conflict_plan.to_dict()["resources"][0]["status"], "conflict")
         before = self._snapshot()
-        with self.assertRaises(M7EngineError):
+        with self.assertRaises(EngineError):
             apply_plan(conflict_plan, confirm=True)
         self.assertEqual(self._snapshot(), before)
 
@@ -374,7 +508,7 @@ parent_mode = "0700"
         defaults_target = self.home / ".config/assets/defaults.conf"
         keymap_target = self.home / ".config/assets/nested/keymap.jsonc"
         before_keymap = keymap_target.read_bytes()
-        baseline_files = tuple((self.inputs / "baselines").glob("assets.m7-*"))
+        baseline_files = tuple((self.inputs / "baselines").glob("assets.leaf-*"))
         self.assertEqual(len(baseline_files), 2)
         for path in baseline_files:
             identity = json.loads(path.read_text(encoding="utf-8"))["identity"]
@@ -386,7 +520,7 @@ parent_mode = "0700"
         defaults.write_text("theme=two-and-updated\n", encoding="utf-8")
         stale = apply_plan(old_plan, confirm=True)
         self.assertEqual(stale.outcome, "not_attempted")
-        self.assertEqual(stale.error_code, "m7_stale_plan")
+        self.assertEqual(stale.error_code, "stale_plan")
         self.assertEqual(defaults_target.read_text(encoding="utf-8"), "theme=one\n")
 
         fresh_plan = self._plan()
@@ -464,7 +598,7 @@ input = "second"
         live["values"].update(first="app-first-v2", second="app-second-v2")
         target.write_text(json.dumps(live) + "\n", encoding="utf-8")
 
-        original_write = m7_engine.write_file
+        original_write = engine_module.write_file
         write_paths: list[Path] = []
 
         def count_write(
@@ -486,7 +620,7 @@ input = "second"
                 check_inputs=check_inputs,
             )
 
-        with patch("luwu.m7_engine.write_file", side_effect=count_write):
+        with patch("luwu.engine.write_file", side_effect=count_write):
             result = reverse_inputs(
                 self._plan(),
                 resource="combined",
@@ -504,7 +638,7 @@ input = "second"
         self,
     ) -> None:
         plan = self._plan()
-        original_write = m7_engine.write_baseline
+        original_write = engine_module.write_baseline
         written_data: list[bytes] = []
 
         def write_then_poison_caller_plan(
@@ -523,11 +657,11 @@ input = "second"
                 check_inputs=check_inputs,
             )
             written_data.append(data)
-            object.__setattr__(plan._resources[0], "write_data", b"M7_FORGED_BASELINE")
+            object.__setattr__(plan._resources[0], "write_data", b"FORGED_BASELINE")
             return identity
 
         with patch(
-            "luwu.m7_engine.write_baseline", side_effect=write_then_poison_caller_plan
+            "luwu.engine.write_baseline", side_effect=write_then_poison_caller_plan
         ):
             accepted = accept_baseline(
                 plan,
@@ -540,21 +674,21 @@ input = "second"
         accepted_path = self.inputs / "baselines" / "settings.json"
         self.assertEqual(accepted.outcome, "committed")
         self.assertEqual(accepted_path.read_bytes(), written_data[0])
-        self.assertNotIn(b"M7_FORGED_BASELINE", accepted_path.read_bytes())
+        self.assertNotIn(b"FORGED_BASELINE", accepted_path.read_bytes())
 
         (self.source / "note.txt").write_text("source-note-v1\n", encoding="utf-8")
         (self.home / "note.txt").write_text("live-note-v1\n", encoding="utf-8")
         self._configure_copy_batch(("note",))
         plan = self._plan()
         with patch(
-            "luwu.m7_engine.write_baseline", side_effect=write_then_poison_caller_plan
+            "luwu.engine.write_baseline", side_effect=write_then_poison_caller_plan
         ):
             adopted = adopt_resource(plan, resource="note", confirm=True)
 
         adopted_path = self.inputs / "baselines" / "note.json"
         self.assertEqual(adopted.outcome, "committed")
         self.assertEqual(adopted_path.read_bytes(), written_data[1])
-        self.assertNotIn(b"M7_FORGED_BASELINE", adopted_path.read_bytes())
+        self.assertNotIn(b"FORGED_BASELINE", adopted_path.read_bytes())
         self.assertEqual((self.home / "note.txt").read_bytes(), b"live-note-v1\n")
 
     def test_reverse_writer_callback_keeps_authorized_input_bytes(self) -> None:
@@ -566,7 +700,7 @@ input = "second"
 
         plan = self._plan()
         input_path = self.inputs / "local" / "settings.json"
-        original_write = m7_engine.write_file
+        original_write = engine_module.write_file
         written_data: list[bytes] = []
 
         def write_then_poison_caller_plan(
@@ -588,12 +722,10 @@ input = "second"
             )
             if path == input_path:
                 written_data.append(data)
-                object.__setattr__(plan._resources[0], "write_data", b"M7_FORGED_INPUT")
+                object.__setattr__(plan._resources[0], "write_data", b"FORGED_INPUT")
             return identity
 
-        with patch(
-            "luwu.m7_engine.write_file", side_effect=write_then_poison_caller_plan
-        ):
+        with patch("luwu.engine.write_file", side_effect=write_then_poison_caller_plan):
             result = reverse_inputs(
                 plan,
                 resource="settings",
@@ -604,7 +736,7 @@ input = "second"
         self.assertEqual(result.outcome, "committed")
         self.assertEqual(result.verification_status, "verified")
         self.assertEqual(input_path.read_bytes(), written_data[0])
-        self.assertNotIn(b"M7_FORGED_INPUT", input_path.read_bytes())
+        self.assertNotIn(b"FORGED_INPUT", input_path.read_bytes())
         self.assertEqual(
             json.loads(input_path.read_text(encoding="utf-8"))["overrides"]["theme"],
             "live-theme-v2",
@@ -613,8 +745,8 @@ input = "second"
     def test_accept_and_adopt_preserve_commit_when_postwrite_observation_fails(
         self,
     ) -> None:
-        original_write = m7_engine.write_baseline
-        original_observe = m7_engine.observe_file
+        original_write = engine_module.write_baseline
+        original_observe = engine_module.observe_file
         baseline_path = self.inputs / "baselines" / "settings.json"
         write_returned = False
 
@@ -639,17 +771,17 @@ input = "second"
 
         def observe_accept_write(root: Path, path: Path):
             if write_returned and path == baseline_path:
-                raise m7_engine.M7FilesystemError(
-                    "private injected failure", code="m7_observe_failed"
+                raise engine_module.FilesystemError(
+                    "private injected failure", code="observe_failed"
                 )
             return original_observe(root, path)
 
         with (
             patch(
-                "luwu.m7_engine.write_baseline",
+                "luwu.engine.write_baseline",
                 side_effect=write_baseline_then_arm,
             ),
-            patch("luwu.m7_engine.observe_file", side_effect=observe_accept_write),
+            patch("luwu.engine.observe_file", side_effect=observe_accept_write),
         ):
             accepted = accept_baseline(
                 self._plan(),
@@ -700,17 +832,17 @@ parent_mode = "0700"
 
         def observe_adopt_write(root: Path, path: Path):
             if write_returned and path == adopt_path:
-                raise m7_engine.M7FilesystemError(
-                    "private injected failure", code="m7_observe_failed"
+                raise engine_module.FilesystemError(
+                    "private injected failure", code="observe_failed"
                 )
             return original_observe(root, path)
 
         with (
             patch(
-                "luwu.m7_engine.write_baseline",
+                "luwu.engine.write_baseline",
                 side_effect=write_baseline_then_arm,
             ),
-            patch("luwu.m7_engine.observe_file", side_effect=observe_adopt_write),
+            patch("luwu.engine.observe_file", side_effect=observe_adopt_write),
         ):
             adopted = adopt_resource(self._plan(), resource="note", confirm=True)
         adopt_action = next(
@@ -727,8 +859,8 @@ parent_mode = "0700"
         live["settings"]["theme"] = "live-theme-v2"
         target.write_text(json.dumps(live) + "\n", encoding="utf-8")
         input_path = self.inputs / "local" / "settings.json"
-        original_write = m7_engine.write_file
-        original_observe = m7_engine.observe_file
+        original_write = engine_module.write_file
+        original_observe = engine_module.observe_file
         write_returned = False
 
         def write_then_arm(
@@ -755,14 +887,14 @@ parent_mode = "0700"
 
         def observe_after_write(root: Path, path: Path):
             if write_returned and path == input_path:
-                raise m7_engine.M7FilesystemError(
-                    "private injected failure", code="m7_observe_failed"
+                raise engine_module.FilesystemError(
+                    "private injected failure", code="observe_failed"
                 )
             return original_observe(root, path)
 
         with (
-            patch("luwu.m7_engine.write_file", side_effect=write_then_arm),
-            patch("luwu.m7_engine.observe_file", side_effect=observe_after_write),
+            patch("luwu.engine.write_file", side_effect=write_then_arm),
+            patch("luwu.engine.observe_file", side_effect=observe_after_write),
         ):
             result = reverse_inputs(
                 self._plan(),
@@ -850,21 +982,21 @@ input = "theme"
         before = self._snapshot()
         plan = self._plan()
         self.assertEqual(plan.to_dict()["resources"][0]["status"], "reverse_candidate")
-        with self.assertRaises(M7EngineError) as preview_error:
+        with self.assertRaises(EngineError) as preview_error:
             reverse_inputs(
                 plan,
                 resource="first",
                 fields=("theme",),
                 confirm=False,
             )
-        self.assertEqual(preview_error.exception.code, "m7_reverse_consumer_change")
+        self.assertEqual(preview_error.exception.code, "reverse_consumer_change")
         self.assertEqual(self._snapshot(), before)
-        with self.assertRaises(M7EngineError) as raised:
+        with self.assertRaises(EngineError) as raised:
             reverse_inputs(
                 plan,
                 resource="first",
                 fields=("theme",),
                 confirm=True,
             )
-        self.assertEqual(raised.exception.code, "m7_reverse_consumer_change")
+        self.assertEqual(raised.exception.code, "reverse_consumer_change")
         self.assertEqual(self._snapshot(), before)

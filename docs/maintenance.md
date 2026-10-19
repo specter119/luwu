@@ -1,8 +1,7 @@
 # Maintenance and Release Workflow
 
 This document owns the development, documentation, testing, release, and
-migration workflow. The versioned manifest, CLI, JSON, error, provider,
-secret, journal, cache, and platform contracts are owned by
+migration workflow. The manifest, CLI, JSON, and error contracts are owned by
 [reference](reference.md). [Status](status.md) owns the current snapshot, and
 the [changelog](changelog.md) records what each delivery added.
 
@@ -21,18 +20,13 @@ uv build
 git diff --check
 ```
 
-Provider tests use an injected resolver or a fake `rbw` executable. They do
-not access a real vault. The ablation experiments in `experiments/` are part
-of the boundary review and must run in temporary directories.
+The ablation experiments in `experiments/` are part of the boundary review and
+must run in temporary directories.
 
 For an installed-package full suite, copy `tests/`, `experiments/`, and
-`scripts/` into a private directory without `src/`, clear `PYTHONPATH`, and use the installed
-environment's Python. The copied suite's working directory must have no
-group- or world-writable ancestors: the fake-rbw tests deliberately apply the
-same executable-ancestry checks as the real adapter, so a suite under `/tmp`
-cannot pass those tests. A private scratch directory below the checkout's
-ignored `.venv/` is suitable. Check imported `luwu` module paths to confirm
-that the suite used the selected environment's `site-packages`.
+`scripts/` into a private directory without `src/`, clear `PYTHONPATH`, and use
+the installed environment's Python. Check imported `luwu` module paths to
+confirm that the suite used the selected environment's `site-packages`.
 
 ## Lockfile
 
@@ -66,13 +60,9 @@ this reason, so `prek run --all-files` needs no extra flags.
 
 Tests are organized by capability, not by delivery. A new behavior appends to
 the test module for its capability under `tests/<capability>/`; it does not
-create a parallel file named after a delivery, ticket, or version. Where one
-capability has behavior that differs by manifest version, keep each version's
-tests in its own `V<n>` test class in the same module, and never merge two
-implementations into one class. A version-named class that spans several
-capabilities is split by capability instead. Shared builders and fakes live in
-`tests/support/`, whose module names do not start with `test`. Fixtures are
-named by scenario, not by delivery.
+create a parallel file named after a delivery, ticket, or version. Shared
+builders and fakes live in `tests/support/`, whose module names do not start
+with `test`. Fixtures are named by scenario, not by delivery.
 
 A change to the layout must preserve every test: compare collected test ids
 and per-test source before and after, and run each moved module on its own.
@@ -85,19 +75,39 @@ directory (or another path outside the checkout). Do not commit it. What a
 delivery added belongs in the [changelog](changelog.md); a check that matters
 is a command or test that can be rerun, not a captured result.
 
+## Preventing duplicate implementations
+
+Several rounds of work each added a complete, correct copy of a primitive
+(atomic write, no-follow open, baseline read, sensitive-name test) beside the
+earlier copy instead of extending it. Reviews checked each diff against its own
+contract, each copy had its own tests, and "independent" version contracts
+were read as permission to copy the writer. Nothing compared the copies, and
+they drifted: five secret-name predicates disagreed on `apikey`, dashes, and
+camel case.
+
+A review cannot see this, because the copy is created while writing. Two
+controls act at that moment:
+
+1. The project skill `luwu-primitive-reuse` is written to trigger on the
+   author's action (opening, writing, or parsing a file, or needing an option a
+   shared function lacks). It lists the moments a duplicate is written and the
+   review checks, including the ablation that proves a guard redundant. Keep
+   its description about those actions so it loads on its own, and do not
+   repeat its rule in `AGENTS.md`.
+1. `tests/tooling/test_primitive_ownership.py` fails when a module outside the
+   owner calls a primitive such as `os.replace`, `os.open`, or `json.loads`,
+   and names the owner in the message. Its ceilings record known debt and may
+   only go down.
+
+When a capability needs different behavior, add a parameter or a second
+function in the shared module, with a test for each caller's case. When review
+finds a second copy, removing one is part of the same change.
+
 ## Performance acceptance
 
 Run the performance experiments on a durable local filesystem. Do not use
 tmpfs for the acceptance matrix. Use the same recorded host, filesystem,
-Python version, fixture and sandbox mode for before/after comparisons:
-
-```text
-mkdir -p .evidence
-uv run experiments/batch_benchmark.py --scratch /path/on/durable-fs/luwu-scratch --output .evidence/batch-benchmark.json
-uv run experiments/batch_cprofile.py --scratch /path/on/durable-fs/luwu-profile --output-dir .evidence/batch-profile
-uv run experiments/provider_latency.py --output .evidence/provider-latency.json
-PYTHONPATH=src python3 -B -m unittest tests.tooling.test_benchmark_harness tests.interruption.test_sigkill
-```
+Python version, fixture, and sandbox mode for before/after comparisons.
 
 For 200 public resources, the warm-run median budgets are:
 
@@ -107,7 +117,6 @@ For 200 public resources, the warm-run median budgets are:
 | No-op apply                | At most 2 seconds  |
 | One-change apply           | At most 3 seconds  |
 | Fresh or all-changed apply | At most 10 seconds |
-| Read-only recovery         | At most 2 seconds  |
 
 Run at least five repetitions per scenario, report every sample, median and
 maximum, and keep the first run separate without calling it a controlled
@@ -115,30 +124,21 @@ cold-cache measurement. Warm maxima must not exceed twice the corresponding
 budget. Doubling 100 to 200 resources must take no more than 3x the median
 command time for each scenario; inspect operation counts to separate fixed
 overhead from structural growth. Timing excludes setup but includes process
-startup, preflight, journal writes, target durability and verification. The
-complete 176-file fixture must finish apply, unchanged reapply and recovery;
-missing or blocked resources cannot be omitted to improve timing. The budgets
-apply to version 8 workloads as well. Provider latency has no budget; it
-is measured with synthetic delays only.
+startup, preflight, target durability, and verification. Missing or blocked
+resources cannot be omitted to improve timing.
 
 Do not relax a budget without measured evidence, remove durability, or report
 only a relative speedup. Keep a failed run rather than averaging it away. Do
 not add parallel writers as an optimization, because concurrency must not
-obscure ordering and partial-success boundaries. A zero exit code or
-`complete=true` alone is not acceptance: inspect the recorded postconditions,
-interpreter and module provenance, and budget fields.
+obscure ordering and partial-success boundaries. A zero exit code alone is not
+acceptance: inspect the recorded postconditions, interpreter and module
+provenance, and budget fields.
 
-The benchmark must retain sizes 1, 10, 30, 100, 176, and 200, first and five
-warm samples, exact action lists, and the environment metadata. Profile plan
-and apply separately, and report counted directory synchronization and journal
-publication calls. The provider experiment uses an injected resolver and
-synthetic latency only. Build and install the wheel and sdist in fresh
-environments before claiming the installed-artifact gate; the installed full
-suite does not replace the installed benchmark matrix.
-
-The version 8 profile workloads use `experiments/profile_benchmark.py` with an
-explicit interpreter and scratch on the same filesystem as the measured
-worktree:
+The profile workloads use `experiments/profile_benchmark.py` with an explicit
+interpreter and scratch on the same filesystem as the measured worktree.
+Build and install the wheel in a fresh environment before claiming the
+installed-artifact gate; the installed full suite does not replace the
+installed benchmark matrix:
 
 ```sh
 uv build --out-dir .evidence/dist
@@ -155,55 +155,18 @@ Run timing without concurrent test suites.
 
 ## Isolated rehearsal and Dotter handoff
 
-Run the sanitized version 7 rehearsal from the repository root using either
-the locked checkout environment or an environment where Luwu is installed:
+Rehearse in an isolated temporary HOME before touching a real target. The
+copy-and-run commands are in the
+[isolated profile fixture guide](../tests/fixtures/dotfiles_profile/README.md).
+They use public synthetic data and do not read or write the real HOME, and
+they do not launch any application or Dotter.
 
-```text
-# Checkout/source mode
-uv run --locked --project . python -B experiments/pilot_rehearsal.py
-
-# Installed mode; replace this with the selected environment's Python path
-env -u PYTHONPATH /path/to/venv/bin/python -B experiments/pilot_rehearsal.py
-```
-
-The runner retains its PEP 723 metadata for standalone Python tooling. Use the
-explicit `uv run --locked --project . python -B experiments/pilot_rehearsal.py` form
-above for checkout mode so uv selects the project environment instead of
-creating an isolated script environment. `luwu` must resolve from that selected
-environment. The runner does not add `src/` to `sys.path` or fall back to a
-source tree. For installed verification, invoke the selected environment's
-Python directly from a suite copy that contains the runner and fixtures but no
-`src/`; clear `PYTHONPATH` so the installed-artifact gate cannot resolve a
-checkout through inherited paths.
-
-The output directory must not already exist and must be outside the real HOME.
-The runner copies the public fixtures under a temporary HOME-shaped layout
-where `repo/`, `inputs/`, and the application target paths are inside HOME, and
-uses `python -m luwu` through the active environment for the CLI acceptance,
-create, two bidirectional cycles, and no-op observation. Its uncertainty probe
-injects a post-replace directory-sync fault, then starts a fresh CLI process for
-read-only observation. The Dotter handoff and return steps mutate only a
-synthetic operator-state file and target link. The runner does not launch Pi,
-Codex, or Dotter; it does not claim that either application read the fixture.
-Its metadata-only report does not authorize or attest to a real target.
-
-The reusable normal-HOME fixtures, exact copy-and-run CLI commands, and user
-feedback checklist are maintained in
-[`tests/fixtures/pilot_v7/README.md`](../tests/fixtures/pilot_v7/README.md).
-
-Before placing a real target in a version 7 manifest, admit the complete
-read/write flow as public and perform the handoff manually for that target.
-Inspect the whole target file, every associated global/local input file, and
-the existing baseline (or the public values that would create a new baseline).
-Admission of only the selected scalar fields is insufficient. Exclude
-credentials, authentication state, provider configuration/files, and any file
-that contains secrets. The current version 7 TOML subset accepts the bounded
-inline-comment behavior recorded in the [version 7 contract](reference.md#pilot-extension-manifest-version-7).
-Tables, arrays, quoted or dotted keys, multiline strings, JSONC, JSON comments,
-and trailing commas remain unsupported in version 7; version 8 supports a
-wider set under its own contract. See
-[reference](reference.md#full-dotfiles-coverage-manifest-version-8) and
-[status](status.md).
+Before placing a real target in a manifest, admit the complete read/write flow
+as public and perform the handoff manually for that target. Inspect the whole
+target file, every associated input file, and the existing baseline (or the
+public values that would create a new baseline). Admission of only the
+selected scalar fields is insufficient. Exclude credentials, authentication
+state, provider configuration or files, and any file that contains secrets.
 
 Check access as the identity that will run Luwu: source templates and every
 input must be readable; each directory in their paths must be traversable; and
@@ -219,8 +182,9 @@ changes to a HOME, repository, or input tree.
 Then perform the handoff manually for that target:
 
 1. Record the target label and its current manager as metadata. Confirm that
-   the target is an allowlisted regular file under the declared target root,
-   that its parent exists, and that it is not a conflicting symlink.
+   the target is a declared regular file under the declared target root,
+   that its parent exists or the resource may create it, and that it is not a
+   conflicting symlink.
 1. Cancel the target's active Dotter package declaration or add/retain an
    explicit exclusion through the normal Dotter workflow. Review the Dotter
    preview and verify that it will not deploy this target during the trial.
@@ -237,7 +201,7 @@ Then perform the handoff manually for that target:
    transition.
 
 The handoff is an operator boundary. It is not inferred from a clean isolated
-test and is not performed by inspection, planning, confirmation, or recovery.
+test and is not performed by inspection, planning, confirmation, or apply.
 
 `prek run --all-files` must be run in a checkout whose hook and cache
 directories are writable. A read-only shared agent directory is an environment
@@ -246,64 +210,34 @@ acceptable when it is byte-checked against the working tree.
 
 ## Boundary ablations
 
-Run the production-module ablations from the repository root. They write to
-temporary directories, use synthetic data, and check actual results against
+Run the production-module ablation from the repository root. It writes to
+temporary directories, uses synthetic data, and checks actual results against
 independently specified expectations:
 
 ```text
-uv run --script experiments/toml_comment_ablation.py
 uv run --script experiments/profile_ablation.py --python .venv/bin/python
 ```
 
-The TOML comment ablation applies the production patcher to synthetic TOML and
-contrasts it with a comment-rejecting scalar scan, naive `#` splitting, and
-whole-document reserialization, plus whole-line deletion and unsupported-syntax
-controls. The profile ablation exercises the version 8 boundaries through the
-production modules and the real writer. Neither substitutes for the focused
-tests under `tests/`. The older design and guard ablations in `experiments/`
-follow the same rule.
+The ablation exercises the manifest boundaries through the production modules
+and the real writer. It does not substitute for the focused tests under
+`tests/`. When a guard is a candidate for removal, disable it in a private copy
+and run the suite: a guard that no test notices needs a fault-injection test
+before it is kept, and a guard that another check fully covers is a candidate
+for deletion.
 
-## Version 8 fixtures and application shapes
+## Fixtures and application shapes
 
-Keep fixtures under synthetic roots and public test data. The version 8
-fixture includes synthetic app-shaped settings workflows for the fixed
-OpenCode, Codex, and Droid targets. These exercise file-shape handling only;
-they do not launch applications, establish runtime compatibility, or authorize
-a live target handoff. The [version 8 contract](reference.md#full-dotfiles-coverage-manifest-version-8)
+Keep fixtures under synthetic roots and public test data. The profile fixture
+includes synthetic app-shaped settings workflows for the fixed OpenCode,
+Codex, and Droid targets. These exercise file-shape handling only; they do not
+launch applications, establish runtime compatibility, or authorize a live
+target handoff. The [contract](reference.md#manifest-and-profile-contract)
 owns the target shapes and states that generic Luwu declarations do not
-enforce application-specific enum domains. Droid workspace-trust SDK calls do
-not establish a file schema; the open constraint is tracked in the
-[roadmap](roadmap.md).
+enforce application-specific enum domains. Droid workspace trust is
+unsupported; see the [roadmap](roadmap.md).
 
 For documentation-only changes, run relative-link and whitespace checks. Link
 and formatting checks do not imply that a product suite passed.
-
-## Provider and secret operations
-
-The commands below are workflow examples, not a second CLI contract. See
-[reference](reference.md) for their exact arguments, output, errors, and
-security promises.
-
-```text
-luwu inspect --manifest luwu.toml --allow-subprocess --rbw-executable /absolute/path/rbw
-luwu apply --manifest luwu.toml --allow-subprocess --rbw-executable /absolute/path/rbw --yes --record /absolute/path/journal.json
-luwu record-inspect --record /absolute/path/journal.json --json
-luwu recover --record /absolute/path/journal.json --allow-subprocess --rbw-executable /absolute/path/rbw --json
-```
-
-Provider values, references, rendered bytes, hashes, journal content evidence,
-and cache values must not be added to logs or diagnostics. The declared secret
-target is the only durable secret output.
-
-The cache is an explicit diagnostic facility, independent of reconciliation:
-
-```text
-luwu cache-refresh --cache /absolute/path/provider-cache.json --rbw-executable /absolute/path/rbw
-luwu cache-inspect --cache /absolute/path/provider-cache.json --rbw-executable /absolute/path/rbw
-```
-
-Inspection, planning, applying, and recovery do not refresh or repair the
-cache. A cache status cannot authorize a provider or change a plan decision.
 
 ## Documentation maintenance
 

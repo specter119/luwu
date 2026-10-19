@@ -16,7 +16,7 @@ from typing import cast
 ROOT = Path(__file__).resolve().parents[2]
 
 
-FIXTURE = ROOT / "tests" / "fixtures" / "dotfiles_profile_v8"
+FIXTURE = ROOT / "tests" / "fixtures" / "dotfiles_profile"
 
 
 OUTPUT_SENTINEL = "synthetic-output-secret-sentinel-v1"
@@ -37,7 +37,7 @@ EXPECTED_RESOURCES = tuple(
 COMMENT_RACE_HOOK = """
 import sys
 from pathlib import Path
-import luwu.m7_engine as engine
+import luwu.engine as engine
 from luwu.cli import main
 input_path = Path(sys.argv.pop(1))
 ABLATEME
@@ -63,14 +63,14 @@ raise SystemExit(main())
 FAIL_PARENT_HOOK = """
 import sys
 from pathlib import Path
-import luwu.m7_engine as engine
-from luwu.m7_filesystem import M7FilesystemError
+import luwu.engine as engine
+from luwu.filesystem import FilesystemError
 from luwu.cli import main
 failed_name = sys.argv.pop(1)
 original_create_parent = engine.create_parent
 def fail_one_parent(root, path, mode, *, check_inputs=None):
     if Path(path).name == failed_name:
-        raise M7FilesystemError("synthetic parent failure", code="m7_parent_create_failed")
+        raise FilesystemError("synthetic parent failure", code="parent_create_failed")
     return original_create_parent(root, path, mode, check_inputs=check_inputs)
 engine.create_parent = fail_one_parent
 raise SystemExit(main())
@@ -80,14 +80,14 @@ raise SystemExit(main())
 FAIL_WRITE_HOOK = """
 import sys
 from pathlib import Path
-import luwu.m7_engine as engine
-from luwu.m7_filesystem import M7FilesystemError
+import luwu.engine as engine
+from luwu.filesystem import FilesystemError
 from luwu.cli import main
 failed_name = sys.argv.pop(1)
 original_write_file = engine.write_file
 def fail_one_write(root, path, data, *, expected, mode=None, check_inputs=None):
     if Path(path).name == failed_name:
-        raise M7FilesystemError("synthetic target failure", code="m7_write_failed")
+        raise FilesystemError("synthetic target failure", code="write_failed")
     return original_write_file(
         root, path, data, expected=expected, mode=mode, check_inputs=check_inputs
     )
@@ -207,7 +207,7 @@ MUTATION_COUNT_HOOK = """
 import json
 import sys
 from pathlib import Path
-import luwu.m7_engine as engine
+import luwu.engine as engine
 from luwu.cli import main
 
 report = Path(sys.argv.pop(1))
@@ -232,7 +232,7 @@ import json
 import os
 import sys
 from pathlib import Path
-import luwu.m7_engine as engine
+import luwu.engine as engine
 from luwu.cli import main
 
 control = json.loads(Path(sys.argv.pop(1)).read_text(encoding="utf-8"))
@@ -271,7 +271,7 @@ import json
 import os
 import sys
 from pathlib import Path
-import luwu.m7_engine as engine
+import luwu.engine as engine
 from luwu.cli import main
 
 control = json.loads(Path(sys.argv.pop(1)).read_text(encoding="utf-8"))
@@ -302,7 +302,7 @@ NOOP_PREFLIGHT_CHANGE_HOOK = """
 import json
 import sys
 from pathlib import Path
-import luwu.m7_engine as engine
+import luwu.engine as engine
 from luwu.cli import main
 
 control = json.loads(Path(sys.argv.pop(1)).read_text(encoding="utf-8"))
@@ -343,7 +343,7 @@ class ProfileCliCase:
     """One disposable manifest tree and a separate process HOME."""
 
     def __init__(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="luwu-m7-acceptance-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="luwu-test-acceptance-")
         self.root = Path(self.temporary.name)
         shutil.copytree(FIXTURE, self.root, dirs_exist_ok=True, symlinks=True)
         for relative, target in (
@@ -531,22 +531,22 @@ class ProfileScenarioCase(unittest.TestCase):
     def _resources(self, payload: dict[str, object]) -> list[dict[str, object]]:
         raw = payload.get("resources")
         if not isinstance(raw, list):
-            raise TypeError("M7 plan must report its selected resources")
+            raise TypeError("plan must report its selected resources")
         resources: list[dict[str, object]] = []
         for item in raw:
             if not isinstance(item, dict):
-                raise TypeError("M7 resource entries must be JSON objects")
+                raise TypeError("resource entries must be JSON objects")
             resources.append(cast(dict[str, object], item))
         return resources
 
     def _actions(self, payload: dict[str, object]) -> list[dict[str, object]]:
         raw = payload.get("actions")
         if not isinstance(raw, list):
-            raise TypeError("M7 mutation result must report its actions")
+            raise TypeError("mutation result must report its actions")
         actions: list[dict[str, object]] = []
         for item in raw:
             if not isinstance(item, dict):
-                raise TypeError("M7 action entries must be JSON objects")
+                raise TypeError("action entries must be JSON objects")
             actions.append(cast(dict[str, object], item))
         return actions
 
@@ -716,11 +716,11 @@ class ProfileScenarioCase(unittest.TestCase):
 
     def _assert_deployed_fixture_bytes(self, case: ProfileCliCase) -> None:
         expected = {
-            ".config/m7/settings.jsonc": "settings.initial.jsonc",
-            ".config/m7/deep/profile/runtime.toml": "nested.initial.toml",
-            ".config/m7/profile.ini": "copy-profile.ini",
-            ".config/m7/assets/defaults.conf": "assets-defaults.conf",
-            ".config/m7/assets/nested/keymap.jsonc": "assets-nested-keymap.jsonc",
+            ".config/demo/settings.jsonc": "settings.initial.jsonc",
+            ".config/demo/deep/profile/runtime.toml": "nested.initial.toml",
+            ".config/demo/profile.ini": "copy-profile.ini",
+            ".config/demo/assets/defaults.conf": "assets-defaults.conf",
+            ".config/demo/assets/nested/keymap.jsonc": "assets-nested-keymap.jsonc",
         }
         for target_name, expected_name in expected.items():
             self._assert_bytes_equal(

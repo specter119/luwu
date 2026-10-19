@@ -1,3 +1,0 @@
-.config/m7/finite/a.json
-.config/m7/finite/b.json
-.config/m7/finite/c.json

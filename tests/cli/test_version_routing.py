@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import io
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,12 +14,8 @@ from pathlib import Path
 from typing import cast
 
 from luwu.cli import main
-from tests.support.projects import LegacyCliProject, TwoResourceProject
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-V7_FIXTURE = ROOT / "tests" / "fixtures" / "pilot_v7" / "codex"
 
 
 V8_MANIFEST = """\
@@ -141,169 +135,9 @@ class _CliCase:
         return cast(dict[str, object], payload)
 
 
-class ApplyRoutingV1V4Tests(unittest.TestCase):
-    def test_v1_to_v4_apply_boundary_remains_unchanged(self) -> None:
-        for version in range(1, 5):
-            with self.subTest(version=version), LegacyCliProject(version) as project:
-                stdout = io.StringIO()
-                with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
-                    exit_code = main(
-                        [
-                            "apply",
-                            "--manifest",
-                            str(project.manifest_path),
-                            "--yes",
-                            "--json",
-                        ]
-                    )
-
-                payload = json.loads(stdout.getvalue())
-                if version == 1:
-                    self.assertEqual(exit_code, 0)
-                    self.assertTrue(payload["applied"])
-                    self.assertEqual(project.target.read_text(), project.source_value)
-                else:
-                    self.assertEqual(exit_code, 2)
-                    self.assertEqual(
-                        payload["apply_block_reason"],
-                        "m2_read_only" if version == 2 else "m3_read_only",
-                    )
-                    self.assertEqual(project.target.read_text(), project.target_value)
-
-    def test_v4_human_apply_identifies_m3b_not_m3a(self) -> None:
-        with LegacyCliProject(4) as project:
-            stdout = io.StringIO()
-            stderr = io.StringIO()
-            with redirect_stdout(stdout), redirect_stderr(stderr):
-                exit_code = main(
-                    [
-                        "apply",
-                        "--manifest",
-                        str(project.manifest_path),
-                        "--yes",
-                    ]
-                )
-
-            self.assertEqual(exit_code, 2)
-            output = stdout.getvalue() + stderr.getvalue()
-            self.assertIn("manifest version 4", output)
-            self.assertIn("M3b", output)
-            self.assertNotIn("manifest version 3", output)
-            self.assertNotIn("M3a", output)
-
-
-class ObservationCliV2Tests(unittest.TestCase):
-    def test_rendered_encoding_error_keeps_other_resources_visible(self) -> None:
-        with TwoResourceProject() as project:
-            project._write_source("alpha", '{{ "\\ud800" }}')
-            project._write_source("zeta", "healthy-output-sentinel")
-            project._write_manifest(project._two_resource_manifest())
-            before = {
-                path.relative_to(project.root): path.read_bytes()
-                for path in project.root.rglob("*")
-                if path.is_file()
-            }
-            for command in ("inspect", "plan"):
-                with self.subTest(command=command):
-                    stdout, stderr = io.StringIO(), io.StringIO()
-                    with redirect_stdout(stdout), redirect_stderr(stderr):
-                        code = main(
-                            [
-                                command,
-                                "--manifest",
-                                str(project.manifest_path),
-                                "--json",
-                            ]
-                        )
-                    payload = json.loads(stdout.getvalue())
-                    self.assertEqual(code, 0)
-                    self.assertEqual(
-                        [entry["status"] for entry in payload["resources"]],
-                        ["blocked", "missing"],
-                    )
-                    self.assertEqual(
-                        payload["resources"][0]["comparison"]["code"],
-                        "rendered_encoding",
-                    )
-                    self.assertNotIn("healthy-output-sentinel", stdout.getvalue())
-                    self.assertNotIn("\\ud800", stdout.getvalue())
-                    self.assertEqual(stderr.getvalue(), "")
-            after = {
-                path.relative_to(project.root): path.read_bytes()
-                for path in project.root.rglob("*")
-                if path.is_file()
-            }
-            self.assertEqual(before, after)
-
-    def test_v2_human_plan_explains_read_only_capability(self) -> None:
-        with TwoResourceProject() as project:
-            project._write_source("settings", '{"profile": "developer"}\n')
-            project._write_manifest(
-                """version = 2
-
-[resources.settings]
-source = "templates/settings.j2"
-target = "live/settings.json"
-owner = "source"
-scope = "whole-file"
-comparison = "json"
-"""
-            )
-            stdout = io.StringIO()
-            with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
-                exit_code = main(["plan", "--manifest", str(project.manifest_path)])
-
-            output = stdout.getvalue()
-            self.assertEqual(exit_code, 0)
-            self.assertIn("Capability: read-only (M2)", output)
-            self.assertIn("Apply: blocked (m2_read_only)", output)
-            self.assertIn("M2 writes nothing", output)
-
-    def test_v2_confirmed_apply_explains_read_only_boundary(self) -> None:
-        with TwoResourceProject() as project:
-            project._write_source("settings", '{"profile": "developer"}\n')
-            project._write_manifest(
-                """version = 2
-
-[resources.settings]
-source = "templates/settings.j2"
-target = "live/settings.json"
-owner = "source"
-scope = "whole-file"
-comparison = "json"
-"""
-            )
-            stdout = io.StringIO()
-            with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
-                exit_code = main(
-                    [
-                        "apply",
-                        "--manifest",
-                        str(project.manifest_path),
-                        "--yes",
-                        "--json",
-                    ]
-                )
-
-            payload = json.loads(stdout.getvalue())
-            self.assertEqual(exit_code, 2)
-            self.assertFalse(payload["applied"])
-            self.assertEqual(payload["reason"], "m2_read_only")
-            self.assertFalse(payload["applyable"])
-            self.assertEqual(
-                payload["resources"][0]["comparison"]["strategy"],
-                "json",
-            )
-            self.assertEqual(
-                payload["resources"][0]["comparison"]["status"],
-                "not-compared",
-            )
-            self.assertFalse(project.settings_target.exists())
-
-
 class ProfileCliV8Tests(unittest.TestCase):
     def _v8_case(self) -> _CliCase:
-        temporary = tempfile.TemporaryDirectory(prefix="luwu-m7-cli-")
+        temporary = tempfile.TemporaryDirectory(prefix="luwu-test-cli-")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         case = _CliCase(root)
@@ -326,13 +160,6 @@ class ProfileCliV8Tests(unittest.TestCase):
             '{"theme":"calm-1"}\n', encoding="utf-8"
         )
         return case
-
-    def _v7_case(self) -> _CliCase:
-        temporary = tempfile.TemporaryDirectory(prefix="luwu-m7-cli-v7-")
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name)
-        shutil.copytree(V7_FIXTURE, root, dirs_exist_ok=True)
-        return _CliCase(root)
 
     def test_profiled_copy_and_template_cli_loop(self) -> None:
         case = self._v8_case()
@@ -434,40 +261,19 @@ class ProfileCliV8Tests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(stderr.getvalue(), "")
         output = stdout.getvalue()
-        self.assertIn("M7 plan", output)
+        self.assertIn("plan", output)
         self.assertIn('profile: "work"', output)
         self.assertNotIn("calm-1", output)
 
-    def test_v8_rejects_record_and_legacy_provider_authority_options(self) -> None:
+    def test_profile_selection_errors_are_explicit(self) -> None:
         case = self._v8_case()
-        record_error = case.cli(
-            "apply", "--record", str(case.root / "record.json"), expected_code=2
-        )
-        authority_error = case.cli(
-            "inspect",
-            "--allow-subprocess",
-            "--rbw-executable",
-            "/bin/true",
-            expected_code=2,
-        )
-        self.assertEqual(
-            cast(dict[str, object], record_error["error"])["code"],
-            "record_unsupported",
-        )
-        self.assertEqual(
-            cast(dict[str, object], authority_error["error"])["code"],
-            "authority_unsupported",
-        )
-        self.assertFalse((case.root / "record.json").exists())
-        profile_error = case.cli("inspect", expected_code=2, profile=None)
-        self.assertEqual(
-            cast(dict[str, object], profile_error["error"])["code"],
-            "profile_required",
-        )
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
+            main(["inspect", "--manifest", str(case.manifest)])
+        self.assertEqual(raised.exception.code, 2)
         selection_error = case.cli("inspect", expected_code=2, profile="undeclared")
         self.assertEqual(
             cast(dict[str, object], selection_error["error"])["code"],
-            "m7_profile",
+            "profile",
         )
 
     def test_v8_rejects_provider_manifest_fields_and_hides_parse_details(self) -> None:
@@ -479,7 +285,7 @@ class ProfileCliV8Tests(unittest.TestCase):
         provider_error = case.cli("inspect", expected_code=2)
         self.assertEqual(
             cast(dict[str, object], provider_error["error"])["code"],
-            "m7_manifest_schema",
+            "manifest_schema",
         )
 
         parser_marker = "fixture-parser-detail-must-not-escape"
@@ -494,17 +300,32 @@ class ProfileCliV8Tests(unittest.TestCase):
         )
         self.assertNotIn(parser_marker, json.dumps(parser_error))
 
-    def test_legacy_profile_and_adopt_are_explicitly_rejected(self) -> None:
-        case = self._v7_case()
-        profile_error = case.cli("inspect", expected_code=2)
-        adopt_error = case.cli(
-            "adopt", "--resource", "codex", expected_code=2, profile=None
-        )
-        self.assertEqual(
-            cast(dict[str, object], profile_error["error"])["code"],
-            "profile_unsupported",
-        )
-        self.assertEqual(
-            cast(dict[str, object], adopt_error["error"])["code"],
-            "adopt_unsupported",
-        )
+    def test_retired_manifest_versions_are_rejected_before_schema_checks(self) -> None:
+        case = self._v8_case()
+        for version in (1, 2, 3, 4, 5, 6, 7):
+            case.manifest.write_text(
+                f'version = {version}\n[[resources]]\nname = "legacy"\n',
+                encoding="utf-8",
+            )
+            error = case.cli("inspect", expected_code=2)
+            self.assertEqual(
+                cast(dict[str, object], error["error"])["code"], "manifest_version"
+            )
+            self.assertEqual(
+                cast(dict[str, object], error["error"])["message"],
+                "manifest version must be 8",
+            )
+
+    def test_retired_commands_and_options_are_not_accepted(self) -> None:
+        case = self._v8_case()
+        for arguments in (
+            ("record-inspect", "--record", "journal.json"),
+            ("recover", "--record", "journal.json"),
+            ("cache-inspect", "--cache", "cache.json"),
+            ("platform-check",),
+            ("apply", "--record", "journal.json", "--manifest", str(case.manifest)),
+            ("inspect", "--allow-subprocess", "--manifest", str(case.manifest)),
+        ):
+            with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
+                main([*arguments, "--profile", "work"])
+            self.assertEqual(raised.exception.code, 2)

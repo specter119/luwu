@@ -38,22 +38,24 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         self._assert_outcome(applied, "committed")
         self._assert_deployed_fixture_bytes(case)
         self.assertEqual(
-            stat.S_IMODE((case.target_root / ".config/m7/deep").stat().st_mode),
-            0o700,
-        )
-        self.assertEqual(
-            stat.S_IMODE((case.target_root / ".config/m7/deep/profile").stat().st_mode),
+            stat.S_IMODE((case.target_root / ".config/demo/deep").stat().st_mode),
             0o700,
         )
         self.assertEqual(
             stat.S_IMODE(
-                (case.target_root / ".config/m7/settings.jsonc").stat().st_mode
+                (case.target_root / ".config/demo/deep/profile").stat().st_mode
+            ),
+            0o700,
+        )
+        self.assertEqual(
+            stat.S_IMODE(
+                (case.target_root / ".config/demo/settings.jsonc").stat().st_mode
             ),
             0o600,
         )
         self.assertEqual(
             stat.S_IMODE(
-                (case.target_root / ".config/m7/deep/profile/runtime.toml")
+                (case.target_root / ".config/demo/deep/profile/runtime.toml")
                 .stat()
                 .st_mode
             ),
@@ -68,7 +70,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         )
         shared_theme_input = case.input_root / "local" / "settings.jsonc"
         shared_theme_before_reverse = shared_theme_input.read_bytes()
-        settings_target = case.target_root / ".config/m7/settings.jsonc"
+        settings_target = case.target_root / ".config/demo/settings.jsonc"
         live_before = settings_target.read_bytes()
         old_theme = b'"synthetic-theme-overlay-v1"'
         new_theme = b'"synthetic-theme-app-v2"'
@@ -141,7 +143,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
             case.expected("settings.after-app.jsonc"),
             "application-edited JSONC target",
         )
-        nested_target = case.target_root / ".config/m7/deep/profile/runtime.toml"
+        nested_target = case.target_root / ".config/demo/deep/profile/runtime.toml"
         self._assert_bytes_equal(
             nested_target.read_bytes(),
             case.expected("nested.after-reverse.toml"),
@@ -150,7 +152,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         no_op = case.cli("apply", "--yes", expected_code=0)
         self._assert_outcome(no_op, "no_changes")
 
-        nested_target = case.target_root / ".config/m7/deep/profile/runtime.toml"
+        nested_target = case.target_root / ".config/demo/deep/profile/runtime.toml"
         nested_before_app = nested_target.read_bytes()
         old_worker = b'"synthetic-worker-overlay-v1"'
         new_worker = b'"synthetic-worker-app-v2"'
@@ -224,7 +226,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         copy_apply = case.cli("apply", "--yes", expected_code=0)
         self._assert_outcome(copy_apply, "committed")
         self._assert_bytes_equal(
-            (case.target_root / ".config/m7/profile.ini").read_bytes(),
+            (case.target_root / ".config/demo/profile.ini").read_bytes(),
             case.expected("copy-profile.after-source-update.ini"),
             "whole-file copy update",
         )
@@ -248,12 +250,12 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         directory_apply = case.cli("apply", "--yes", expected_code=0)
         self._assert_outcome(directory_apply, "committed")
         self._assert_bytes_equal(
-            (case.target_root / ".config/m7/assets/defaults.conf").read_bytes(),
+            (case.target_root / ".config/demo/assets/defaults.conf").read_bytes(),
             case.expected("assets-defaults.after-source-update.conf"),
             "directory leaf update",
         )
         self._assert_bytes_equal(
-            (case.target_root / ".config/m7/assets/nested/keymap.jsonc").read_bytes(),
+            (case.target_root / ".config/demo/assets/nested/keymap.jsonc").read_bytes(),
             case.expected("assets-nested-keymap.jsonc"),
             "unchanged directory leaf",
         )
@@ -275,7 +277,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         applied = case.cli("apply", "--yes", expected_code=0)
         self._assert_outcome(applied, "committed")
         self._assert_bytes_equal(
-            (case.target_root / ".config/m7/settings.jsonc").read_bytes(),
+            (case.target_root / ".config/demo/settings.jsonc").read_bytes(),
             case.expected("settings.after-brand-update.jsonc"),
             "source-owned JSONC update",
         )
@@ -322,13 +324,13 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         self.assertEqual(
             {str(item.get("target")) for item in resources}, expected_targets
         )
-        shared_target = case.target_root / ".config/m7/shared/runtime.toml"
+        shared_target = case.target_root / ".config/demo/shared/runtime.toml"
         self._assert_bytes_equal(
             shared_target.read_bytes(),
             case.expected("nested-toml-consumer.initial.toml"),
             "unselected nested TOML consumer before reverse",
         )
-        shared_settings_target = case.target_root / ".config/m7/shared/settings.jsonc"
+        shared_settings_target = case.target_root / ".config/demo/shared/settings.jsonc"
         shared_settings_target.write_bytes(case.expected("settings.after-app.jsonc"))
         before = case.snapshot()
 
@@ -341,7 +343,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
             expected_code=2,
             profile="shared_consumer",
         )
-        self.assertEqual(self._error_code(preview), "m7_reverse_consumer_change")
+        self.assertEqual(self._error_code(preview), "reverse_consumer_change")
         self._assert_snapshot_equal(
             case.snapshot(), before, "shared-consumer reverse preview"
         )
@@ -359,7 +361,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
             expected_code=2,
             profile="shared_consumer",
         )
-        self.assertEqual(self._error_code(confirmed), "m7_reverse_consumer_change")
+        self.assertEqual(self._error_code(confirmed), "reverse_consumer_change")
         self.assertEqual(
             json.loads(report.read_text(encoding="utf-8")),
             {"create_parent": 0, "write_file": 0},
@@ -374,7 +376,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         case = self._case()
         self._accept_all(case)
         self._assert_outcome(case.cli("apply", "--yes", expected_code=0), "committed")
-        settings_target = case.target_root / ".config/m7/settings.jsonc"
+        settings_target = case.target_root / ".config/demo/settings.jsonc"
         settings_target.write_bytes(case.expected("settings.unknown-container.jsonc"))
         before = case.snapshot()
 
@@ -386,7 +388,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         self.assertTrue(settings.get("undeclared_changed"))
         self.assertEqual(settings.get("status"), "review")
         self.assertEqual(settings.get("action"), "blocked")
-        self.assertEqual(settings.get("error_code"), "m7_review_required")
+        self.assertEqual(settings.get("error_code"), "review_required")
         self.assertNotIn(UNKNOWN_SENTINEL, json.dumps(plan, sort_keys=True))
 
         accepted = case.cli(
@@ -400,12 +402,12 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
             "--yes",
             expected_code=2,
         )
-        self.assertEqual(self._error_code(accepted), "m7_review_required")
+        self.assertEqual(self._error_code(accepted), "review_required")
         self._assert_snapshot_equal(case.snapshot(), before, "unknown-container accept")
 
         blocked = case.cli("apply", "--yes", expected_code=2)
         self.assertEqual(blocked.get("outcome"), "not_attempted")
-        self.assertEqual(blocked.get("error_code"), "m7_review_required")
+        self.assertEqual(blocked.get("error_code"), "review_required")
         self._assert_snapshot_equal(case.snapshot(), before, "unknown-container apply")
 
     def test_duplicate_leaf_conflict_unknown_input_and_selected_alias_block(
@@ -428,7 +430,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
             conflict.cli("apply", "--yes", expected_code=0).get("outcome"),
             "committed",
         )
-        settings_target = conflict.target_root / ".config/m7/settings.jsonc"
+        settings_target = conflict.target_root / ".config/demo/settings.jsonc"
         live_bytes = settings_target.read_bytes()
         old_value = b'"synthetic-theme-overlay-v1"'
         self.assertEqual(live_bytes.count(old_value), 1)
@@ -472,7 +474,14 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
 
         alias = self._case()
         before_alias = alias.snapshot()
-        alias.cli("plan", profile="alias", expected_code=2)
+        planned = alias.cli("plan", profile="alias", expected_code=0)
+        statuses = {
+            item["name"]: (item["status"], item["error_code"])
+            for item in self._resources(planned)
+        }
+        self.assertEqual(statuses["settings_alias"], ("blocked", "unsafe_path"))
+        self.assertNotEqual(statuses["settings"][0], "blocked")
+        alias.cli("apply", "--yes", profile="alias", expected_code=2)
         self._assert_snapshot_equal(
             alias.snapshot(), before_alias, "selected alias block"
         )
@@ -486,7 +495,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
             case.cli("apply", "--yes", expected_code=0).get("outcome"),
             "committed",
         )
-        settings_target = case.target_root / ".config/m7/settings.jsonc"
+        settings_target = case.target_root / ".config/demo/settings.jsonc"
         target_before = settings_target.read_bytes()
         global_settings = case.input_root / "global" / "settings.jsonc"
         global_settings.write_bytes(
@@ -521,7 +530,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
             ablated.cli("apply", "--yes", expected_code=0).get("outcome"),
             "committed",
         )
-        ablated_target = ablated.target_root / ".config/m7/settings.jsonc"
+        ablated_target = ablated.target_root / ".config/demo/settings.jsonc"
         ablated_global = ablated.input_root / "global" / "settings.jsonc"
         ablated_global.write_bytes(
             ablated.expected("global-settings.after-brand-update.jsonc")
@@ -628,11 +637,11 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
             case.expected("droid-settings.initial.json"),
             "Droid settings JSON",
         )
-        hook_id = "/synthetic/luwu-m7/hooks.json:pre_tool_use:0:0"
+        hook_id = "/synthetic/luwu-demo/hooks.json:pre_tool_use:0:0"
         initial_codex = codex_target.read_text(encoding="utf-8")
         self.assertEqual(initial_codex.count(f'[hooks.state."{hook_id}"]'), 1)
         self.assertEqual(initial_codex.count(codex_hash_initial), 1)
-        self.assertIn('[projects."/synthetic/luwu-m7/project.a"]', initial_codex)
+        self.assertIn('[projects."/synthetic/luwu-demo/project.a"]', initial_codex)
         self.assertIn('trust_level = "untrusted"', initial_codex)
         self.assertIn("enabled = false", initial_codex)
 

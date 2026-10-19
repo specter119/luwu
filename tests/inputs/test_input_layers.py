@@ -7,8 +7,8 @@ import traceback
 import unittest
 from pathlib import Path
 
-from luwu.m7_inputs import M7InputError, _absolute_input_path, load_inputs
-from luwu.m7_manifest import Manifest, Resource, load_manifest
+from luwu.inputs import InputError, _absolute_input_path, load_inputs
+from luwu.manifest import Manifest, Resource, load_manifest
 
 
 class InputLayersV8Tests(unittest.TestCase):
@@ -136,10 +136,10 @@ input = "model"
                     local_data=valid_local_values[input_format],
                 )
 
-                with self.assertRaises(M7InputError) as raised:
+                with self.assertRaises(InputError) as raised:
                     load_inputs(manifest, resource)
 
-                self.assertEqual(raised.exception.code, "m7_input_invalid")
+                self.assertEqual(raised.exception.code, "input_invalid")
                 self._assert_error_chain_is_safe(raised.exception, marker)
 
     def test_valid_json_and_toml_overlays_keep_order_and_winner(self) -> None:
@@ -180,8 +180,8 @@ input = "model"
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "inputs"
             outside = Path(temporary_directory) / "SYNTHETIC_PATH_MARKER.json"
-            with self.assertRaises(M7InputError) as raised:
+            with self.assertRaises(InputError) as raised:
                 _absolute_input_path(root, outside)
 
-        self.assertEqual(raised.exception.code, "m7_unsafe_path")
+        self.assertEqual(raised.exception.code, "unsafe_path")
         self._assert_error_chain_is_safe(raised.exception, "SYNTHETIC_PATH_MARKER")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 
-from luwu.m7_formats import (
+from luwu.formats import (
     parse_document,
     semantic_equal,
     unselected_equal,

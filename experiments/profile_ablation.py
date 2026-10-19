@@ -29,13 +29,13 @@ from unittest.mock import patch
 
 MODULES = (
     "luwu",
-    "luwu.m7_manifest",
-    "luwu.m7_baseline",
-    "luwu.m7_formats",
-    "luwu.m7_filesystem",
-    "luwu.m7_inputs",
-    "luwu.m7_engine",
-    "luwu.m7_plan_evidence",
+    "luwu.manifest",
+    "luwu.baseline",
+    "luwu.formats",
+    "luwu.filesystem",
+    "luwu.inputs",
+    "luwu.engine",
+    "luwu.plan_evidence",
 )
 
 
@@ -168,7 +168,7 @@ def _manifest_text(
 def _directory_membership_case(manifest_module: Any) -> dict[str, object]:
     from luwu.errors import ManifestError
 
-    with tempfile.TemporaryDirectory(prefix="luwu-m7-dir-ablation-") as directory:
+    with tempfile.TemporaryDirectory(prefix="luwu-test-dir-ablation-") as directory:
         root = Path(directory)
         source = root / "source"
         inputs = root / "inputs"
@@ -201,7 +201,7 @@ def _directory_membership_case(manifest_module: Any) -> dict[str, object]:
         try:
             manifest_module.verify_manifest(loaded)
         except ManifestError as error:
-            assert error.code == "m7_stale"
+            assert error.code == "stale"
         else:
             raise AssertionError(
                 "directory membership change did not stale the loaded manifest"
@@ -222,7 +222,7 @@ def _directory_membership_case(manifest_module: Any) -> dict[str, object]:
 def _dependency_exclusion_case(manifest_module: Any) -> dict[str, object]:
     from luwu.errors import ManifestError
 
-    with tempfile.TemporaryDirectory(prefix="luwu-m7-exclude-ablation-") as directory:
+    with tempfile.TemporaryDirectory(prefix="luwu-test-exclude-ablation-") as directory:
         root = Path(directory)
         for path in (root / "source", root / "inputs", root / "targets"):
             path.mkdir()
@@ -262,7 +262,7 @@ def _dependency_exclusion_case(manifest_module: Any) -> dict[str, object]:
         try:
             manifest_module.load_manifest(manifest_path, profile="bench")
         except ManifestError as error:
-            assert error.code == "m7_package_excluded_dependency"
+            assert error.code == "package_excluded_dependency"
         else:
             raise AssertionError(
                 "selected package silently lost an excluded dependency"
@@ -312,7 +312,7 @@ def _assert_partial_action_states(outcomes: dict[str, str]) -> None:
 def _partial_outcome_case(
     manifest_module: Any, baseline_module: Any, filesystem_module: Any, engine: Any
 ) -> dict[str, object]:
-    with tempfile.TemporaryDirectory(prefix="luwu-m7-partial-ablation-") as directory:
+    with tempfile.TemporaryDirectory(prefix="luwu-test-partial-ablation-") as directory:
         root = Path(directory)
         source_root = root / "source"
         inputs_root = root / "inputs"
@@ -373,9 +373,9 @@ def _partial_outcome_case(
             path_value = args[1] if len(args) > 1 else kwargs.get("path")
             if isinstance(path_value, Path) and path_value == fail_target:
                 injected["count"] += 1
-                raise filesystem_module.M7FilesystemError(
+                raise filesystem_module.FilesystemError(
                     "injected pre-replacement failure",
-                    code="m7_write_failed",
+                    code="write_failed",
                     state="not_replaced",
                     committed=False,
                 )
@@ -443,7 +443,7 @@ def _partial_outcome_case(
             )
         if (
             payload.get("outcome") != "partial"
-            or payload.get("error_code") != "m7_write_failed"
+            or payload.get("error_code") != "write_failed"
         ):
             raise AssertionError(
                 "the injected pre-replacement failure was not reported as partial"
@@ -556,20 +556,34 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(
             f"profile production runtime is incomplete; engine ablation is pending: {error}"
         )
-    from luwu import m7_baseline, m7_engine, m7_filesystem, m7_formats, m7_manifest
+    from luwu import (
+        baseline as baseline_module,
+    )
+    from luwu import (
+        engine as engine_module,
+    )
+    from luwu import (
+        filesystem as filesystem_module,
+    )
+    from luwu import (
+        formats as formats_module,
+    )
+    from luwu import (
+        manifest as manifest_module,
+    )
 
     cases = {
-        "tuplepath_vs_dotcollision": _run_case(_tuple_path_case, m7_formats),
-        "unknown_projection": _run_case(_unknown_projection_case, m7_formats),
-        "span_vs_dump": _run_case(_span_vs_dump_case, m7_formats),
-        "directory_membership": _run_case(_directory_membership_case, m7_manifest),
-        "dependency_exclusion": _run_case(_dependency_exclusion_case, m7_manifest),
+        "tuplepath_vs_dotcollision": _run_case(_tuple_path_case, formats_module),
+        "unknown_projection": _run_case(_unknown_projection_case, formats_module),
+        "span_vs_dump": _run_case(_span_vs_dump_case, formats_module),
+        "directory_membership": _run_case(_directory_membership_case, manifest_module),
+        "dependency_exclusion": _run_case(_dependency_exclusion_case, manifest_module),
         "partial_outcome": _run_case(
             _partial_outcome_case,
-            m7_manifest,
-            m7_baseline,
-            m7_filesystem,
-            m7_engine,
+            manifest_module,
+            baseline_module,
+            filesystem_module,
+            engine_module,
         ),
     }
     current_runtime = _current_runtime(source_root, sys.modules["luwu"])
