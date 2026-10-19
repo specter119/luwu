@@ -265,6 +265,28 @@ class ResourceKindTests(unittest.TestCase):
             self._code(plain + 'public_names = ["env_key"]\n'), "resource_schema"
         )
 
+    def test_input_public_names_admit_a_sensitive_layer_path(self) -> None:
+        plain = (
+            '[resources.plain]\nsource = "greeting.sh.j2"\ntarget = "greeting.sh"\n'
+            'baseline = "baselines/greeting.json"\ninputs = ["shell_name"]\n'
+        )
+
+        def load(extra: str):
+            body = _HEAD.format(resources='"plain"', defaults=extra)
+            path = self.root / "luwu.toml"
+            path.write_text(
+                body.replace('path = ["name"]', 'path = ["env_key"]') + plain,
+                encoding="utf-8",
+            )
+            return load_manifest(path, profile="dev")
+
+        with self.assertRaises(ManifestError):
+            load("")
+        manifest = load('public_names = ["env_key"]\n')
+        self.assertEqual(
+            manifest.inputs["shell_name"].public_names, frozenset({"env_key"})
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

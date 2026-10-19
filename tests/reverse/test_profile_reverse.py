@@ -97,8 +97,9 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
         apply_result = apply_plan(plan, confirm=True)
         self.assertEqual(apply_result.outcome, "not_attempted")
         self.assertEqual(apply_result.error_code, "review_required")
-        self.assertTrue(
-            all(action.state == "not_attempted" for action in apply_result.actions)
+        self.assertEqual(
+            [(action.kind, action.state) for action in apply_result.actions],
+            [("resource_skip", "skipped")],
         )
         self.assertEqual(self._snapshot(), before)
 
@@ -449,8 +450,10 @@ parent_mode = "0700"
         conflict_plan = self._plan()
         self.assertEqual(conflict_plan.to_dict()["resources"][0]["status"], "conflict")
         before = self._snapshot()
-        with self.assertRaises(EngineError):
-            apply_plan(conflict_plan, confirm=True)
+        refused = apply_plan(conflict_plan, confirm=True)
+        self.assertEqual(
+            (refused.outcome, refused.error_code), ("not_attempted", "review_required")
+        )
         self.assertEqual(self._snapshot(), before)
 
         adopt_resource(self._plan(), resource="note", confirm=True)

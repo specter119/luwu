@@ -117,7 +117,11 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
             parse_failed = False
             value: object = MISSING
             try:
-                document = parse_document(observation.data, format=layer.format)
+                document = parse_document(
+                    observation.data,
+                    format=layer.format,
+                    public_names=binding.public_names,
+                )
                 value = get_leaf(document, layer.path)
             except (LuwuError, UnicodeError):
                 parse_failed = True

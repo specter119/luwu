@@ -79,6 +79,7 @@ class InputBinding:
     name: str
     layers: tuple[InputLayer, ...] = dataclass_field(repr=False)
     reverse_to: InputLayer | None = dataclass_field(default=None, repr=False)
+    public_names: frozenset[str] = dataclass_field(default=frozenset(), repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -913,6 +914,9 @@ def _parse_resources(
             if "format" in resource
             else _infer_format(source_relative.name)
         )
+        public_names = frozenset(
+            _name_list(resource.get("public_names", []), code="resource_public_names")
+        )
         fields: Mapping[str, FieldBinding] = MappingProxyType({})
         if structured:
             if format_name is None:
@@ -924,7 +928,7 @@ def _parse_resources(
                 raise ManifestError(
                     "templates are written, not deployed", code="resource_deploy"
                 )
-            fields = _parse_field_bindings(resource["fields"])
+            fields = _parse_field_bindings(resource["fields"], public_names)
         undeclared = resource.get("undeclared", "block")
         if not isinstance(undeclared, str) or undeclared not in {"block", "preserve"}:
             raise ManifestError(
@@ -977,17 +981,15 @@ def _parse_resources(
             recursive=recursive_value,
             input_names=_name_list(resource.get("inputs", []), code="resource_inputs"),
             undeclared=undeclared,
-            public_names=frozenset(
-                _name_list(
-                    resource.get("public_names", []), code="resource_public_names"
-                )
-            ),
+            public_names=public_names,
             defaults=defaults,
         )
     return MappingProxyType(declarations)
 
 
-def _parse_field_bindings(raw: object) -> Mapping[str, FieldBinding]:
+def _parse_field_bindings(
+    raw: object, public: frozenset[str]
+) -> Mapping[str, FieldBinding]:
     table = _require_named_table(raw, "fields", code="fields")
     if not table:
         raise ManifestError("template fields must not be empty", code="fields")
@@ -1003,7 +1005,7 @@ def _parse_field_bindings(raw: object) -> Mapping[str, FieldBinding]:
         owner = field_table["owner"]
         if not isinstance(owner, str) or owner not in _FIELD_OWNERS:
             raise ManifestError("field owner is unsupported", code="field_owner")
-        path = _leaf_path(field_table["path"], code="field_path")
+        path = _leaf_path(field_table["path"], code="field_path", public=public)
         input_name = field_table.get("input")
         if input_name is not None and (
             not isinstance(input_name, str) or not _valid_name(input_name)
@@ -1038,8 +1040,11 @@ def _parse_inputs(raw: object, *, roots: Roots) -> Mapping[str, InputBinding]:
         _require_exact_keys(
             input_table,
             required={"layers"},
-            allowed={"layers", "reverse_to"},
+            allowed={"layers", "reverse_to", "public_names"},
             code="inputs",
+        )
+        public = frozenset(
+            _name_list(input_table.get("public_names", []), code="input_public_names")
         )
         raw_layers = input_table["layers"]
         if not isinstance(raw_layers, list) or not raw_layers:
@@ -1047,22 +1052,31 @@ def _parse_inputs(raw: object, *, roots: Roots) -> Mapping[str, InputBinding]:
                 "input layers must be a non-empty array", code="input_layers"
             )
         layers = tuple(
-            _parse_layer(layer, roots.inputs, optional_allowed=True)
+            _parse_layer(layer, roots.inputs, optional_allowed=True, public=public)
             for layer in raw_layers
         )
         reverse_to = (
             _parse_layer(
-                input_table["reverse_to"], roots.inputs, optional_allowed=False
+                input_table["reverse_to"],
+                roots.inputs,
+                optional_allowed=False,
+                public=public,
             )
             if "reverse_to" in input_table
             else None
         )
-        inputs[name] = InputBinding(name=name, layers=layers, reverse_to=reverse_to)
+        inputs[name] = InputBinding(
+            name=name, layers=layers, reverse_to=reverse_to, public_names=public
+        )
     return MappingProxyType(inputs)
 
 
 def _parse_layer(
-    raw: object, root: DirectoryBoundary, *, optional_allowed: bool
+    raw: object,
+    root: DirectoryBoundary,
+    *,
+    optional_allowed: bool,
+    public: frozenset[str],
 ) -> InputLayer:
     table = _require_table(raw, "input layer", code="input_layer")
     allowed = {"file", "path", "format"} | ({"optional"} if optional_allowed else set())
@@ -1077,7 +1091,7 @@ def _parse_layer(
             "input files must be declared below global or local",
             code="input_provenance",
         )
-    leaf_path = _leaf_path(table["path"], code="input_path")
+    leaf_path = _leaf_path(table["path"], code="input_path", public=public)
     optional = table.get("optional", False)
     if type(optional) is not bool:
         raise ManifestError("input optional must be a boolean", code="input_layer")
@@ -1621,7 +1635,9 @@ def _format(value: object) -> str:
     return value
 
 
-def _leaf_path(value: object, *, code: str) -> tuple[str, ...]:
+def _leaf_path(
+    value: object, *, code: str, public: frozenset[str] = frozenset()
+) -> tuple[str, ...]:
     if not isinstance(value, list) or not value or len(value) > _MAX_PATH_SEGMENTS:
         raise ManifestError(
             "field paths must contain between 1 and 256 keys", code=code
@@ -1632,7 +1648,7 @@ def _leaf_path(value: object, *, code: str) -> tuple[str, ...]:
             not isinstance(part, str)
             or not part
             or _has_control_chars(part)
-            or is_sensitive_name(part)
+            or is_sensitive_name(part, public=public)
         ):
             raise ManifestError(
                 "field paths must contain only non-empty public keys", code=code
@@ -1900,6 +1916,10 @@ def _manifest_signature(manifest: Manifest) -> str:
             resource.mode,
             resource.source_name,
             resource.target_name,
+            resource.templated,
+            resource.undeclared,
+            tuple(sorted(resource.public_names)),
+            resource.input_names,
         )
         for resource in manifest.resources
     )
@@ -1918,6 +1938,7 @@ def _manifest_signature(manifest: Manifest) -> str:
                 binding.reverse_to.format,
                 binding.reverse_to.optional,
             ),
+            tuple(sorted(binding.public_names)),
         )
         for name, binding in sorted(manifest.inputs.items())
     )

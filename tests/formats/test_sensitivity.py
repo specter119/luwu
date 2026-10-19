@@ -31,6 +31,15 @@ class SensitiveNameTests(unittest.TestCase):
     def test_fragment_match_is_deliberately_conservative(self) -> None:
         self.assertTrue(is_sensitive_name("tokens_per_line"))
 
+    def test_a_declared_public_name_passes_only_by_exact_match(self) -> None:
+        public = frozenset({"env_key"})
+        self.assertFalse(is_sensitive_name("env_key", public=public))
+        for name in ("ENV_KEY", "env_key2", "api_key", "env_key_token"):
+            with self.subTest(name=name):
+                self.assertEqual(
+                    is_sensitive_name(name, public=public), is_sensitive_name(name)
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -122,8 +122,14 @@ class WholeFileTemplateTests(ProfileEngineCase):
         apply_plan(self._plan(), confirm=True)
         self.target.write_text("echo hand-edited\n", encoding="utf-8")
         self.assertEqual(self._status(), ("conflict", "review"))
-        with self.assertRaises(EngineError):
-            apply_plan(self._plan(), confirm=True)
+        result = apply_plan(self._plan(), confirm=True)
+        self.assertEqual(
+            (result.outcome, result.error_code), ("not_attempted", "review_required")
+        )
+        self.assertEqual(
+            [(action.kind, action.reason) for action in result.actions],
+            [("resource_skip", "conflict")],
+        )
         self.assertEqual(self.target.read_text(encoding="utf-8"), "echo hand-edited\n")
 
     def test_an_undefined_variable_blocks_the_resource(self) -> None:

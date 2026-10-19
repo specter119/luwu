@@ -164,15 +164,22 @@ class ActionResult:
     path: str
     state: str
     fields: tuple[str, ...] = ()
+    reason: str | None = None
+    replaces_live_on_apply: bool = False
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        action: dict[str, object] = {
             "kind": self.kind,
             "resource": self.resource,
             "path": self.path,
             "state": self.state,
             "fields": list(self.fields),
         }
+        if self.reason is not None:
+            action["reason"] = self.reason
+        if self.replaces_live_on_apply:
+            action["replaces_live_on_apply"] = True
+        return action
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +233,23 @@ class _ResourcePlan:
     input_missing_parents: Mapping[Path, tuple[Path, ...]] = field(repr=False)
     parent_states: Mapping[Path, tuple[int, int] | None] = field(repr=False)
     link_value: str | None = field(default=None, repr=False)
+
+    @property
+    def undeclared_blocks(self) -> bool:
+        return self.undeclared_changed and self.resource.undeclared == "block"
+
+    @property
+    def replaces_live_on_adopt(self) -> bool:
+        """Whether adopting this copy and applying would replace live bytes."""
+
+        return (
+            self.resource.kind == "copy"
+            and self.action == "adopt"
+            and self.desired_data is not None
+            and self.target_observation is not None
+            and self.target_observation.data is not None
+            and self.target_observation.data != self.desired_data
+        )
 
     def to_dict(self, manifest: Manifest) -> dict[str, object]:
         ownership = None
@@ -324,6 +348,7 @@ class _ResourcePlan:
             "ownership": ownership,
             "input_provenance": input_provenance,
             "undeclared_changed": self.undeclared_changed,
+            "replaces_live_on_apply": self.replaces_live_on_adopt,
             "parents": self.resource.parents,
             "parent_mode": _mode_text(self.resource.parent_mode),
             "mode": None
@@ -392,6 +417,7 @@ class _WriteSpec:
 @dataclass(slots=True)
 class _ReverseGroup:
     format: str
+    public_names: frozenset[str] = frozenset()
     edits: dict[LeafPath, object] = field(default_factory=dict)
     fields: list[str] = field(default_factory=list)
 
@@ -426,75 +452,73 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
     record = _mutation_record(plan, operation="apply")
     if record is None:
         return Result("apply", "not_attempted", error_code="stale_plan")
+    target_root = record.manifest.roots.target.path
+    skipped = tuple(
+        (item, reason)
+        for item in record.resources
+        if (reason := _skip_reason(item)) is not None
+    )
+    skipped_names = frozenset(item.resource.name for item, _ in skipped)
+    skip_actions = [
+        ActionResult(
+            "resource_skip",
+            item.resource.name,
+            _relative_path(target_root, item.resource.target),
+            "skipped",
+            reason=reason,
+        )
+        for item, reason in skipped
+    ]
     specs = _forward_specs(record.resources, record.manifest)
+    baseline_specs = _baseline_advance_specs(record, specs)
     target_directories = {
         item.resource.target: item.target_missing_parents
         for item in record.resources
         if item.action in {"forward", "create"}
     }
-    review_required = any(
-        item.undeclared_changed
-        or item.status in {"blocked", "conflict", "unbased", "adopt_required"}
-        for item in record.resources
-    )
-    if review_required and (
-        not confirm or any(item.undeclared_changed for item in record.resources)
-    ):
-        return _result_for_specs(
+
+    def preview(outcome: str, error_code: str | None = None) -> Result:
+        return Result(
             "apply",
-            "not_attempted",
-            specs,
-            error_code="review_required",
-            include_directories=target_directories,
-            root=record.manifest.roots.target.path,
+            outcome,
+            tuple(
+                _initial_action_results(
+                    specs,
+                    include_directories=target_directories,
+                    root=target_root,
+                )
+                + _initial_action_results(baseline_specs)
+                + skip_actions
+            ),
+            error_code=error_code,
         )
+
     if _shared_directory_mode_conflict(record.resources):
-        return _result_for_specs(
-            "apply",
-            "not_attempted",
-            specs,
-            error_code="parent_mode_conflict",
-            include_directories=target_directories,
-            root=record.manifest.roots.target.path,
-        )
+        return preview("not_attempted", "parent_mode_conflict")
     target_parents = tuple(
         directory for parents in target_directories.values() for directory in parents
     )
     if _unsafe_shared_parent_mode(record.resources, target_parents):
-        return _result_for_specs(
-            "apply",
-            "not_attempted",
-            specs,
-            error_code="parent_mode_unsafe",
-            include_directories=target_directories,
-            root=record.manifest.roots.target.path,
-        )
-    if not confirm:
-        return _result_for_specs(
-            "apply",
-            "confirmation_required",
-            specs,
-            include_directories={
-                item.resource.target: item.target_missing_parents
-                for item in record.resources
-                if item.action in {"forward", "create"}
-            },
-            root=record.manifest.roots.target.path,
-        )
-    if review_required:
-        raise EngineError("review_required", operation="apply")
+        return preview("not_attempted", "parent_mode_unsafe")
+    if any(
+        _resource_by_name(record.resources, spec.resource.name).baseline_missing_parents
+        for spec in baseline_specs
+    ):
+        return preview("not_attempted", "parent_required")
     if not specs:
+        if skipped:
+            return preview("not_attempted", "review_required")
+        if not confirm:
+            return preview("confirmation_required")
         try:
             _assert_fresh(record)
         except EngineError as exc:
             return Result("apply", "not_attempted", error_code=exc.code)
         return Result("apply", "no_changes", verification_status="verified")
+    if not confirm:
+        return preview("confirmation_required")
 
-    actions = _initial_action_results(
-        specs,
-        include_directories=target_directories,
-        root=record.manifest.roots.target.path,
-    )
+    actions = list(preview("not_attempted").actions)
     expected_targets: dict[Path, FileObservation] = {}
     expected_baselines: dict[Path, FileObservation] = {}
     expected_inputs: dict[Path, FileObservation] = {}
@@ -504,7 +528,6 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
     for spec in specs:
         item = _resource_for_path(record.resources, spec.resource.target)
         resource_names = frozenset({item.resource.name})
-        target_root = record.manifest.roots.target.path
         parents = item.target_missing_parents
         if parents and item.resource.parents != "create":
             return _finish_actions(
@@ -527,6 +550,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                     expected_baselines=expected_baselines,
                     expected_inputs=expected_inputs,
                     expected_directories=expected_directories,
+                    skipped=skipped_names,
                 )
                 identity = create_parent(
                     target_root,
@@ -540,6 +564,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                             expected_baselines=expected_baselines,
                             expected_inputs=expected_inputs,
                             expected_directories=expected_directories,
+                            skipped=skipped_names,
                         )
                     ),
                 )
@@ -598,6 +623,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                 expected_baselines=expected_baselines,
                 expected_inputs=expected_inputs,
                 expected_directories=expected_directories,
+                skipped=skipped_names,
             )
             fresh_item = _resource_by_name(fresh_resources, item.resource.name)
             fresh_spec = _forward_specs_for_item(fresh_item, record.manifest)
@@ -621,6 +647,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                 expected_baselines=expected_baselines,
                 expected_inputs=expected_inputs,
                 expected_directories=expected_directories,
+                skipped=skipped_names,
             )
 
         try:
@@ -716,9 +743,243 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
         return _finish_actions(
             "apply", actions, "committed_but_verification_failed", exc.code
         )
-    return _finish_actions(
-        "apply", actions, "committed", None, verification_status="verified"
+    failure = _advance_baselines(
+        record,
+        fresh,
+        tuple(executed_specs),
+        actions,
+        expected_targets=expected_targets,
+        expected_baselines=expected_baselines,
+        expected_inputs=expected_inputs,
+        expected_directories=expected_directories,
     )
+    if failure is not None:
+        return failure
+    return _finish_actions(
+        "apply",
+        actions,
+        "partial" if skipped else "committed",
+        "review_required" if skipped else None,
+        verification_status="verified",
+    )
+
+
+def _baseline_fields(item: _ResourcePlan) -> tuple[str, ...]:
+    """Fields whose baseline an apply of this template may advance."""
+
+    if item.resource.kind != "template":
+        return ()
+    converged = (
+        set()
+        if item.ownership is None
+        else {
+            field_item.name
+            for field_item in item.ownership.fields
+            if field_item.status == "converged"
+        }
+    )
+    return tuple(
+        sorted(
+            name
+            for name in set(item.forward_fields) | converged
+            if name in item.resource.fields
+            and item.resource.fields[name].owner != "ignore"
+        )
+    )
+
+
+def _advances_baseline(item: _ResourcePlan) -> bool:
+    if item.resource.kind == "copy":
+        return True
+    return item.resource.kind == "template" and bool(_baseline_fields(item))
+
+
+def _baseline_advance_specs(
+    record: _PlanRecord, specs: tuple[_WriteSpec, ...]
+) -> tuple[_WriteSpec, ...]:
+    advance: list[_WriteSpec] = []
+    for spec in specs:
+        item = _resource_by_name(record.resources, spec.resource.name)
+        if not _advances_baseline(item) or item.baseline_observation is None:
+            continue
+        advance.append(
+            _WriteSpec(
+                "baseline_write",
+                item.resource,
+                record.manifest.roots.inputs.path,
+                item.resource.baseline_path(),
+                b"",
+                item.baseline_observation,
+                0o600,
+                _baseline_fields(item),
+            )
+        )
+    return tuple(advance)
+
+
+def _advanced_baseline_data(
+    manifest: Manifest, item: _ResourcePlan, fresh_item: _ResourcePlan
+) -> bytes:
+    target = fresh_item.target_observation
+    if item.resource.kind == "copy":
+        if target is None or target.data is None or target.mode is None:
+            raise EngineError("stale_plan", resource=item.resource.name)
+        return make_copy_baseline(
+            manifest,
+            item.resource,
+            accepted_data=target.data,
+            accepted_mode=target.mode,
+        )
+    fields = _baseline_fields(item)
+    if not _mapping_values_equal(
+        fresh_item.desired_values, fresh_item.live_values, fields
+    ):
+        raise EngineError("stale_plan", resource=item.resource.name)
+    return make_field_baseline(
+        manifest,
+        item.resource,
+        current=fresh_item.live_values,
+        selected_fields=fields,
+        existing=fresh_item.baseline,
+    )
+
+
+def _baseline_advanced(item: _ResourcePlan, fresh_item: _ResourcePlan) -> bool:
+    baseline = fresh_item.baseline
+    target = fresh_item.target_observation
+    if baseline is None or target is None:
+        return False
+    if item.resource.kind == "copy":
+        return (
+            target.data is not None
+            and baseline.whole_file_digest == hashlib.sha256(target.data).hexdigest()
+            and baseline.whole_file_mode == target.mode
+        )
+    return _mapping_values_equal(
+        baseline.values, fresh_item.live_values, _baseline_fields(item)
+    )
+
+
+def _advance_baselines(
+    record: _PlanRecord,
+    fresh: tuple[_ResourcePlan, ...],
+    executed: tuple[_WriteSpec, ...],
+    actions: list[ActionResult],
+    *,
+    expected_targets: dict[Path, FileObservation],
+    expected_baselines: dict[Path, FileObservation],
+    expected_inputs: dict[Path, FileObservation],
+    expected_directories: dict[Path, tuple[tuple[int, int], int]],
+) -> Result | None:
+    """Record what an apply just wrote as accepted, or return the failure.
+
+    The targets are already committed here, so a failure never rolls them back;
+    it reports that the baseline did not advance.
+    """
+
+    root = record.manifest.roots.inputs.path
+    advanced: list[_ResourcePlan] = []
+    for spec in executed:
+        item = _resource_by_name(record.resources, spec.resource.name)
+        if not _advances_baseline(item):
+            continue
+        name = item.resource.name
+        names = frozenset({name})
+        path = item.resource.baseline_path()
+        fields = _baseline_fields(item)
+
+        def recheck(names: frozenset[str] = names) -> None:
+            _recheck_fresh(
+                record,
+                resource_names=names,
+                expected_targets=expected_targets,
+                expected_baselines=expected_baselines,
+                expected_inputs=expected_inputs,
+                expected_directories=expected_directories,
+            )
+
+        try:
+            data = _advanced_baseline_data(
+                record.manifest, item, _resource_by_name(fresh, name)
+            )
+            _assert_fresh(
+                record,
+                resource_names=names,
+                expected_targets=expected_targets,
+                expected_baselines=expected_baselines,
+                expected_inputs=expected_inputs,
+                expected_directories=expected_directories,
+            )
+            expected = expected_baselines.get(path, item.baseline_observation)
+            if expected is None:
+                raise EngineError("stale_plan", resource=name)
+            identity = write_baseline(
+                record.manifest,
+                item.resource,
+                data=data,
+                expected=expected,
+                check_inputs=recheck,
+            )
+        except FilesystemError as exc:
+            state = _filesystem_failure_state(exc)
+            _mark_action(
+                actions, "baseline_write", name, _relative_path(root, path), state
+            )
+            outcome = (
+                "committed_state_unknown"
+                if state in {"committed", "uncertain"}
+                else "committed_but_baseline_not_advanced"
+            )
+            return _finish_actions("apply", actions, outcome, exc.code)
+        except LuwuError as exc:
+            return _finish_actions(
+                "apply", actions, "committed_but_baseline_not_advanced", exc.code
+            )
+        expected_written = _expected_write_observation(expected, data, identity, 0o600)
+        expected_baselines[path] = expected_written
+        _mark_action(
+            actions,
+            "baseline_write",
+            name,
+            _relative_path(root, path),
+            "committed",
+            fields,
+        )
+        try:
+            observed = observe_file(root, path)
+        except FilesystemError as exc:
+            return _finish_actions(
+                "apply", actions, "committed_but_verification_failed", exc.code
+            )
+        if not _matches_own_write(expected_written, observed, identity, data, 0o600):
+            return _finish_actions(
+                "apply", actions, "committed_state_unknown", "write_unknown"
+            )
+        expected_baselines[path] = observed
+        advanced.append(item)
+
+    if not advanced:
+        return None
+    try:
+        after = _assert_fresh(
+            record,
+            expected_targets=expected_targets,
+            expected_baselines=expected_baselines,
+            expected_inputs=expected_inputs,
+            expected_directories=expected_directories,
+        )
+    except EngineError as exc:
+        return _finish_actions(
+            "apply", actions, "committed_but_verification_failed", exc.code
+        )
+    if not all(
+        _baseline_advanced(item, _resource_by_name(after, item.resource.name))
+        for item in advanced
+    ):
+        return _finish_actions(
+            "apply", actions, "committed_but_verification_failed", "stale_plan"
+        )
+    return None
 
 
 def accept_baseline(
@@ -750,7 +1011,7 @@ def accept_baseline(
         raise EngineError(
             "review_required", operation="accept", resource=resource, fields=fields
         )
-    if item.undeclared_changed:
+    if item.undeclared_blocks:
         raise EngineError(
             "review_required", operation="accept", resource=resource, fields=fields
         )
@@ -963,7 +1224,7 @@ def adopt_resource(plan: Plan, *, resource: str, confirm: bool) -> Result:
         raise EngineError("operation_invalid", operation="adopt", resource=resource)
     if not confirm:
         spec = _baseline_preview_spec(record.manifest, item, ())
-        return _result_for_specs(
+        preview = _result_for_specs(
             "adopt",
             "confirmation_required",
             (spec,),
@@ -971,6 +1232,17 @@ def adopt_resource(plan: Plan, *, resource: str, confirm: bool) -> Result:
                 item.resource.baseline_path(): item.baseline_missing_parents
             },
             root=record.manifest.roots.inputs.path,
+        )
+        if not item.replaces_live_on_adopt:
+            return preview
+        return replace(
+            preview,
+            actions=tuple(
+                replace(action, replaces_live_on_apply=True)
+                if action.kind == "baseline_write"
+                else action
+                for action in preview.actions
+            ),
         )
     source_data = item.desired_data
     live_data = (
@@ -1178,7 +1450,7 @@ def reverse_inputs(
             resource=resource,
             fields=fields,
         )
-    if item.undeclared_changed:
+    if item.undeclared_blocks:
         raise EngineError(
             "review_required",
             operation="reverse-sync",
@@ -1538,7 +1810,11 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
             raise EngineError("operation_invalid")
         if resource.kind == "template":
             assert resource.format is not None
-            desired_document = parse_document(desired_data, format=resource.format)
+            desired_document = parse_document(
+                desired_data,
+                format=resource.format,
+                public_names=resource.public_names,
+            )
             desired_values = MappingProxyType(
                 _project(desired_document, resource.fields)
             )
@@ -1647,7 +1923,11 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
                 )
         else:
             assert desired_document is not None
-            target_document = parse_document(target.data, format=resource.format or "")
+            target_document = parse_document(
+                target.data,
+                format=resource.format or "",
+                public_names=resource.public_names,
+            )
             live_values = MappingProxyType(_project(target_document, resource.fields))
             synthetic_baseline = _ownership_baseline(resource, baseline)
             ownership = classify_fields(
@@ -1782,7 +2062,7 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
                 "accepting it again replaces the old baseline"
             )
             error_code = "baseline_stale"
-        if undeclared_changed:
+        if undeclared_changed and resource.undeclared == "block":
             status, action, reason = (
                 "review",
                 "blocked",
@@ -2008,6 +2288,7 @@ def _prepare_reverse_groups(
             )
         group.edits[destination.path] = value
         group.fields.append(name)
+        group.public_names |= input_binding.public_names
 
     prepared: dict[Path, tuple[bytes, FileObservation, tuple[str, ...]]] = {}
     for path, group in groups.items():
@@ -2019,9 +2300,13 @@ def _prepare_reverse_groups(
         format_name = group.format
         if expected.data is None:
             empty = b"" if format_name == "toml" else b"{}"
-            document = parse_document(empty, format=format_name)
+            document = parse_document(
+                empty, format=format_name, public_names=group.public_names
+            )
         else:
-            document = parse_document(expected.data, format=format_name)
+            document = parse_document(
+                expected.data, format=format_name, public_names=group.public_names
+            )
         data = patch_document(document, group.edits)
         prepared[path] = (data, expected, tuple(sorted(group.fields)))
     return prepared
@@ -2057,7 +2342,7 @@ def _preflight_reverse_consumers(
         )
         if not affected:
             continue
-        if consumer.undeclared_changed or consumer.desired_document is None:
+        if consumer.undeclared_blocks or consumer.desired_document is None:
             raise EngineError(
                 "review_required",
                 operation="reverse-sync",
@@ -2082,7 +2367,9 @@ def _preflight_reverse_consumers(
                 resource_name=consumer.resource.name,
             )
             simulated_document = parse_document(
-                rendered.encode("utf-8"), format=consumer.resource.format
+                rendered.encode("utf-8"),
+                format=consumer.resource.format,
+                public_names=consumer.resource.public_names,
             )
             simulated_values = _project(simulated_document, consumer.resource.fields)
         except (LuwuError, UnicodeError, ValueError, TypeError):
@@ -2257,7 +2544,11 @@ def _with_input_location_updates(
                     raise EngineError("reverse_destination")
             else:
                 try:
-                    document = parse_document(observation.data, format=layer.format)
+                    document = parse_document(
+                        observation.data,
+                        format=layer.format,
+                        public_names=binding.public_names,
+                    )
                     value = get_leaf(document, layer.path)
                 except LuwuError:
                     raise EngineError("reverse_destination") from None
@@ -2327,7 +2618,7 @@ def _verify_reverse_results(
         )
         if not affected:
             continue
-        if candidate.status == "blocked" or candidate.undeclared_changed:
+        if candidate.status == "blocked" or candidate.undeclared_blocks:
             return False
         for name in affected:
             binding = candidate.resource.fields[name]
@@ -2374,6 +2665,16 @@ def _verify_forward_results(
         ):
             return False
     return True
+
+
+def _skip_reason(item: _ResourcePlan) -> str | None:
+    """Return why a resource needs review before apply, or None when it may run."""
+
+    if item.undeclared_blocks:
+        return "undeclared_changed"
+    if item.status in {"blocked", "conflict", "unbased", "adopt_required"}:
+        return item.status
+    return None
 
 
 def _assert_fresh(
@@ -2465,6 +2766,7 @@ def _assert_forward_fresh(
     expected_baselines: Mapping[Path, FileObservation] | None = None,
     expected_inputs: Mapping[Path, FileObservation] | None = None,
     expected_directories: Mapping[Path, tuple[tuple[int, int], int]] | None = None,
+    skipped: frozenset[str] = frozenset(),
 ) -> tuple[_ResourcePlan, ...]:
     """Recheck selected dependencies and their current eligibility."""
 
@@ -2477,8 +2779,7 @@ def _assert_forward_fresh(
         expected_directories=expected_directories,
     )
     if any(
-        item.undeclared_changed
-        or item.status in {"blocked", "conflict", "unbased", "adopt_required"}
+        item.resource.name not in skipped and _skip_reason(item) is not None
         for item in fresh
     ):
         raise EngineError("review_required", operation="apply")
@@ -2512,6 +2813,7 @@ def _recheck_forward_fresh(
     expected_baselines: Mapping[Path, FileObservation],
     expected_inputs: Mapping[Path, FileObservation],
     expected_directories: Mapping[Path, tuple[tuple[int, int], int]],
+    skipped: frozenset[str] = frozenset(),
 ) -> None:
     _assert_forward_fresh(
         record,
@@ -2520,6 +2822,7 @@ def _recheck_forward_fresh(
         expected_baselines=expected_baselines,
         expected_inputs=expected_inputs,
         expected_directories=expected_directories,
+        skipped=skipped,
     )
 
 

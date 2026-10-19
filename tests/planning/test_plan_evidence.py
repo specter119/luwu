@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import tempfile
 import traceback
 import unittest
@@ -681,7 +682,11 @@ input = "beta"
             self.target.read_bytes(), b'{"alpha":"alpha-v2","beta":"beta-v1"}\n'
         )
         self.assertEqual(self.local_input.read_bytes(), before_input)
-        self.assertEqual(self.baseline.read_bytes(), before_baseline)
+        self.assertNotEqual(self.baseline.read_bytes(), before_baseline)
+        self.assertEqual(
+            json.loads(self.baseline.read_text(encoding="utf-8"))["values"],
+            {"alpha": "alpha-v2", "beta": "beta-v1"},
+        )
 
     def test_splitting_equal_shared_parser_child_is_accepted(self) -> None:
         self._split_equal_alpha_child()
