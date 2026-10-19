@@ -51,6 +51,20 @@ a real profile.
   them.
 - `public_names` admits a named key that the sensitive-name check rejects.
 - The adopt preview says when applying would replace live bytes.
+- `reverse-sync --undeclared PATH` writes named literal leaves into a template
+  source.
+
+Known limits found by review and left open:
+
+- The plan keeps no record of undeclared values, so it cannot tell whether the
+  application or the source changed one. `--undeclared` therefore relies on the
+  operator naming only leaves whose live value should win.
+- If a resource has one field to forward and another that needs review, apply
+  still writes the forward field and leaves the other untouched instead of
+  skipping the resource.
+- After the first directory is created, the per-action freshness check no
+  longer compares the rendered desired bytes of later actions; the source,
+  input, and target observations still catch changes.
 
 ## Verified scope and limits
 

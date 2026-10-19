@@ -12,7 +12,10 @@ from unittest.mock import patch
 from luwu import engine as engine_module
 from luwu.cli import main
 from luwu.engine import EngineError, accept_baseline, apply_plan, reverse_undeclared
+from luwu.rendering import template_syntax
 from tests.support.profile_case import ProfileEngineCase
+
+_FONT = ("ui", "font")
 
 _HEAD = """
 version = 8
@@ -95,11 +98,30 @@ class UndeclaredReverseTests(ProfileEngineCase):
             if entry["name"] == name
         )
 
-    def _refused(self, code: str = "undeclared_unsafe", name: str = "app") -> None:
+    def _reverse(
+        self,
+        *paths: tuple[str, ...],
+        confirm: bool = True,
+        plan=None,
+        name: str = "app",
+    ):
+        return reverse_undeclared(
+            self._plan() if plan is None else plan,
+            resource=name,
+            paths=paths or (_FONT,),
+            confirm=confirm,
+        )
+
+    def _refused(
+        self,
+        *paths: tuple[str, ...],
+        code: str = "undeclared_unsafe",
+        name: str = "app",
+    ) -> None:
         before = self._snapshot()
         for confirm in (False, True):
             with self.assertRaises(EngineError) as raised:
-                reverse_undeclared(self._plan(), resource=name, confirm=confirm)
+                self._reverse(*paths, confirm=confirm, name=name)
             self.assertEqual(raised.exception.code, code)
         self.assertEqual(self._snapshot(), before)
 
@@ -111,7 +133,7 @@ class UndeclaredReverseTests(ProfileEngineCase):
         self.assertTrue(self._item()["undeclared_changed"])
         before = self._snapshot()
 
-        preview = reverse_undeclared(self._plan(), resource="app", confirm=False)
+        preview = self._reverse(confirm=False)
         self.assertEqual(preview.outcome, "confirmation_required")
         self.assertEqual(
             [(a.kind, a.path, a.fields) for a in preview.actions],
@@ -119,7 +141,7 @@ class UndeclaredReverseTests(ProfileEngineCase):
         )
         self.assertEqual(self._snapshot(), before)
 
-        result = reverse_undeclared(self._plan(), resource="app", confirm=True)
+        result = self._reverse()
         self.assertEqual(result.outcome, "committed")
         self.assertEqual(result.verification_status, "verified")
         self.assertEqual(
@@ -140,7 +162,7 @@ class UndeclaredReverseTests(ProfileEngineCase):
             live["extras"] = {"enabled": True}
 
         self._live(edit)
-        result = reverse_undeclared(self._plan(), resource="app", confirm=True)
+        result = self._reverse(("ui", "size"), ("extras", "enabled"))
         self.assertEqual(result.outcome, "committed")
         written = json.loads(self.template.read_text(encoding="utf-8"))
         self.assertEqual(written["ui"], {"font": "mono", "size": 12})
@@ -151,24 +173,24 @@ class UndeclaredReverseTests(ProfileEngineCase):
     def test_nothing_to_write_back_is_no_change(self) -> None:
         self._deploy()
         before = self._snapshot()
-        result = reverse_undeclared(self._plan(), resource="app", confirm=True)
+        result = self._reverse()
         self.assertEqual(result.outcome, "no_changes")
         self.assertEqual(self._snapshot(), before)
 
     def test_a_value_that_jinja_rewrites_is_refused(self) -> None:
         self._deploy()
         self._live(lambda live: live.update(tag="other"))
-        self._refused()
+        self._refused(("tag",))
 
     def test_a_removed_key_is_refused(self) -> None:
         self._deploy()
         self._live(lambda live: live.pop("ui"))
-        self._refused()
+        self._refused(_FONT)
 
     def test_arrays_are_refused(self) -> None:
         self._deploy()
         self._live(lambda live: live.update(items=[1, 2]))
-        self._refused()
+        self._refused(("items",))
 
     def test_multiline_values_are_refused(self) -> None:
         self._deploy()
@@ -218,7 +240,7 @@ class UndeclaredReverseTests(ProfileEngineCase):
             live["tag"] = "other"
 
         self._live(edit)
-        self._refused()
+        self._refused(_FONT, ("tag",))
 
     def test_a_secret_looking_live_key_blocks_the_resource(self) -> None:
         self._deploy()
@@ -266,7 +288,7 @@ class UndeclaredReverseTests(ProfileEngineCase):
         self.template.write_text(_TEMPLATE + "\n", encoding="utf-8")
         before = self._snapshot()
 
-        result = reverse_undeclared(plan, resource="app", confirm=True)
+        result = self._reverse(plan=plan)
 
         self.assertEqual(
             (result.outcome, result.error_code), ("not_attempted", "stale_plan")
@@ -282,7 +304,7 @@ class UndeclaredReverseTests(ProfileEngineCase):
         (self.source / "templates").rename(elsewhere / "templates")
         os.symlink(elsewhere / "templates", self.source / "templates")
 
-        result = reverse_undeclared(plan, resource="app", confirm=True)
+        result = self._reverse(plan=plan)
 
         self.assertNotEqual(result.outcome, "committed")
         self.assertIn(
@@ -316,10 +338,76 @@ class UndeclaredReverseTests(ProfileEngineCase):
             return code, json.loads(out.getvalue())
 
         self.assertEqual(run()[0], 2)
-        self.assertEqual(run("--undeclared", "--field", "theme")[0], 2)
-        code, preview = run("--undeclared")
+        path = '["ui", "font"]'
+        self.assertEqual(run("--undeclared", path, "--field", "theme")[0], 2)
+        self.assertEqual(run("--undeclared", "ui.font")[0], 2)
+        self.assertEqual(run("--undeclared", '["ui", 1]')[0], 2)
+        self.assertEqual(run("--undeclared", "[]")[0], 2)
+        code, preview = run("--undeclared", path)
         self.assertEqual((code, preview["outcome"]), (2, "confirmation_required"))
         self.assertIn("mono", self.template.read_text(encoding="utf-8"))
-        code, done = run("--undeclared", "--yes")
+        code, done = run("--undeclared", path, "--yes")
         self.assertEqual((code, done["outcome"]), (0, "committed"))
         self.assertIn("serif", self.template.read_text(encoding="utf-8"))
+
+    def test_only_the_named_paths_are_written(self) -> None:
+        self._deploy()
+
+        def edit(live: dict) -> None:
+            live["ui"]["font"] = "serif"
+            live["ui"]["size"] = 12
+
+        self._live(edit)
+
+        result = self._reverse(_FONT)
+
+        self.assertEqual(result.outcome, "committed")
+        written = json.loads(self.template.read_text(encoding="utf-8"))
+        self.assertEqual(written["ui"], {"font": "serif"})
+        self.assertTrue(self._item()["undeclared_changed"])
+
+    def test_a_path_that_does_not_differ_is_refused(self) -> None:
+        self._deploy()
+        self._live(lambda live: live["ui"].update(font="serif"))
+        for paths in ((("ui", "size"),), (_FONT, ("ui", "size")), ()):
+            with self.subTest(paths=paths):
+                before = self._snapshot()
+                with self.assertRaises(EngineError) as raised:
+                    reverse_undeclared(
+                        self._plan(), resource="app", paths=paths, confirm=True
+                    )
+                self.assertEqual(raised.exception.code, "undeclared_unsafe")
+                self.assertEqual(self._snapshot(), before)
+
+    def test_a_secret_looking_value_is_written_only_for_a_named_path(self) -> None:
+        self._deploy()
+
+        def edit(live: dict) -> None:
+            live["ui"]["font"] = "serif"
+            live["ui"]["url"] = "https://user:pw@host"
+
+        self._live(edit)
+        self._reverse(_FONT)
+        self.assertNotIn("pw@host", self.template.read_text(encoding="utf-8"))
+
+    def test_a_patch_that_changes_the_template_syntax_is_refused(self) -> None:
+        self._deploy()
+        self._live(lambda live: live["ui"].update(font="serif"))
+        real = engine_module.patch_document
+        with patch.object(
+            engine_module,
+            "patch_document",
+            lambda doc, edits: real(doc, edits).replace(
+                b"{{ inputs.theme }}-suffix", b"{{ inputs.theme }}{{ '' }}-suffix"
+            ),
+        ):
+            self._refused()
+
+    def test_template_syntax_ignores_text_and_sees_expressions(self) -> None:
+        base = 'a "{{ x }}" b'
+        self.assertEqual(template_syntax(base), template_syntax('c "{{ x }}" d'))
+        self.assertNotEqual(template_syntax(base), template_syntax('a "{{ y }}" b'))
+        self.assertNotEqual(template_syntax(base), template_syntax("a b"))
+        self.assertNotEqual(
+            template_syntax("{{ 'a' }}"), template_syntax("{{ 'a' ~ 'b' }}")
+        )

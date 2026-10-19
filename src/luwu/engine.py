@@ -68,7 +68,7 @@ from .plan_evidence import (
     _matches_plan_evidence,
     _PlanEvidence,
 )
-from .rendering import render_source
+from .rendering import render_source, template_syntax
 
 _SCHEMA_VERSION = 8
 _PATH_TYPE = type(Path())
@@ -508,7 +508,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
         for spec in baseline_specs
     ):
         return preview("not_attempted", "parent_required")
-    if not specs:
+    if not specs and not baseline_specs:
         if skipped:
             return preview("not_attempted", "review_required")
         if not confirm:
@@ -749,7 +749,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
     failure = _advance_baselines(
         record,
         fresh,
-        tuple(executed_specs),
+        baseline_specs,
         actions,
         expected_targets=expected_targets,
         expected_baselines=expected_baselines,
@@ -797,12 +797,35 @@ def _advances_baseline(item: _ResourcePlan) -> bool:
     return item.resource.kind == "template" and bool(_baseline_fields(item))
 
 
+def _needs_baseline_repair(item: _ResourcePlan) -> bool:
+    """Whether a converged template still records an older accepted value.
+
+    This is what a reverse sync or an interrupted apply leaves behind: live
+    and desired already agree, so no target write is planned, but a later
+    source change would read as a change on both sides.
+    """
+
+    if (
+        item.resource.kind != "template"
+        or item.status != "converged"
+        or item.baseline is None
+        or _skip_reason(item) is not None
+    ):
+        return False
+    fields = _baseline_fields(item)
+    return bool(fields) and not _mapping_values_equal(
+        item.baseline.values, item.live_values, fields
+    )
+
+
 def _baseline_advance_specs(
     record: _PlanRecord, specs: tuple[_WriteSpec, ...]
 ) -> tuple[_WriteSpec, ...]:
     advance: list[_WriteSpec] = []
-    for spec in specs:
-        item = _resource_by_name(record.resources, spec.resource.name)
+    written = {spec.resource.name for spec in specs}
+    for item in record.resources:
+        if item.resource.name not in written and not _needs_baseline_repair(item):
+            continue
         if not _advances_baseline(item) or item.baseline_observation is None:
             continue
         advance.append(
@@ -1744,21 +1767,29 @@ def reverse_inputs(
     )
 
 
-def reverse_undeclared(plan: Plan, *, resource: str, confirm: bool) -> Result:
-    """Write live changes outside the declared fields into a literal template.
+def reverse_undeclared(
+    plan: Plan, *, resource: str, paths: tuple[LeafPath, ...], confirm: bool
+) -> Result:
+    """Write named live changes outside the declared fields into a literal template.
 
-    This is the only operation that writes the source tree. It proceeds only
-    when the rewritten template is proven, by rendering it in memory, to
-    reproduce the live undeclared content while leaving every declared field
-    as it was.
+    This is the only operation that writes the source tree. The caller names
+    each leaf path, so the write is declared at invocation, and nothing else
+    is touched. It proceeds only when the rewritten template is proven, by
+    rendering it in memory, to reproduce the live value at each named path
+    while leaving every declared field and every other undeclared value as it
+    was. The plan cannot tell whether the source or the application changed an
+    undeclared value, so naming the path is the operator's claim that the live
+    side is the one to keep.
     """
 
     record = _mutation_record(plan, operation="reverse-sync")
     if record is None:
         return Result("reverse-sync", "not_attempted", error_code="stale_plan")
     item = _resource_by_name(record.resources, resource)
-    data = _undeclared_source_update(record, item)
+    update = _undeclared_source_update(record, item, paths)
     names = frozenset({resource})
+    data = None if update is None else update[0]
+    remaining = {} if update is None else update[1]
     if data is None:
         try:
             _assert_fresh(record, resource_names=names)
@@ -1824,9 +1855,18 @@ def reverse_undeclared(plan: Plan, *, resource: str, confirm: bool) -> Result:
         return _finish_actions(
             "reverse-sync", actions, "committed_but_verification_failed", exc.code
         )
+    after = (
+        None
+        if fresh.desired_document is None or fresh.target_document is None
+        else unselected_scalar_changes(
+            fresh.desired_document,
+            fresh.target_document,
+            tuple(binding.path for binding in item.resource.fields.values()),
+        )
+    )
     if (
         fresh.status == "blocked"
-        or fresh.undeclared_changed
+        or not _same_changes(after, remaining)
         or not _mapping_values_equal(
             fresh.desired_values, item.desired_values, tuple(item.resource.fields)
         )
@@ -1839,8 +1879,24 @@ def reverse_undeclared(plan: Plan, *, resource: str, confirm: bool) -> Result:
     )
 
 
-def _undeclared_source_update(record: _PlanRecord, item: _ResourcePlan) -> bytes | None:
-    """Return the rewritten template bytes, or None when nothing differs."""
+def _same_changes(
+    left: Mapping[LeafPath, object] | None, right: Mapping[LeafPath, object]
+) -> bool:
+    return (
+        left is not None
+        and left.keys() == right.keys()
+        and all(semantic_equal(left[path], right[path]) for path in right)
+    )
+
+
+def _undeclared_source_update(
+    record: _PlanRecord, item: _ResourcePlan, paths: tuple[LeafPath, ...]
+) -> tuple[bytes, dict[LeafPath, object]] | None:
+    """Return the rewritten template bytes and the changes left, or None.
+
+    None means no undeclared content differs. Every named path must be one of
+    the differing leaves; otherwise the request is refused.
+    """
 
     resource = item.resource
     name = resource.name
@@ -1865,8 +1921,10 @@ def _undeclared_source_update(record: _PlanRecord, item: _ResourcePlan) -> bytes
     changes = unselected_scalar_changes(
         item.desired_document, item.target_document, selected
     )
-    if not changes:
+    if not changes or not paths or any(path not in changes for path in paths):
         raise refuse()
+    wanted = {path: changes[path] for path in dict.fromkeys(paths)}
+    remaining = {path: value for path, value in changes.items() if path not in wanted}
     public = resource.public_names
     fmt = resource.format or ""
     try:
@@ -1878,7 +1936,7 @@ def _undeclared_source_update(record: _PlanRecord, item: _ResourcePlan) -> bytes
         raise refuse() from None
     if "{%" in source_text or "{#" in source_text:
         raise refuse()
-    for path, value in changes.items():
+    for path, value in wanted.items():
         if any(_has_template_markup(segment) for segment in path):
             raise refuse()
         if isinstance(value, str) and (
@@ -1888,7 +1946,9 @@ def _undeclared_source_update(record: _PlanRecord, item: _ResourcePlan) -> bytes
         if not _literal_in_both(template, item.desired_document, path):
             raise refuse()
     try:
-        patched = patch_document(template, dict(changes))
+        patched = patch_document(template, dict(wanted))
+        if template_syntax(source_text) != template_syntax(patched.decode("utf-8")):
+            raise refuse()
         rendered = render_source(
             patched.decode("utf-8"),
             dict(item.inputs.template_variables()),
@@ -1897,13 +1957,15 @@ def _undeclared_source_update(record: _PlanRecord, item: _ResourcePlan) -> bytes
         reparsed = parse_document(rendered, format=fmt, public_names=public)
     except (UnicodeDecodeError, LuwuError):
         raise refuse() from None
-    if not unselected_equal(reparsed, item.target_document, selected):
+    if not _same_changes(
+        unselected_scalar_changes(reparsed, item.target_document, selected), remaining
+    ):
         raise refuse()
     if not _mapping_values_equal(
         _project(reparsed, resource.fields), item.desired_values, tuple(resource.fields)
     ):
         raise refuse()
-    return patched
+    return patched, remaining
 
 
 def _has_template_markup(text: str) -> bool:

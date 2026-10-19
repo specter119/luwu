@@ -131,8 +131,9 @@ public admission does not redact secrets. Subsequent source/live disagreement
 requires review; there is no force or implicit overwrite rule.
 
 **Whole-file templates** are `.j2` sources without `fields`. The template is
-rendered in a sandbox with the values of the input bindings listed in the
-resource's `inputs`, and the rendered bytes are owned by the source. They use
+rendered in a sandbox with the input bindings listed in the resource's
+`inputs`, read as `inputs.NAME` (the effective value), `global_inputs.NAME`,
+and `local_inputs.NAME`, and the rendered bytes are owned by the source. They use
 the copy baseline, adopt, and review mechanisms on the rendered bytes. A
 template is written, never deployed, so `deploy` is invalid on it. The target
 name of a directory leaf drops its `.j2` suffix.
@@ -303,9 +304,11 @@ content evidence. Baselines never contain complete source, target, or input
 documents. Accept and adopt establish a baseline. A confirmed apply also advances the
 baseline of every resource it wrote, and only for what it wrote: the declared
 fields that it forwarded or that already converged for a structured template,
-or the accepted digest and mode of a copy or whole-file template. Apply does
-not create a baseline, and it never accepts a field that is not converged
-after the write. The preview lists each `baseline_write` action, so the
+or the accepted digest and mode of a copy or whole-file template. Apply also repairs a converged
+template whose baseline still records an older value, which a reverse sync or
+an interrupted apply leaves behind: with no target to write, the plan lists
+only a `baseline_write`. Apply does not create a baseline, and it never
+accepts a field that is not converged after the write. The preview lists each `baseline_write` action, so the
 advance is part of what `--yes` authorizes. Planning and reverse sync never
 change a baseline.
 
@@ -326,7 +329,7 @@ written baseline and never included in any CLI output, repr, or log.
 Inspect and plan are read-only. Accept requires an explicit profile, exactly
 one resource, field selection, and --from desired|live baseline side.
 Reverse-sync requires an explicit profile, exactly one resource, and either
-selected eligible live/merge fields or `--undeclared`. Field mode writes only
+selected eligible live/merge fields or `--undeclared PATH`. Field mode writes only
 the declared reverse_to destinations. Undeclared mode is described below. Adopt requires an explicit profile and exactly one copy or whole-file
 template resource. When the source bytes differ from the live target, the
 adopt preview marks its baseline action with `replaces_live_on_apply = true`:
@@ -349,17 +352,30 @@ finite-batch and per-action checks below.
 
 ### Writing undeclared changes back to a template source
 
-`reverse-sync --resource NAME --undeclared` is the only operation that writes
-the source root. It copies a scalar change that the application made outside
-the declared fields into the structured template's source, so the next apply
-reproduces it. It applies only to a structured template and is separate from
-`--field`; the two cannot be combined.
+`reverse-sync --resource NAME --undeclared PATH` is the only operation that
+writes the source root. It copies a scalar change that the application made
+outside the declared fields into the structured template's source, so the next
+apply reproduces it. It applies only to a structured template and is separate
+from `--field`; the two cannot be combined.
+
+Each `PATH` is a JSON array of literal key names, for example
+`'["ui", "font"]'`, and the option repeats to name several leaves. The
+operator declares what is written at invocation. Luwu writes only the named
+leaves, refuses a named leaf that does not currently differ, and leaves every
+other undeclared difference unchanged. The plan cannot tell whether the
+application or the source changed an undeclared value, so naming a path is the
+operator's claim that the live value is the one to keep; writing it back
+overwrites a different value in the source. Values and keys are not printed in
+the preview, and Luwu does not inspect values for secrets, so the operator
+checks the named leaf before confirming.
 
 Luwu writes only when it can prove every one of these conditions, and
 otherwise refuses with `undeclared_unsafe` and writes nothing:
 
 - The source parses in its declared format and contains no Jinja block or
-  comment syntax (`{%`, `{#`).
+  comment syntax (`{%`, `{#`), and the patched source has exactly the same
+  template tokens (expressions and strings inside them) as the original, so
+  replacing text cannot reshape an expression.
 - Every changed path, and each of its ancestors, is a literal mapping in the
   source and in the render, and neither the keys nor the values contain
   template markup (`{{`, `{%`, `{#`).
@@ -367,8 +383,9 @@ otherwise refuses with `undeclared_unsafe` and writes nothing:
   rewrite it.
 - The changes are scalars: no array member, no multiline value, and no
   sensitive key name unless it is listed in `public_names`.
-- Re-rendering the patched source in memory reproduces every undeclared live
-  value and leaves every declared field's desired value unchanged.
+- Re-rendering the patched source in memory reproduces the live value at each
+  named path, leaves every other undeclared difference as it was, and leaves
+  every declared field's desired value unchanged.
 
 The write uses the same span patch and atomic replacement as other writes,
 rechecks the source, inputs, baseline, and target, and verifies after the
@@ -393,9 +410,10 @@ resource whose status is `blocked`, `conflict`, `unbased`, or
 `adopt_required`, or whose undeclared content changed under
 `undeclared = "block"`, and deploys the rest. Each skipped resource appears
 as a `resource_skip` action with state `skipped` and a reason code (the
-status, or `undeclared_changed`). When any resource is skipped the outcome is
-`partial`, even if every other write succeeds, and the exit code is `2`. If
-every resource is skipped nothing is written. Skipped resources are excluded
+status, or `undeclared_changed`). When a skip accompanies at least one write the
+outcome is `partial` with error code `review_required`, even if every write
+succeeds. When nothing is written the outcome is `not_attempted`. Both exit
+with code `2`. Skipped resources are excluded
 from the per-action freshness checks and from the final whole-batch
 verification; a resource that was not skipped at plan time but needs review at
 write time still stops the batch with `review_required`.
@@ -465,7 +483,7 @@ Luwu has six commands: `inspect`, `plan`, `apply`, `accept`, `adopt`, and `rever
 
 `apply` always calculates a plan first. Without `--yes` it is only a preview, writes nothing, and returns exit code `2`. With `--yes` it completes a full profile preflight, rechecks every dependency, and then writes. A blocked, review, conflict, unbased, or adopt-required resource is skipped and reported, the remaining resources are deployed, and the outcome is `partial` with exit code `2`; resolving a skipped resource is a separate explicit step. After the targets verify, `apply` advances the baselines of the resources it wrote, and the preview lists those writes. `apply` uses no execution record.
 
-`accept` requires `--resource`, one or more `--field` values, and `--from desired|live`. `reverse-sync` requires `--resource` and either one or more `--field` values or `--undeclared`, never both. `adopt` requires `--resource` naming a copy or whole-file template. Without `--yes`, a mutation command emits a metadata-only preview and returns exit code `2`. The preview is not a persisted plan token; `--yes` recalculates the current inputs and then performs the documented stale checks. A successful mutation returns exit code `0` and includes a fresh verification result. Results never contain accepted values, rendered content, diffs, or hashes.
+`accept` requires `--resource`, one or more `--field` values, and `--from desired|live`. `reverse-sync` requires `--resource` and either one or more `--field` values or one or more `--undeclared PATH` values, never both. `adopt` requires `--resource` naming a copy or whole-file template. Without `--yes`, a mutation command emits a metadata-only preview and returns exit code `2`. The preview is not a persisted plan token; `--yes` recalculates the current inputs and then performs the documented stale checks. A successful mutation returns exit code `0` and includes a fresh verification result. Results never contain accepted values, rendered content, diffs, or hashes.
 
 Writes use a temporary file in the target's existing parent followed by an atomic replacement. Existing regular-file permissions are preserved unless a mode is declared. A target symlink is refused rather than followed or replaced; a symlink resource only creates its own link where nothing exists, and leaves an existing link alone. Luwu uses descriptor-relative no-follow operations, records identities, and takes a non-blocking advisory lock for cooperating Luwu writers on POSIX. It fails closed when those filesystem primitives are unavailable. An advisory lock does not control unrelated writers that ignore it.
 

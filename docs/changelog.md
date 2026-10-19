@@ -94,8 +94,9 @@ For example: `git show bb80335:docs/milestones/m3.md`.
 - `undeclared = "preserve"` keeps application-written keys; `public_names`
   admits exact key names past the sensitive-name check; the adopt preview and
   plan projection report `replaces_live_on_apply`.
-- `reverse-sync --undeclared` writes a proven literal-subtree change back to a
-  template source.
+- `reverse-sync --undeclared PATH` writes the named, proven literal leaves back
+  to a template source.
+- Apply also repairs a converged template's stale baseline.
 - M7a is implemented but not closed: its exit is a real trial (see the
   [roadmap](roadmap.md#m7a-daily-loop-usability)).
 

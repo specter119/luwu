@@ -582,6 +582,22 @@ class ProfileScenarioCase(unittest.TestCase):
         if actual != expected:
             self.fail(f"{label} changed fixture state")
 
+    def _assert_only_baselines_changed(
+        self,
+        actual: dict[str, tuple[object, ...]],
+        expected: dict[str, tuple[object, ...]],
+        label: str,
+    ) -> None:
+        changed = {
+            path
+            for path in actual.keys() | expected.keys()
+            if actual.get(path) != expected.get(path)
+        }
+        if not changed or any(
+            not path.startswith("inputs/baselines/") for path in changed
+        ):
+            self.fail(f"{label} changed more than baselines: {sorted(changed)}")
+
     def _assert_resource_set(
         self, payload: dict[str, object], case: ProfileCliCase
     ) -> None:

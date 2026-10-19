@@ -53,7 +53,7 @@ Non-goals may change when real user problems change, but such a change must be e
 
 Semantic comparison may use parsing and normalization, but a generic formatter is not a product goal. It is valuable only when it reduces false drift or enables a safe structured patch. It must not rewrite Jinja templates wholesale or silently discard unsupported YAML features. The exact parser, preservation strategy, and supported subset belong in a future design or reference document.
 
-For a template resource, compare the rendered configuration rather than the template source. Reverse sync should update declared inputs or fields, never copy a live file wholesale into a Jinja template. Provider-owned secrets remain read-only inputs; non-secret machine-local values may be accepted only when their ownership is declared.
+For a template resource, compare the rendered configuration rather than the template source. Reverse sync should update declared inputs or fields, never copy a live file wholesale into a Jinja template. The one exception is an explicit, per-leaf request to copy a proven literal scalar from the live file into the template source. Provider-owned secrets remain read-only inputs; non-secret machine-local values may be accepted only when their ownership is declared.
 
 ## Value tests
 

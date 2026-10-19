@@ -117,6 +117,52 @@ class DailyLoopTests(ProfileEngineCase):
         self.assertEqual(json.loads(self.target.read_text())["theme"], "v3")
         self.assertEqual(self._baseline_theme(), "v3")
 
+    def test_apply_repairs_the_baseline_of_a_converged_resource(self) -> None:
+        self._configure()
+        self._deploy()
+        live = json.loads(self.target.read_text())
+        live["theme"] = "v2"
+        self.target.write_text(json.dumps(live) + "\n", encoding="utf-8")
+        self._set_theme("v2")
+        self.assertEqual(self._status(), ("converged", "noop"))
+        self.assertEqual(self._baseline_theme(), "v1")
+        target_before = self.target.read_bytes()
+
+        preview = apply_plan(self._plan(), confirm=False)
+        self.assertEqual(preview.outcome, "confirmation_required")
+        self.assertEqual(
+            [(a.kind, a.fields) for a in preview.actions],
+            [("baseline_write", ("theme",))],
+        )
+        self.assertEqual(self._baseline_theme(), "v1")
+
+        result = apply_plan(self._plan(), confirm=True)
+        self.assertEqual(result.outcome, "committed")
+        self.assertEqual(self._baseline_theme(), "v2")
+        self.assertEqual(self.target.read_bytes(), target_before)
+        self.assertEqual(self._status(), ("in_sync", "noop"))
+        self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "no_changes")
+
+        self._set_theme("v3")
+        self.assertEqual(self._status(), ("drifted", "forward"))
+
+    def test_a_failed_repair_leaves_the_old_baseline_and_says_so(self) -> None:
+        self._configure()
+        self._deploy()
+        live = json.loads(self.target.read_text())
+        live["theme"] = "v2"
+        self.target.write_text(json.dumps(live) + "\n", encoding="utf-8")
+        self._set_theme("v2")
+
+        with patch(
+            "luwu.engine.write_baseline",
+            side_effect=FilesystemError("no", code="write_failed"),
+        ):
+            result = apply_plan(self._plan(), confirm=True)
+
+        self.assertEqual(result.outcome, "committed_but_baseline_not_advanced")
+        self.assertEqual(self._baseline_theme(), "v1")
+
     def test_whole_file_copy_baseline_follows_the_apply(self) -> None:
         self._configure(_NOTE)
         (self.source / "notes.txt").write_text("one\n", encoding="utf-8")

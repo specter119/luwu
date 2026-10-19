@@ -12,6 +12,7 @@ from typing import Any, cast
 from . import __version__, engine
 from .errors import LuwuError, MutationError
 from .manifest import load_manifest
+from .semantic import parse_strict_json
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -71,9 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reverse_scope.add_argument(
         "--undeclared",
-        action="store_true",
-        help="write live changes outside the declared fields into the template "
-        "source when they can be proven to render back unchanged",
+        action="append",
+        metavar="PATH",
+        help="a JSON array of key names naming one undeclared leaf, such as "
+        '\'["section", "key"]\'; repeat to name several. Its live value is '
+        "written into the template source when it can be proven to render "
+        "back unchanged",
     )
     _add_confirm_argument(reverse)
     return parser
@@ -139,6 +143,21 @@ def _add_confirm_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _parse_leaf_path(text: str) -> tuple[str, ...]:
+    value, failure = parse_strict_json(text.encode("utf-8"))
+    if (
+        failure is not None
+        or not isinstance(value, list)
+        or not value
+        or not all(isinstance(segment, str) and segment for segment in value)
+    ):
+        raise LuwuError(
+            "an undeclared path must be a non-empty JSON array of key names",
+            code="field_invalid",
+        )
+    return tuple(value)
+
+
 def _run_command(args: argparse.Namespace, manifest: object) -> int:
     """Translate CLI input into the process-local engine API."""
 
@@ -161,7 +180,10 @@ def _run_command(args: argparse.Namespace, manifest: object) -> int:
         result = engine.adopt_resource(plan, resource=args.resource, confirm=args.yes)
     elif args.command == "reverse-sync" and args.undeclared:
         result = engine.reverse_undeclared(
-            plan, resource=args.resource, confirm=args.yes
+            plan,
+            resource=args.resource,
+            paths=tuple(_parse_leaf_path(text) for text in args.undeclared),
+            confirm=args.yes,
         )
     elif args.command == "reverse-sync":
         result = engine.reverse_inputs(

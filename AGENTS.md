@@ -24,7 +24,8 @@ to `docs/product.md`; their public behavior belongs to `docs/reference.md`.
   adoptable. Conflicts stop for review instead of being hidden by a generic
   force or precedence rule.
 - Treat reverse sync as structured, auditable acceptance. Only declared
-  fields may be written back, and the result is recalculated after the write.
+  fields, or leaves the operator names in the request, may be written back,
+  and the result is recalculated after the write.
 - Minimize secrets and fail closed. Provider-managed secrets must not enter
   repositories, persistent state, diffs, logs, caches, backups, or
   machine-readable output.

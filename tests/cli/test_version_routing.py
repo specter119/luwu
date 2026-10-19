@@ -218,7 +218,16 @@ class ProfileCliV8Tests(unittest.TestCase):
         )
         self.assertNotIn("calm-2", json.dumps(reversed_inputs))
         converged = case.cli("apply", "--yes", expected_code=0)
-        self.assertEqual(converged["outcome"], "no_changes")
+        self.assertEqual(converged["outcome"], "committed")
+        self.assertEqual(
+            [
+                action["kind"]
+                for action in cast(list[dict[str, object]], converged["actions"])
+            ],
+            ["baseline_write"],
+        )
+        settled = case.cli("apply", "--yes", expected_code=0)
+        self.assertEqual(settled["outcome"], "no_changes")
 
     def test_accept_preview_is_metadata_only_and_read_only(self) -> None:
         case = self._v8_case()

@@ -134,9 +134,16 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         self.assertEqual(recalculated_resources["nested_toml"].get("status"), "in_sync")
         before_confirmed_noop = case.snapshot()
         redeployed = case.cli("apply", "--yes", expected_code=0)
-        self._assert_outcome(redeployed, "no_changes")
-        self._assert_snapshot_equal(
-            case.snapshot(), before_confirmed_noop, "post-reverse confirmed no-op"
+        self._assert_outcome(redeployed, "committed")
+        self._assert_only_baselines_changed(
+            case.snapshot(), before_confirmed_noop, "post-reverse baseline repair"
+        )
+        self.assertEqual(
+            {
+                item.get("name"): item.get("status")
+                for item in self._resources(case.cli("plan", expected_code=0))
+            }["settings"],
+            "in_sync",
         )
         self._assert_bytes_equal(
             settings_target.read_bytes(),
@@ -204,6 +211,8 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
             case.expected("nested.after-worker-app.toml"),
             "nested application-edited target",
         )
+        repair = case.cli("apply", "--yes", expected_code=0)
+        self.assertEqual(repair.get("outcome"), "committed")
         self.assertEqual(
             case.cli("apply", "--yes", expected_code=0).get("outcome"),
             "no_changes",
@@ -793,10 +802,12 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         self.assertEqual(recalculated_by_name["droid"].get("status"), "converged")
         before_confirmed_noop = case.snapshot()
         redeployed = case.cli("apply", "--yes", expected_code=0, profile=profile)
-        self._assert_outcome(redeployed, "no_changes")
+        self._assert_outcome(redeployed, "committed")
         self.assertNotIn(codex_hash_after_app, json.dumps(redeployed))
-        self._assert_snapshot_equal(
-            case.snapshot(), before_confirmed_noop, "official-shape confirmed no-op"
+        self._assert_only_baselines_changed(
+            case.snapshot(),
+            before_confirmed_noop,
+            "official-shape baseline repair",
         )
         self._assert_bytes_equal(
             codex_target.read_bytes(),
@@ -908,9 +919,9 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         self.assertEqual(selected_after_reverse[0].get("status"), "converged")
         before_noop = case.snapshot()
         redeployed = case.cli("apply", "--yes", expected_code=0, profile=profile)
-        self._assert_outcome(redeployed, "no_changes")
-        self._assert_snapshot_equal(
-            case.snapshot(), before_noop, "Droid settings confirmed no-op"
+        self._assert_outcome(redeployed, "committed")
+        self._assert_only_baselines_changed(
+            case.snapshot(), before_noop, "Droid settings baseline repair"
         )
         self._assert_bytes_equal(
             target.read_bytes(),

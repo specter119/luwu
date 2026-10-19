@@ -148,10 +148,14 @@ modules carry the mechanism:
   so the outcome is `partial`. After a resource's target write verifies, apply
   writes that resource's baseline through the same staged-write path, from the
   freshly observed live values, and a failure there is its own outcome
-  because the target write is already committed. `reverse_undeclared` is the
-  one path that writes the source root: it patches the literal template,
-  renders the result in memory, and writes only when the render reproduces the
-  live undeclared values and leaves the declared fields unchanged. Structured
+  because the target write is already committed. A converged template with a
+  stale baseline gets a baseline-only write, so an interrupted apply or a
+  reverse sync repairs itself on the next apply. `reverse_undeclared` is the
+  one path that writes the source root: it patches only the leaves the
+  operator named in a literal template, checks that the template tokens are
+  unchanged, renders the result in memory, and writes only when the render
+  reproduces the live value at those leaves and leaves the declared fields
+  and the other undeclared differences as they were. Structured
   comparison of undeclared leaves is in `luwu/formats.py`. This flow creates no simultaneous
   snapshot, generic transaction, replay layer, or durable execution journal. The
   [version 8 finite-batch contract](reference.md#finite-batch-freshness-and-verification)
@@ -222,6 +226,12 @@ owner decision and evidence, not a convenience argument.
 - Writing undeclared changes back through templates that use Jinja blocks or
   rewritten values. Only a literal subtree whose render is proven equal is
   written; everything else is refused instead of guessed.
+- Writing every undeclared difference with one flag. The plan keeps no record
+  of the undeclared state, so it cannot tell a live change from a source
+  change, and a preview cannot list the keys. The operator names each leaf, so
+  the write is declared at invocation. A baseline digest of the undeclared
+  projection would remove the direction ambiguity and stays an option if
+  trials show the claim is too easy to get wrong.
 - Keeping retired manifest versions alive beside the current one. Three
   engines with separate copies of the filesystem, baseline, and format
   primitives let the copies drift; the older versions were retired instead.
