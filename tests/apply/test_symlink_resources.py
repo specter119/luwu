@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+from luwu import engine as engine_module
 from luwu.engine import apply_plan, build_plan
 from tests.support.profile_case import ProfileEngineCase
 
@@ -58,6 +59,24 @@ class SymlinkResourceTests(ProfileEngineCase):
         self.assertEqual(result.outcome, "committed")
         self.assertEqual(result.verification_status, "verified")
         self.assertEqual(os.readlink(self.link), str(self.source / "shellrc"))
+
+    def test_a_link_swapped_after_creation_is_reported_as_unknown(self) -> None:
+        self._configure()
+        original = engine_module.create_link
+
+        def create_then_swap(root, path, value, **kwargs):
+            identity = original(root, path, value, **kwargs)
+            path.unlink()
+            os.symlink("/nonexistent-elsewhere", path)
+            return identity
+
+        with patch("luwu.engine.create_link", side_effect=create_then_swap):
+            result = apply_plan(self._plan(), confirm=True)
+
+        self.assertEqual(
+            (result.outcome, result.error_code),
+            ("committed_state_unknown", "write_unknown"),
+        )
 
     def test_converged_link_is_in_sync_and_needs_no_baseline(self) -> None:
         self._configure()

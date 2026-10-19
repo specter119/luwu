@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+from luwu import engine as engine_module
+from luwu.baseline import make_field_baseline
 from luwu.engine import accept_baseline, adopt_resource, apply_plan
 from luwu.filesystem import FilesystemError
 from tests.support.profile_case import ProfileEngineCase
@@ -146,6 +148,26 @@ class DailyLoopTests(ProfileEngineCase):
         self.assertEqual(json.loads(self.target.read_text())["theme"], "v2")
         self.assertEqual(self._baseline_theme(), "v1")
         self.assertEqual(self._status(), ("converged", "noop"))
+
+    def test_a_baseline_that_misses_the_live_value_fails_verification(self) -> None:
+        self._configure()
+        self._deploy()
+        self._set_theme("v2")
+
+        def wrong_baseline(manifest, item, fresh_item):
+            return make_field_baseline(
+                manifest,
+                item.resource,
+                current={"theme": "other"},
+                selected_fields=("theme",),
+                existing=fresh_item.baseline,
+            )
+
+        with patch.object(engine_module, "_advanced_baseline_data", wrong_baseline):
+            result = apply_plan(self._plan(), confirm=True)
+
+        self.assertEqual(result.outcome, "committed_but_verification_failed")
+        self.assertEqual(result.error_code, "stale_plan")
 
     def test_preserve_keeps_application_keys_while_declared_fields_apply(
         self,

@@ -69,7 +69,6 @@ from .plan_evidence import (
     _PlanEvidence,
 )
 from .rendering import render_source
-from .sensitivity import is_sensitive_name
 
 _SCHEMA_VERSION = 8
 _PATH_TYPE = type(Path())
@@ -1880,10 +1879,7 @@ def _undeclared_source_update(record: _PlanRecord, item: _ResourcePlan) -> bytes
     if "{%" in source_text or "{#" in source_text:
         raise refuse()
     for path, value in changes.items():
-        if any(
-            _has_template_markup(segment) or is_sensitive_name(segment, public=public)
-            for segment in path
-        ):
+        if any(_has_template_markup(segment) for segment in path):
             raise refuse()
         if isinstance(value, str) and (
             "\n" in value or "\r" in value or _has_template_markup(value)

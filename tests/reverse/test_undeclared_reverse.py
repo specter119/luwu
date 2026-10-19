@@ -7,7 +7,9 @@ import io
 import json
 import os
 import stat
+from unittest.mock import patch
 
+from luwu import engine as engine_module
 from luwu.cli import main
 from luwu.engine import EngineError, accept_baseline, apply_plan, reverse_undeclared
 from tests.support.profile_case import ProfileEngineCase
@@ -178,6 +180,34 @@ class UndeclaredReverseTests(ProfileEngineCase):
         for value in ("{{ inputs.theme }}", "{% if x %}", "{# c #}"):
             with self.subTest(value=value):
                 self._live(lambda live, value=value: live["ui"].update(font=value))
+                self._refused()
+
+    def test_a_value_that_renders_to_itself_is_still_refused(self) -> None:
+        self.shared.write_text('{"theme":"{{ inputs.theme }}"}\n', encoding="utf-8")
+        self._deploy()
+        self._live(lambda live: live["ui"].update(font="{{ inputs.theme }}"))
+        self._refused()
+
+    def test_a_patcher_that_changes_other_content_is_caught_by_the_render(
+        self,
+    ) -> None:
+        self._deploy()
+        self._live(lambda live: live["ui"].update(font="serif"))
+        real = engine_module.patch_document
+        for old, new in (
+            (b'"serif"', b'"other"'),
+            (b'"theme": "{{ inputs.theme }}"', b'"theme": "forced"'),
+        ):
+            with (
+                self.subTest(old=old),
+                patch.object(
+                    engine_module,
+                    "patch_document",
+                    lambda doc, edits, old=old, new=new: real(doc, edits).replace(
+                        old, new
+                    ),
+                ),
+            ):
                 self._refused()
 
     def test_one_unsafe_change_refuses_every_change(self) -> None:
