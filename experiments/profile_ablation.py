@@ -285,8 +285,10 @@ def _action_rows(payload: object) -> dict[str, dict[str, object]]:
         raise TypeError("production result has no schema-8 actions list")
     rows: dict[str, dict[str, object]] = {}
     for row in actions:
-        if not isinstance(row, dict) or set(row) != _ACTION_FIELDS:
+        if not isinstance(row, dict) or not _ACTION_FIELDS <= set(row):
             raise AssertionError("production action does not match schema-8 fields")
+        if row.get("kind") != "target_write":
+            continue
         resource = row.get("resource")
         if not isinstance(resource, str) or resource in rows:
             raise AssertionError("production result has an invalid or duplicate action")
