@@ -17,15 +17,15 @@ to an active milestone's scope should be explicit.
 
 ## Milestone map
 
-| Milestone | Focus                                       | Outcome                                                                                                              |
-| --------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| M1-M5     | Preview through batch performance           | Delivered; see the [changelog](changelog.md).                                                                        |
-| M6        | First bidirectional pilot                   | Closed: the pilot contract was retired and its loop lives in version 8; the user trial moves to M7a.                 |
-| M7        | Full dotfiles coverage                      | Closed: technical core delivered; Droid workspace trust is unsupported by decision.                                  |
-| M7a       | Daily-loop usability                        | Planned, next: the routine edit, review, and apply loop works on a real profile without manual file surgery.         |
-| M7b       | Text templates and symlink resources        | Planned: non-structured templates and symlink resources exist on the version 8 contract.                             |
-| M8        | Providers and mixed inputs on version 8     | Planned: public, local, and provider inputs work together without persistent secret intermediates.                   |
-| M9        | Real-project migration qualification        | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies.    |
+| Milestone | Focus                                   | Outcome                                                                                                           |
+| --------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| M1-M5     | Preview through batch performance       | Delivered; see the [changelog](changelog.md).                                                                     |
+| M6        | First bidirectional pilot               | Closed: the pilot contract was retired and its loop lives in version 8; the user trial moves to M7a.              |
+| M7        | Full dotfiles coverage                  | Closed: technical core delivered; Droid workspace trust is unsupported by decision.                               |
+| M7a       | Daily-loop usability                    | Planned, next: the routine edit, review, and apply loop works on a real profile without manual file surgery.      |
+| M7b       | Text templates and symlink resources    | Planned: non-structured templates and symlink resources exist on the version 8 contract.                          |
+| M8        | Providers and mixed inputs on version 8 | Planned: public, local, and provider inputs work together without persistent secret intermediates.                |
+| M9        | Real-project migration qualification    | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies. |
 
 The milestone identifiers do not allocate manifest versions. Before changing
 public behavior, define the compatible extension or version transition in

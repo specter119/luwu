@@ -60,7 +60,6 @@ re-accept recovers without deleting files by hand.
 The manifest, input, format, baseline, filesystem, plan-evidence, and engine
 modules carry the mechanism:
 
-
 - `luwu/manifest.py` loads the version 8 declaration, validates roots and
   path relationships, resolves the explicitly selected profile, computes
   stable package dependency closure and exclusions, and expands declared

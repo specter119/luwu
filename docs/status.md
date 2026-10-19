@@ -14,19 +14,19 @@ for those subjects.
 
 ## Current capability matrix
 
-| Capability                   | Status                  | Open limits                                                                                       |
-| ---------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------- |
-| Template and copy resources  | Implemented             | Structured templates only (JSON, JSONC, TOML); no text templates and no symlink resources         |
-| Directory resources          | Implemented             | Enumerated into copy leaves; a new leaf needs explicit adoption                                   |
-| Profiles and package closure | Implemented             | Selection is explicit; no platform detection                                                      |
-| Layered public inputs        | Implemented             | Public scalar values only                                                                         |
-| Observation                  | Implemented             | An unsafe live path blocks that resource; the other resources are still observed                  |
-| Ownership and baselines      | Implemented             | Undeclared content is never adopted implicitly                                                    |
-| Accept, adopt, reverse sync  | Implemented             | One resource per command; a changed declaration needs an explicit re-accept                       |
-| Profile-wide apply           | Implemented             | Any blocked, review, or unbased resource stops the whole batch; no per-resource apply             |
+| Capability                   | Status                  | Open limits                                                                                        |
+| ---------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------- |
+| Template and copy resources  | Implemented             | Structured templates only (JSON, JSONC, TOML); no text templates and no symlink resources          |
+| Directory resources          | Implemented             | Enumerated into copy leaves; a new leaf needs explicit adoption                                    |
+| Profiles and package closure | Implemented             | Selection is explicit; no platform detection                                                       |
+| Layered public inputs        | Implemented             | Public scalar values only                                                                          |
+| Observation                  | Implemented             | An unsafe live path blocks that resource; the other resources are still observed                   |
+| Ownership and baselines      | Implemented             | Undeclared content is never adopted implicitly                                                     |
+| Accept, adopt, reverse sync  | Implemented             | One resource per command; a changed declaration needs an explicit re-accept                        |
+| Profile-wide apply           | Implemented             | Any blocked, review, or unbased resource stops the whole batch; no per-resource apply              |
 | Batch performance            | Implemented             | Budgets are in [maintenance](maintenance.md#performance-acceptance); rerun them on the target host |
-| Providers and secrets        | Not implemented         | Retired with version 6; planned in the [roadmap](roadmap.md)                                      |
-| Droid workspace trust        | Unsupported by decision | No stable public file schema is known                                                             |
+| Providers and secrets        | Not implemented         | Retired with version 6; planned in the [roadmap](roadmap.md)                                       |
+| Droid workspace trust        | Unsupported by decision | No stable public file schema is known                                                              |
 
 The exact fields, states, error codes, output projections, compatibility
 behavior, and unsupported cases are owned only by [reference](reference.md).

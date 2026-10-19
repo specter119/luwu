@@ -477,7 +477,7 @@ class ProfileReverseRedeployTests(profile_cli.ProfileScenarioCase):
         planned = alias.cli("plan", profile="alias", expected_code=0)
         statuses = {
             item["name"]: (item["status"], item["error_code"])
-            for item in planned["resources"]
+            for item in self._resources(planned)
         }
         self.assertEqual(statuses["settings_alias"], ("blocked", "unsafe_path"))
         self.assertNotEqual(statuses["settings"][0], "blocked")

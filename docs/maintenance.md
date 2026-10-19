@@ -27,6 +27,7 @@ For an installed-package full suite, copy `tests/`, `experiments/`, and
 `scripts/` into a private directory without `src/`, clear `PYTHONPATH`, and use
 the installed environment's Python. Check imported `luwu` module paths to
 confirm that the suite used the selected environment's `site-packages`.
+
 ## Lockfile
 
 `uv.lock` points at public PyPI (`https://pypi.org/simple` and
@@ -230,6 +231,7 @@ unsupported; see the [roadmap](roadmap.md).
 
 For documentation-only changes, run relative-link and whitespace checks. Link
 and formatting checks do not imply that a product suite passed.
+
 ## Documentation maintenance
 
 Before editing documentation, classify the statement:

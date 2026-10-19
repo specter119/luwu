@@ -99,6 +99,7 @@ For example: `git show bb80335:docs/milestones/m3.md`.
 - A baseline recorded for a changed declaration is reported as `baseline_stale`
   and replaced by an explicit accept or adopt, instead of blocking the
   resource until the file is deleted by hand.
+
 ## Capability matrix by delivery
 
 Rows are capabilities and columns are deliveries. A cell says where the
