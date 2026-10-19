@@ -1,4 +1,4 @@
-"""Pure field ownership classification for the M3a JSON contract."""
+"""Pure field ownership classification for declared public fields."""
 
 from __future__ import annotations
 

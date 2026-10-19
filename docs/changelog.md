@@ -5,7 +5,8 @@ contract, a status report, or a plan: the public behavior is in
 [reference](reference.md), what is implemented now is in [status](status.md),
 and what is open or planned is in [roadmap](roadmap.md).
 
-Delivery names (M1-M7) are labels for sequence. They do not allocate manifest
+Delivery names (M1-M7) are labels for sequence, and the manifest versions named in
+older entries were retired by the consolidation entry below. They do not allocate manifest
 versions and do not organize tests, fixtures, or documents. Per-delivery
 review notes, benchmark samples, and acceptance reports from before this
 changelog existed are preserved in commit `bb80335` (the last commit before they were removed).
@@ -76,6 +77,28 @@ For example: `git show bb80335:docs/milestones/m3.md`.
 - Synthetic OpenCode, Codex, and Droid settings shapes; no application
   runtime has loaded them.
 
+## Consolidation: one manifest contract
+
+- Retired manifest versions 1 through 7. Version 8 is the only manifest the
+  loader accepts; the provider, journal, cache, record, recovery, and platform
+  commands left with the versions that defined them. Their code remains in git
+  history. The M1-M7 entries above describe what each delivery added at that
+  time, not what exists now.
+- One implementation per primitive: a single no-follow filesystem and atomic
+  write module, one baseline and one format module, and one sensitive-name
+  predicate shared by the manifest, input layers, and documents. Modules, error
+  codes, test classes, and fixtures are named by capability, not by delivery.
+- Removed dead code and checks that repeated an earlier check without adding a
+  guarantee. Added fault-injection tests for the post-callback target
+  recheck, the pre-staging stale check, and the post-replace verification.
+- An unsafe live target, baseline, or input file now blocks only its resource
+  instead of aborting the whole profile.
+- Reverse sync can write into a declared destination layer that is absent or
+  below the winner, as long as no higher layer overrides it, and creates
+  missing destination parents when the resource declares `parents = "create"`.
+- A baseline recorded for a changed declaration is reported as `baseline_stale`
+  and replaced by an explicit accept or adopt, instead of blocking the
+  resource until the file is deleted by hand.
 ## Capability matrix by delivery
 
 Rows are capabilities and columns are deliveries. A cell says where the

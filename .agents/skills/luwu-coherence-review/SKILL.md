@@ -41,7 +41,8 @@ Read `AGENTS.md` and the owner of the fact before judging. Then ask:
 - Does a document describe what is true now, or narrate how it became true?
 
 Attack file and class names that carry a delivery label, duplicated helpers
-that exist because each delivery copied its own, fixtures named for the
+that exist because each delivery copied its own (judged by
+`luwu-duplication-review`), fixtures named for the
 delivery that needed them, and documents that restate dated outcomes as if
 they were current. Also attack the opposite failure: a merge that hides a
 real compatibility difference. Behavior that differs by manifest version is a
@@ -69,8 +70,7 @@ the reference compatibility process, not as a side effect of tidying.
 
 ## Good patterns
 
-- Append a test to the module for its capability, and keep version-specific
-  behavior in a version-named class within that module. Evidence: the layout
+- Append a test to the module for its capability. Evidence: the layout
   rule in [maintenance](../../../docs/maintenance.md#test-layout).
 - Record what a delivery added in one small changelog while the current
   contract, mechanism, and status live in their owners. Evidence:

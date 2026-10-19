@@ -30,7 +30,7 @@ from pathlib import Path
 
 RESOURCES = (20, 200)
 SCENARIOS = ("plan", "noop", "onechange", "allchanged")
-M5_BUDGETS = {
+BUDGETS = {
     "plan": 1.0,
     "noop": 2.0,
     "onechange": 3.0,
@@ -845,7 +845,7 @@ def _record_group(
     samples: list[dict[str, object]],
     *,
     repeats: int,
-    m5_eligible: bool,
+    budget_eligible: bool,
 ) -> dict[str, object]:
     if len(samples) != repeats + 1:
         raise RuntimeError("sample group is incomplete")
@@ -853,7 +853,7 @@ def _record_group(
     warm = [float(sample["seconds"]) for sample in samples[1:]]
     median = statistics.median(warm)
     maximum = max(warm)
-    budget = M5_BUDGETS[scenario] if size == 200 else None
+    budget = BUDGETS[scenario] if size == 200 else None
     median_met = median <= budget if budget is not None else None
     maximum_guard_met = maximum <= 2 * budget if budget is not None else None
     return {
@@ -866,15 +866,15 @@ def _record_group(
         "warm_sample_count": len(warm),
         "warm_median_seconds": median,
         "warm_maximum_seconds": maximum,
-        "m5_200_budget_seconds": budget,
-        "m5_median_budget_met": median_met,
-        "m5_warm_maximum_guard_seconds": 2 * budget if budget is not None else None,
-        "m5_warm_maximum_guard_met": maximum_guard_met,
-        "m5_time_budget_met": (median_met and maximum_guard_met)
+        "budget_seconds_at_200": budget,
+        "budget_median_budget_met": median_met,
+        "budget_warm_maximum_guard_seconds": 2 * budget if budget is not None else None,
+        "budget_warm_maximum_guard_met": maximum_guard_met,
+        "budget_time_budget_met": (median_met and maximum_guard_met)
         if budget is not None
         else None,
-        "m5_acceptance_eligible": m5_eligible if budget is not None else None,
-        "m5_comparison_scope": "absolute 200-resource plan/apply time only; no recovery or 100-to-200 scaling claim",
+        "acceptance_eligible": budget_eligible if budget is not None else None,
+        "budget_comparison_scope": "absolute 200-resource plan/apply time only; no recovery or 100-to-200 scaling claim",
     }
 
 
@@ -958,7 +958,7 @@ def main(argv: list[str] | None = None) -> int:
             f"profile production runtime is incomplete; focused run is pending: {error}"
         )
     filesystem = _filesystem_metadata(scratch)
-    m5_eligible = not bool(filesystem["tmpfs_detected"])
+    budget_eligible = not bool(filesystem["tmpfs_detected"])
     results: list[dict[str, object]] = []
     payload: dict[str, object] = {
         "schema_version": 1,
@@ -983,10 +983,10 @@ def main(argv: list[str] | None = None) -> int:
             "platform": sys.platform,
             "platform_release": platform.platform(),
             "filesystem": filesystem,
-            "m5_absolute_budget_environment_eligible": m5_eligible,
-            "m5_eligibility_note": (
+            "budget_absolute_budget_environment_eligible": budget_eligible,
+            "budget_eligibility_note": (
                 "tmpfs is excluded by the performance acceptance rules"
-                if not m5_eligible
+                if not budget_eligible
                 else "filesystem is not detected as tmpfs; locality and durability remain environment facts"
             ),
             "sandbox_mode": os.environ.get("LUWU_SANDBOX_MODE", "unspecified"),
@@ -1024,11 +1024,11 @@ def main(argv: list[str] | None = None) -> int:
                         },
                         "warm_median_seconds": None,
                         "warm_maximum_seconds": None,
-                        "m5_200_budget_seconds": M5_BUDGETS[scenario]
+                        "budget_seconds_at_200": BUDGETS[scenario]
                         if size == 200
                         else None,
-                        "m5_time_budget_met": False if size == 200 else None,
-                        "m5_acceptance_eligible": m5_eligible if size == 200 else None,
+                        "budget_time_budget_met": False if size == 200 else None,
+                        "acceptance_eligible": budget_eligible if size == 200 else None,
                     }
                     results.append(failed_row)
                     payload["failure"] = {
@@ -1051,7 +1051,7 @@ def main(argv: list[str] | None = None) -> int:
                 scenario,
                 samples,
                 repeats=args.repeats,
-                m5_eligible=m5_eligible,
+                budget_eligible=budget_eligible,
             )
             results.append(row)
             if args.output is not None:

@@ -1,12 +1,10 @@
 # Luwu Implementation Status
 
-Status: manifest versions 1 through 8 are implemented and technically
-verified in isolated, synthetic environments. The bounded version 7 Pi/Codex
-pilot is ready for the user's first trial; trial results and feedback are
-pending. Version 8 is not marked complete because no stable Droid
-workspace-trust file schema has been verified. Automatic replay, rollback,
-and strong consistency against unrelated writers remain outside the verified
-scope.
+Status: the single manifest contract (version 8) is implemented and technically
+verified in isolated, synthetic environments. Manifest versions 1 through 7
+were retired and are no longer loadable. Droid workspace trust is not
+supported by decision. Real-application and real-target use is unverified, and
+the daily edit-and-apply loop still has known gaps (below).
 
 This document owns the current implementation snapshot. It does not define
 product direction, public command or manifest behavior, internal mechanisms,
@@ -16,23 +14,40 @@ for those subjects.
 
 ## Current capability matrix
 
-| Capability                       | Manifest versions | Status                                       | Open limits                                                                                               |
-| -------------------------------- | ----------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Template, symbolic, copy         | 1, 2, 8           | Implemented                                  | No formatting equivalence beyond the declared comparison strategies                                       |
-| Multi-resource observation       | 2, 8              | Implemented                                  | A blocked resource is reported; it does not hide the others                                               |
-| Structured comparison            | 2, 7, 8           | Implemented                                  | Strict JSON; bounded TOML in 7; JSONC and nested TOML in 8; YAML is unsupported                           |
-| Ownership and baselines          | 3-8               | Implemented                                  | Undeclared content is not adopted implicitly                                                              |
-| Reverse sync and accept          | 4, 7, 8           | Implemented                                  | Declared fields only; version 8 mutates one resource at a time without joint cross-resource selection     |
-| Whole-file execution and journal | 5, 6              | Implemented                                  | No replay or rollback; recovery is read-only                                                              |
-| Providers and secrets            | 6                 | Implemented                                  | `rbw` only through explicit subprocess authority; no network providers                                    |
-| Batch performance                | 5, 8              | Implemented                                  | Budgets are in [maintenance](maintenance.md#performance-acceptance); rerun them on the target environment |
-| Roots and local inputs           | 7, 8              | Implemented                                  | Public values only; the user trial of version 7 is pending                                                |
-| Profiles and directories         | 8                 | Implemented                                  | No application runtime has loaded the synthetic OpenCode, Codex, or Droid fixtures                        |
-| Droid workspace trust            | none              | Not implemented; no stable file schema known | Blocks an unconditional version 8 completion claim; see [roadmap](roadmap.md)                             |
+| Capability                   | Status                  | Open limits                                                                                       |
+| ---------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------- |
+| Template and copy resources  | Implemented             | Structured templates only (JSON, JSONC, TOML); no text templates and no symlink resources         |
+| Directory resources          | Implemented             | Enumerated into copy leaves; a new leaf needs explicit adoption                                   |
+| Profiles and package closure | Implemented             | Selection is explicit; no platform detection                                                      |
+| Layered public inputs        | Implemented             | Public scalar values only                                                                         |
+| Observation                  | Implemented             | An unsafe live path blocks that resource; the other resources are still observed                  |
+| Ownership and baselines      | Implemented             | Undeclared content is never adopted implicitly                                                    |
+| Accept, adopt, reverse sync  | Implemented             | One resource per command; a changed declaration needs an explicit re-accept                       |
+| Profile-wide apply           | Implemented             | Any blocked, review, or unbased resource stops the whole batch; no per-resource apply             |
+| Batch performance            | Implemented             | Budgets are in [maintenance](maintenance.md#performance-acceptance); rerun them on the target host |
+| Providers and secrets        | Not implemented         | Retired with version 6; planned in the [roadmap](roadmap.md)                                      |
+| Droid workspace trust        | Unsupported by decision | No stable public file schema is known                                                             |
 
 The exact fields, states, error codes, output projections, compatibility
 behavior, and unsupported cases are owned only by [reference](reference.md).
 The rows above are status claims, not a second contract.
+
+## Known daily-loop gaps
+
+These behaviors were found by adversarial review against the synthetic
+fixtures and are open. The [roadmap](roadmap.md) owns the plan to close them.
+
+- A successful apply does not advance the baseline, so a routine edit-and-apply
+  cycle needs a manual accept before the next apply.
+- One resource that needs review stops the whole profile, and there is no
+  way to apply a single resource.
+- A key written by the application outside the declared fields blocks that
+  resource until the declaration or the content is corrected by hand.
+- The sensitive-name check is deliberately conservative: a declared or
+  parsed key such as `env_key` is rejected even when it holds no secret.
+- Adopting a copy records the live bytes as the baseline, so the next apply
+  reports the source as changed and replaces those live bytes. Live edits
+  present at adoption are lost unless the operator saves them first.
 
 ## Verified scope and limits
 
@@ -48,11 +63,12 @@ The implementation does not claim:
 - automatic replay, rollback, or recovery mutation;
 - exact reviewed-plan consent tokens;
 - strong consistency against writers that ignore Luwu's advisory locks;
-- network providers or a broad platform matrix beyond the verified contract;
+- providers, network access, or a broad platform matrix beyond the verified
+  contract;
 - that any application read a synthetic fixture, or that any real target may be
   handed off. The per-target procedure is in
   [maintenance](maintenance.md#isolated-rehearsal-and-dotter-handoff) and the
-  [isolated trial guide](../tests/fixtures/pilot_v7/README.md).
+  [isolated profile fixture guide](../tests/fixtures/dotfiles_profile/README.md).
 
 When code or tests change, refresh this snapshot from current evidence. Do not
 carry a completion statement forward without rerunning or explicitly

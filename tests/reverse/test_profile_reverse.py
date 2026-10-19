@@ -201,6 +201,53 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
             "app-theme-v2",
         )
 
+    def test_reverse_creates_missing_destination_parents_only_when_declared(
+        self,
+    ) -> None:
+        (self.inputs / "local" / "settings.json").unlink()
+        (self.source / "templates" / "settings.json.j2").write_text(
+            '{"settings":{"theme":{{ inputs.theme | tojson }},'
+            '"brand":{{ inputs.brand | tojson }}},'
+            '"unmanaged":{"source":"unmanaged-source-v1"}}\n',
+            encoding="utf-8",
+        )
+        nested = "local/nested/settings.json"
+        original = self.manifest_path.read_text(encoding="utf-8")
+        optional_layers = original.replace("local/settings.json", nested).replace(
+            'format = "json" },', 'format = "json", optional = true },'
+        )
+        for parents, expected in (
+            ("require", "not_attempted"),
+            ("create", "committed"),
+        ):
+            with self.subTest(parents=parents):
+                self.manifest_path.write_text(
+                    optional_layers.replace(
+                        'parents = "create"', f'parents = "{parents}"'
+                    ),
+                    encoding="utf-8",
+                )
+                self._target().unlink(missing_ok=True)
+                (self.inputs / "baselines" / "settings.json").unlink(missing_ok=True)
+                self._target().parent.mkdir(parents=True, exist_ok=True)
+                self._deploy_template()
+                target = self._target()
+                changed = json.loads(target.read_bytes())
+                changed["settings"]["theme"] = "app-theme-v2"
+                target.write_text(json.dumps(changed) + "\n", encoding="utf-8")
+
+                result = reverse_inputs(
+                    self._plan(),
+                    resource="settings",
+                    fields=("theme",),
+                    confirm=True,
+                )
+
+                self.assertEqual(result.outcome, expected)
+                self.assertEqual(
+                    (self.inputs / nested).exists(), expected == "committed"
+                )
+
     def test_reverse_into_a_layer_below_the_winner_is_rejected(self) -> None:
         manifest = self.manifest_path.read_text(encoding="utf-8")
         global_layer = '{ file = "global/settings.json", path = ["values", "theme"], format = "json" },'

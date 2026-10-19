@@ -8,45 +8,40 @@ pretending that every difference should be overwritten. Luwu explores explicit
 resource semantics, semantic drift, field ownership, controlled reverse sync,
 and narrow external providers.
 
-The project is an early developer preview with a bounded public Pi/Codex
-bidirectional pilot. Inspect and plan are read-only; writes require explicit
-confirmation. Start with the isolated examples below and consult the
-[current verified scope](docs/status.md) before selecting a real target.
+The project is an early developer preview. A manifest declares profiles,
+packages, layered public inputs, and resources. `inspect` and `plan` are
+read-only; writes require explicit confirmation. Start with the isolated
+example below and consult the [current verified scope](docs/status.md) before
+selecting a real target.
 
 ## Try the preview
 
-The preview requires Python 3.12+ and uv:
-
-The project fixture lives under `tests/fixtures/quickstart_v1_template`. It is used by the
-isolated CLI E2E check and can be copied to a temporary directory for the
-manual loop, so `apply` does not modify fixture data:
+The preview requires Python 3.12+ and uv. The synthetic profile fixture lives
+under `tests/fixtures/dotfiles_profile`. Copy it to a temporary directory so
+`apply` does not modify fixture data, and point HOME there so nothing outside
+the copy is touched:
 
 ```text
 uv sync
 demo_dir="$(mktemp -d)"
 trap 'rm -rf "$demo_dir"' EXIT
-cp -a tests/fixtures/quickstart_v1_template/. "$demo_dir"/
-uv run luwu plan --manifest "$demo_dir/luwu.toml"
-uv run luwu apply --manifest "$demo_dir/luwu.toml" --yes
-uv run luwu inspect --manifest "$demo_dir/luwu.toml"
+cp -a tests/fixtures/dotfiles_profile/. "$demo_dir"/
+export HOME="$demo_dir/home"
+uv run luwu plan --manifest "$demo_dir/luwu.toml" --profile synthetic
 ```
+
+A fresh profile first needs explicit baselines (`accept` for templates and
+`adopt` for copies) before `apply --yes` writes anything. The
+[isolated profile fixture guide](tests/fixtures/dotfiles_profile/README.md)
+walks through the complete loop, including reverse sync.
 
 Read [the current reference](docs/reference.md) for the manifest, CLI, JSON,
 and safety contract, and [implementation status](docs/status.md) for the
-verified scope. The reference and status documents are the authority for
-current capabilities; this page intentionally stays at user-entry-point
-level.
-
-For the public Pi JSON and Codex TOML bidirectional loop, use the
-[isolated pilot trial guide](tests/fixtures/pilot_v7/README.md) and the
-[per-target Dotter handoff workflow](docs/maintenance.md#isolated-rehearsal-and-dotter-handoff).
-The trial uses a small field allowlist and requires the complete target and
-input flow to be public. It does not qualify a whole dotfiles migration.
-
-For the full dotfiles profile, start with the
-[version 8 reference](docs/reference.md#full-dotfiles-coverage-manifest-version-8),
-check [current implementation status](docs/status.md), and use the
-[isolated profile fixture guide](tests/fixtures/dotfiles_profile/README.md).
+verified scope and known gaps. The reference and status documents are the
+authority for current capabilities; this page intentionally stays at
+user-entry-point level. The [per-target Dotter handoff
+workflow](docs/maintenance.md#isolated-rehearsal-and-dotter-handoff) applies
+before a real target is managed.
 
 Run the deterministic test suite with:
 
