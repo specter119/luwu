@@ -67,6 +67,7 @@ _PLAN_RESOURCE_FIELDS = frozenset(
         "ownership",
         "input_provenance",
         "undeclared_changed",
+        "replaces_live_on_apply",
         "parents",
         "parent_mode",
         "mode",
@@ -521,12 +522,29 @@ def _assert_apply_actions(
     *,
     target_missing: bool,
 ) -> None:
+    actions = payload.get("actions")
+    if not isinstance(actions, list):
+        raise TypeError("schema-8 apply actions are not a list")
+    baseline_rows = [
+        row
+        for row in actions
+        if isinstance(row, dict) and row.get("kind") == "baseline_write"
+    ]
     rows = _index_rows(
-        payload.get("actions"),
+        [row for row in actions if row not in baseline_rows],
         name_field="resource",
         expected_names=expected_names,
         label="Result.to_dict actions",
     )
+    baseline_names = [row.get("resource") for row in baseline_rows]
+    if len(set(baseline_names)) != len(baseline_names) or not set(
+        baseline_names
+    ) <= set(expected_names):
+        raise RuntimeError(
+            "schema-8 baseline_write rows do not match written resources"
+        )
+    if any(row.get("state") != "committed" for row in baseline_rows):
+        raise RuntimeError("schema-8 baseline_write row is not committed")
     resource_by_name = {item.name: item for item in fixture.resources}
     for name, row in rows.items():
         resource = resource_by_name[name]
@@ -583,18 +601,22 @@ def _expected_target_bytes(resource: ResourceFixture, changed: bool) -> bytes:
     return resource.changed_bytes if changed else resource.initial_bytes
 
 
-def _expected_baseline_values(resource: ResourceFixture) -> dict[str, object]:
+def _expected_baseline_values(
+    resource: ResourceFixture, changed: bool
+) -> dict[str, object]:
     if resource.kind == "copy":
         if resource.expected_target_mode is None:
             raise RuntimeError("copy fixture has no independent target mode")
         return {
             "whole_file": {
                 "algorithm": "sha256",
-                "digest": hashlib.sha256(resource.initial_bytes).hexdigest(),
+                "digest": hashlib.sha256(
+                    _expected_target_bytes(resource, changed)
+                ).hexdigest(),
             },
             "mode": resource.expected_target_mode,
         }
-    return resource.initial_fields
+    return resource.changed_fields if changed else resource.initial_fields
 
 
 def _assert_targets_and_baselines(
@@ -656,7 +678,8 @@ def _assert_targets_and_baselines(
             or not isinstance(envelope.get("values"), dict)
             or envelope["identity"].get("resource") != resource.name
             or envelope["identity"].get("profile") != PROFILE
-            or envelope["values"] != _expected_baseline_values(resource)
+            or envelope["values"]
+            != _expected_baseline_values(resource, resource.name in changed_names)
         ):
             raise RuntimeError(f"baseline oracle mismatch for {resource.name}")
 
