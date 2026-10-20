@@ -166,10 +166,11 @@ def _parse_leaf_path(text: str) -> tuple[str, ...]:
 def _run_command(args: argparse.Namespace, manifest: object) -> int:
     """Translate CLI input into the process-local engine API."""
 
-    plan = engine.build_plan(cast(Any, manifest))
     if args.command in {"inspect", "plan"}:
+        plan = engine.build_plan(cast(Any, manifest))
         _emit_metadata(plan, heading=args.command, command=args.command, args=args)
         return 0
+    plan = engine.build_mutation_plan(cast(Any, manifest))
 
     if args.command == "apply":
         result = engine.apply_plan(plan, confirm=args.yes)

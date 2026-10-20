@@ -109,6 +109,11 @@ For example: `git show bb80335:docs/milestones/m3.md`.
 - Capturing a parent chain verifies it with one path walk to the deepest
   directory instead of re-walking from the filesystem root at every level, so
   the opens per observation grow with depth rather than with its square.
+- On Linux 5.6 and later a directory path is resolved with one `openat2` call
+  instead of one open per component, and the portable walk remains the
+  fallback.
+- A command that confirms with `--yes` takes the plan it just built as its
+  entry observation instead of observing the whole profile a second time.
 - M7a is implemented but not closed: its exit is a real trial (see the
   [roadmap](roadmap.md#m7a-daily-loop-usability)).
 

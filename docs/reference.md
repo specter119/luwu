@@ -356,7 +356,13 @@ path identities, and modes. At mutation entry, Luwu verifies the complete
 caller-supplied plan projection against its issued evidence. It then verifies
 the manifest, freshly observes the selected profile, verifies the manifest
 again, and compares the newly derived complete plan projection with that same
-evidence. Both checks must pass before a writer begins. Execution uses values
+evidence. Both checks must pass before a writer begins. A command that
+confirms with `--yes` observes the profile once, as the entry observation: it
+uses the plan it built a moment earlier in the same call, and that plan is
+rebuilt and rechecked as above when it waits longer than a fraction of a second
+or is used a second time. A change that lands between that observation and the
+first write is then caught by the per-action and final whole-batch checks below
+instead of before the first write. Execution uses values
 derived from this fresh authorized state, never mutable derived data from the
 caller-supplied plan. Mutating the original plan's derived objects afterward
 does not change authorized writes and is not a cancellation API. Shared

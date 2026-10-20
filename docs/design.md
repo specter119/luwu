@@ -113,6 +113,17 @@ modules carry the mechanism:
   content is read back with `os.readlink` before the result is reported. Link
   resources keep no baseline because the link target is fully determined by
   the declaration.
+- Directory paths are resolved by `open_directory` and its relative walk. On
+  Linux 5.6 and later they use one `openat2` call with `RESOLVE_NO_SYMLINKS`
+  (and `RESOLVE_BENEATH` below a held descriptor), reached through `ctypes`
+  because Python does not wrap it. This is a read-only path-resolution syscall,
+  not the staged-directory or `renameat2` publication that the write path
+  avoids. The first use probes it; a missing syscall, a seccomp refusal, or
+  another platform keeps the component-by-component `O_NOFOLLOW` walk, which
+  yields the same accept/refuse decisions. A shared per-run root anchor and a
+  native Windows backend were rejected for now: the first would defer root
+  rebinding checks across several observations, and the second has no verified
+  matrix.
 - `luwu/filesystem.py` provides no-follow regular-file observations,
   missing-parent inspection, one-directory-at-a-time parent creation, and
   staged file replacement; content and mode-only changes use that same staged

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import time
 import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -397,7 +398,12 @@ class _PlanRecord:
     manifest: Manifest = field(repr=False)
     resources: tuple[_ResourcePlan, ...] = field(repr=False)
     evidence: _PlanEvidence = field(repr=False)
+    entered_at: float | None = field(default=None, repr=False)
 
+
+# A plan built for a mutation counts as the mutation-entry observation only when
+# the same command uses it at once. A longer gap, or a second use, observes again.
+_ENTRY_WINDOW_SECONDS = 0.25
 
 _PLAN_REGISTRY: weakref.WeakKeyDictionary[Plan, _PlanRecord] = (
     weakref.WeakKeyDictionary()
@@ -428,6 +434,21 @@ class _ReverseGroup:
 def build_plan(manifest: Manifest) -> Plan:
     """Observe every selected resource and return a sealed in-memory plan."""
 
+    return _build_plan(manifest, entering_mutation=False)
+
+
+def build_mutation_plan(manifest: Manifest) -> Plan:
+    """Build the plan a command applies in the same call.
+
+    The first mutation that uses it within a moment takes this observation as
+    its entry observation instead of observing the whole profile again. A plan
+    that waits longer, or is used twice, is observed again like any other.
+    """
+
+    return _build_plan(manifest, entering_mutation=True)
+
+
+def _build_plan(manifest: Manifest, *, entering_mutation: bool) -> Plan:
     try:
         resources = _observe_all(manifest)
         verify_manifest(manifest)
@@ -445,6 +466,7 @@ def build_plan(manifest: Manifest) -> Plan:
         manifest,
         resources,
         evidence,
+        time.monotonic() if entering_mutation else None,
     )
     return plan
 
@@ -3625,6 +3647,10 @@ def _require_plan(plan: Plan, *, operation: str) -> _PlanRecord:
         raise EngineError("plan_invalid", operation=operation) from None
     if not matches:
         raise EngineError("plan_invalid", operation=operation)
+    if record.entered_at is not None:
+        _PLAN_REGISTRY[plan] = replace(record, entered_at=None)
+        if time.monotonic() - record.entered_at <= _ENTRY_WINDOW_SECONDS:
+            return _PlanRecord(record.manifest, record.resources, record.evidence)
     try:
         verify_manifest(record.manifest)
         manifest = record.manifest

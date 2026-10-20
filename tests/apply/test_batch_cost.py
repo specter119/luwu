@@ -84,6 +84,67 @@ class BatchCostTests(ProfileEngineCase):
         # the count, not three times the small run.
         self.assertLessEqual(large, small * 3 + 3)
 
+    def test_a_plan_built_for_the_mutation_is_not_observed_a_second_time(self) -> None:
+        self._configure_directories(2, leaves=1)
+        self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
+        counts = []
+        for build in (engine_module.build_plan, engine_module.build_mutation_plan):
+            plan = build(self._load())
+            with patch(
+                "luwu.engine._observe_all", wraps=engine_module._observe_all
+            ) as seen:
+                result = apply_plan(plan, confirm=True)
+            self.assertEqual(result.outcome, "no_changes")
+            counts.append(seen.call_count)
+
+        shared, single = counts
+        self.assertEqual(shared - single, 1)
+
+    def _pending_dir0_plan(self):
+        """A mutation plan whose only action is in dir0, with dir1 in sync."""
+
+        self._configure_directories(2, leaves=1)
+        self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
+        (self.source / "dir0" / "new.conf").write_text("new", encoding="utf-8")
+        return engine_module.build_mutation_plan(self._load())
+
+    def _drift_unrelated_directory(self) -> None:
+        (self.source / "dir1" / "extra.conf").write_text("new", encoding="utf-8")
+
+    def test_a_mutation_plan_is_observed_again_on_its_second_use(self) -> None:
+        plan = self._pending_dir0_plan()
+        self.assertEqual(
+            apply_plan(plan, confirm=False).outcome, "confirmation_required"
+        )
+        self._drift_unrelated_directory()
+
+        result = apply_plan(plan, confirm=True)
+
+        self.assertEqual(result.outcome, "not_attempted")
+        self.assertEqual(result.error_code, "stale_plan")
+
+    def test_a_mutation_plan_that_waited_too_long_is_observed_again(self) -> None:
+        plan = self._pending_dir0_plan()
+        self._drift_unrelated_directory()
+
+        with patch.object(engine_module, "_ENTRY_WINDOW_SECONDS", -1.0):
+            result = apply_plan(plan, confirm=True)
+
+        self.assertEqual(result.outcome, "not_attempted")
+        self.assertEqual(result.error_code, "stale_plan")
+        self.assertFalse((self.home / ".config" / "dir0" / "new.conf").exists())
+
+    def test_a_change_inside_the_entry_window_is_caught_by_the_final_check(
+        self,
+    ) -> None:
+        plan = self._pending_dir0_plan()
+        self._drift_unrelated_directory()
+
+        result = apply_plan(plan, confirm=True)
+
+        self.assertNotEqual(result.verification_status, "verified")
+        self.assertNotEqual(result.outcome, "committed")
+
     def test_a_directory_changed_after_its_last_action_fails_the_final_check(
         self,
     ) -> None:
