@@ -13,10 +13,12 @@ import errno
 import hashlib
 import os
 import stat
+import sys
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 from luwu.errors import LuwuError
 
@@ -131,12 +133,28 @@ def open_directory(path: Path) -> int:
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError("directory path must be absolute and contain no '..'")
 
+    resolve = _openat2()
+    if resolve is not None:
+        return resolve(_AT_FDCWD, os.fsencode(path), _RESOLVE_NO_SYMLINKS)
     return _descend(os.open(path.anchor, directory_flags()), path.parts[1:])
 
 
 def _descend(descriptor: int, parts: tuple[str, ...]) -> int:
     """Open each component below a descriptor, consuming the descriptor."""
 
+    if any(part in {"", ".", ".."} for part in parts):
+        os.close(descriptor)
+        raise ValueError("directory components must name children")
+    resolve = _openat2()
+    if resolve is not None and parts:
+        try:
+            return resolve(
+                descriptor,
+                os.fsencode("/".join(parts)),
+                _RESOLVE_NO_SYMLINKS | _RESOLVE_BENEATH,
+            )
+        finally:
+            os.close(descriptor)
     try:
         for component in parts:
             child = os.open(component, directory_flags(), dir_fd=descriptor)
@@ -147,6 +165,73 @@ def _descend(descriptor: int, parts: tuple[str, ...]) -> int:
     except BaseException:
         os.close(descriptor)
         raise
+
+
+_AT_FDCWD = -100
+_SYS_OPENAT2 = 437
+_RESOLVE_NO_MAGICLINKS = 0x02
+_RESOLVE_NO_SYMLINKS = 0x04
+_RESOLVE_BENEATH = 0x08
+_UNPROBED: Any = object()
+_openat2_resolver: Any = _UNPROBED
+
+
+def _openat2() -> Callable[[int, bytes, int], int] | None:
+    """Return a one-syscall directory resolver, or ``None`` to walk by component.
+
+    ``openat2`` with ``RESOLVE_NO_SYMLINKS`` refuses a symlink in any position,
+    which is what the component-by-component ``O_NOFOLLOW`` walk establishes, in
+    one kernel call instead of one per component. Only Linux 5.6 and later has
+    it, and a seccomp filter may refuse it, so the first use probes the call and
+    any failure keeps the portable walk.
+    """
+
+    global _openat2_resolver
+    if _openat2_resolver is _UNPROBED:
+        _openat2_resolver = _load_openat2()
+    return _openat2_resolver
+
+
+def _load_openat2() -> Callable[[int, bytes, int], int] | None:
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import ctypes
+
+        syscall = ctypes.CDLL(None, use_errno=True).syscall
+    except (ImportError, OSError, AttributeError):
+        return None
+
+    class OpenHow(ctypes.Structure):
+        _fields_ = (
+            ("flags", ctypes.c_uint64),
+            ("mode", ctypes.c_uint64),
+            ("resolve", ctypes.c_uint64),
+        )
+
+    syscall.restype = ctypes.c_long
+
+    def resolve(dirfd: int, path: bytes, flags: int) -> int:
+        how = OpenHow(directory_flags() | os.O_CLOEXEC, 0, flags)
+        while True:
+            descriptor = syscall(
+                ctypes.c_long(_SYS_OPENAT2),
+                ctypes.c_int(dirfd),
+                ctypes.c_char_p(path),
+                ctypes.byref(how),
+                ctypes.c_size_t(ctypes.sizeof(how)),
+            )
+            if descriptor >= 0:
+                return descriptor
+            code = ctypes.get_errno()
+            if code != errno.EINTR:
+                raise OSError(code, os.strerror(code))
+
+    try:
+        os.close(resolve(_AT_FDCWD, b"/", _RESOLVE_NO_SYMLINKS))
+    except OSError:
+        return None
+    return resolve
 
 
 def open_boundary(boundary: DirectoryBoundary) -> int:
