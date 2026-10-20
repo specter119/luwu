@@ -213,11 +213,9 @@ class ProfilePlanTests(profile_case.ProfileEngineCase):
             resource_sections.append(
                 f"""
 [resources.{name}]
-kind = "template"
 source = "templates/{source_name}"
 target = "{target}"
 format = "{format_name}"
-scope = "fields"
 baseline = "baselines/{name}.json"
 content_sensitivity = "public"
 parents = "create"

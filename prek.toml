@@ -110,3 +110,17 @@ additional_dependencies = [
     "mdformat-gfm==1.0.0",
     "mdformat-front-matters==2.0.0",
 ]
+
+# Not a hook repository: the message check runs the checked-in script, which
+# needs git-cliff on PATH. Enable it once per clone with
+# `prek install --hook-type commit-msg`.
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "commit-message"
+name = "commit message follows cliff.toml"
+language = "system"
+entry = "scripts/check_commits.sh"
+stages = ["commit-msg"]
+always_run = true

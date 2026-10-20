@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
 from typing import TypedDict
 
 from .errors import LuwuError
 from .filesystem import FileObservation, observe_file
-from .formats import MISSING, get_leaf, parse_document
+from .formats import MISSING, Document, get_leaf, parse_document
 from .manifest import Manifest, Resource
+from .semantic import is_public_scalar
 
 
 class InputError(LuwuError):
@@ -74,6 +75,32 @@ class InputContext:
         }
 
 
+# Parsed layer documents, keyed by manifest and by the exact bytes, format and
+# public names. Every binding that names a layer file parses the whole file, so
+# one operation otherwise parses a shared file once per binding and per recheck.
+# The memo is bound to the manifest's lifetime, holds nothing the resolved
+# inputs of a plan do not already hold, and is never keyed on a file path or
+# a timestamp: changed bytes always miss.
+_LAYER_DOCUMENTS: dict[int, dict[tuple[str, frozenset[str], bytes], Document]] = {}
+
+
+def _parse_layer(
+    manifest: Manifest, data: bytes, layer_format: str, public_names: frozenset[str]
+) -> Document:
+    key = id(manifest)
+    memo = _LAYER_DOCUMENTS.get(key)
+    if memo is None:
+        memo = _LAYER_DOCUMENTS[key] = {}
+        weakref.finalize(manifest, _LAYER_DOCUMENTS.pop, key, None)
+    entry = (layer_format, public_names, data)
+    document = memo.get(entry)
+    if document is None:
+        document = memo[entry] = parse_document(
+            data, format=layer_format, public_names=public_names
+        )
+    return document
+
+
 def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
     """Load exactly the overlay bindings referenced by one resource.
 
@@ -89,6 +116,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
     selected_names = tuple(
         sorted(
             {binding.input for binding in fields.values() if binding.input is not None}
+            | set(resource.input_names)
         )
     )
 
@@ -102,7 +130,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
             )
         contributors: list[InputProvenance] = []
         for layer_index, layer in enumerate(binding.layers):
-            path = _absolute_input_path(input_root, layer.file)
+            path = absolute_input_path(input_root, layer.file)
             observation = files.get(path)
             if observation is None:
                 observation = observe_file(input_root, path)
@@ -114,12 +142,25 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
                     "required input layer is missing", code="input_missing"
                 )
             parse_failed = False
+            sensitive_name = False
             value: object = MISSING
             try:
-                document = parse_document(observation.data, format=layer.format)
+                document = _parse_layer(
+                    manifest,
+                    observation.data,
+                    layer.format,
+                    frozenset(binding.public_names),
+                )
                 value = get_leaf(document, layer.path)
-            except (LuwuError, UnicodeError):
+            except (LuwuError, UnicodeError) as error:
                 parse_failed = True
+                sensitive_name = getattr(error, "code", None) == "sensitive_input"
+            if sensitive_name:
+                # Raised outside the handler so no parser context is chained.
+                raise InputError(
+                    "input layer carries a sensitive key name",
+                    code="sensitive_input",
+                )
             if parse_failed:
                 raise InputError("input layer is invalid", code="input_invalid")
             if value is MISSING:
@@ -128,7 +169,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
                 raise InputError(
                     "required input value is missing", code="input_missing"
                 )
-            if not _is_public_scalar(value):
+            if not is_public_scalar(value):
                 raise InputError(
                     "input value is outside the public scalar boundary",
                     code="input_invalid",
@@ -146,7 +187,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
             )
         reverse_to = binding.reverse_to
         if reverse_to is not None:
-            reverse_path = _absolute_input_path(input_root, reverse_to.file)
+            reverse_path = absolute_input_path(input_root, reverse_to.file)
             if reverse_path not in files:
                 files[reverse_path] = observe_file(input_root, reverse_path)
         if not contributors:
@@ -164,7 +205,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
     )
 
 
-def _absolute_input_path(root: Path, path: Path) -> Path:
+def absolute_input_path(root: Path, path: Path) -> Path:
     candidate = path if path.is_absolute() else root / path
     outside_root = False
     try:
@@ -181,9 +222,3 @@ def _input_category(root_relative_file: Path) -> str | None:
 
     first_segment = root_relative_file.parts[0] if root_relative_file.parts else None
     return first_segment if first_segment in {"global", "local"} else None
-
-
-def _is_public_scalar(value: object) -> bool:
-    return (
-        value is None or type(value) in {str, bool, int} or isinstance(value, Decimal)
-    )

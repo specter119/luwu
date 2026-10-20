@@ -2,8 +2,8 @@
 
 Status: M1-M5 are delivered. M6 and M7 are closed as technical deliveries on
 the single version 8 contract; their evidence comes from synthetic fixtures
-only. M7a (daily-loop usability) is the next milestone and gates real use.
-M7b, M8, and M9 are planned.
+only. M7b is closed. M7a (daily-loop usability) is implemented and waits for a
+real trial, which gates real use. M8 and M9 are planned.
 
 This document owns delivery sequence, open exit conditions, and boundaries for
 work that is not finished. It does not define detailed contracts or the current
@@ -22,8 +22,8 @@ to an active milestone's scope should be explicit.
 | M1-M5     | Preview through batch performance       | Delivered; see the [changelog](changelog.md).                                                                     |
 | M6        | First bidirectional pilot               | Closed: the pilot contract was retired and its loop lives in version 8; the user trial moves to M7a.              |
 | M7        | Full dotfiles coverage                  | Closed: technical core delivered; Droid workspace trust is unsupported by decision.                               |
-| M7a       | Daily-loop usability                    | Planned, next: the routine edit, review, and apply loop works on a real profile without manual file surgery.      |
-| M7b       | Text templates and symlink resources    | Planned: non-structured templates and symlink resources exist on the version 8 contract.                          |
+| M7a       | Daily-loop usability                    | Implemented, pending real trial: the routine loop must work on a real profile without manual file surgery.        |
+| M7b       | Text templates and symlink resources    | Closed: whole-file text templates and symlink resources exist on the version 8 contract.                          |
 | M8        | Providers and mixed inputs on version 8 | Planned: public, local, and provider inputs work together without persistent secret intermediates.                |
 | M9        | Real-project migration qualification    | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies. |
 
@@ -70,47 +70,36 @@ fixtures, and adversarial review showed the daily loop breaks outside them.
 M7 is therefore a technical delivery, not a claim that a real profile works.
 M7a owns that gap.
 
-## M7a: Daily-loop usability
+## M7a: Daily-loop usability (implemented, pending real trial)
 
 Make the routine loop (edit the source or the application, review, apply)
 work on a real profile without deleting baselines or editing files by hand.
-Open gaps, from [status](status.md#known-daily-loop-gaps):
+The five gaps found by adversarial review each have an implementation (see
+[status](status.md#daily-loop-changes-awaiting-a-real-trial) and the
+[contract](reference.md#resources-and-declared-scope)): baseline advancement
+after apply, per-resource apply, preserving undeclared keys, an exact-name
+sensitive-name allowance, and an adopt preview that shows replaced live bytes.
 
-1. A successful apply leaves the baseline stale, so the next cycle needs a
-   manual accept. Define explicit, confirmed baseline advancement for the
-   fields an apply just wrote.
-1. One resource needing review stops the whole profile. Define per-resource
-   apply so unrelated resources still deploy, without weakening the rule that
-   conflicts stop for review.
-1. A key written by the application outside the declared fields blocks the
-   resource. Define an explicit, reviewable policy for preserving undeclared
-   keys; undeclared content must still never be adopted implicitly.
-1. The sensitive-name check rejects keys such as `env_key` that hold no
-   secret. Define an explicit, reviewed allowance that keeps the fail-closed
-   default.
-1. Adopting a copy then applying replaces the live bytes. Make that outcome
-   visible in the adopt preview before confirmation.
-
-Exit: a trial on the user's real, public application files in an isolated
-profile, run on the installed artifact, covering a fresh deployment, a
-routine source change, a routine application change with reverse sync, and a
-conflict. Feedback is supplied as redacted metadata (setup friction, latency,
-clarity of ownership and conflict explanations, preservation of application
-changes, recovery, and missing high-value fields). The setup commands are in
-the [isolated profile fixture guide](../tests/fixtures/dotfiles_profile/README.md)
+M7a stays open. It closes only on this exit: a trial on the user's real,
+public application files in an isolated profile, run on the installed
+artifact, covering a fresh deployment, a routine source change, a routine
+application change with reverse sync, and a conflict. Feedback is supplied as
+redacted metadata (setup friction, latency, clarity of ownership and conflict
+explanations, preservation of application changes, recovery, and missing
+high-value fields). Trial findings reopen the affected item. The setup
+commands are in the
+[isolated profile fixture guide](../tests/fixtures/dotfiles_profile/README.md)
 and [maintenance](maintenance.md#isolated-rehearsal-and-dotter-handoff).
 
-## M7b: Text templates and symlink resources
+## M7b: Text templates and symlink resources (closed)
 
-Version 8 has only structured templates and whole-file copies. Real
-dotfiles also contain text templates (for example shell fragments and
-unstructured configuration) and symlinks into the source tree. Add both to the
-version 8 contract with the same boundaries: explicit declaration, no implicit
-adoption, no-follow writes, and a baseline that identifies what was accepted.
-A symlink resource must refuse to follow or replace an undeclared link.
-
-Exit: contract text in [reference](reference.md), tests for each new resource
-kind including hostile-path cases, and a fixture shape for each.
+Whole-file text templates and symlink resources were added to version 8 with
+the same boundaries as other resources: explicit declaration, no implicit
+adoption, no-follow writes, and a baseline that identifies what was accepted
+(a symlink resource needs none, because its content is its declaration). A
+symlink resource refuses to follow or replace an undeclared link. Hardlink and
+reflink deployment are rejected; see the
+[design](design.md#rejected-alternatives).
 
 ## M8: Providers and mixed inputs on version 8
 

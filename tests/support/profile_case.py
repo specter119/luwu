@@ -100,11 +100,9 @@ layers = [
 ]
 
 [resources.settings]
-kind = "template"
 source = "templates/settings.json.j2"
 target = ".config/app/settings.json"
 format = "json"
-scope = "fields"
 baseline = "baselines/settings.json"
 content_sensitivity = "public"
 parents = "create"
@@ -223,11 +221,9 @@ input = "brand"
             + """
 
 [resources.review]
-kind = "template"
 source = "templates/review.json.j2"
 target = ".config/review.json"
 format = "json"
-scope = "fields"
 baseline = "baselines/review.json"
 content_sensitivity = "public"
 parents = "create"
@@ -253,12 +249,10 @@ input = "brand"
         sections = "\n".join(
             f"""
 [resources.{name}]
-kind = "copy"
+deploy = "copy"
 source = "{name}.txt"
 target = "{name}.txt"
 baseline = "baselines/{name}.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"

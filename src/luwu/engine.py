@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import time
 import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -25,10 +26,12 @@ from .filesystem import (
     FileObservation,
     FilesystemError,
     capture_directory_boundary,
+    create_link,
     create_parent,
-    directory_flags,
     missing_parents,
     observe_file,
+    observe_link,
+    open_child_directory,
     open_parent_directory,
     write_file,
 )
@@ -43,12 +46,15 @@ from .formats import (
     patch_document,
     semantic_equal,
     unselected_equal,
+    unselected_scalar_changes,
 )
 from .inputs import (
     InputContext,
+    InputError,
     InputProvenance,
     ResolvedInput,
     _input_category,
+    absolute_input_path,
     load_inputs,
 )
 from .manifest import (
@@ -63,7 +69,7 @@ from .plan_evidence import (
     _matches_plan_evidence,
     _PlanEvidence,
 )
-from .rendering import render_source
+from .rendering import render_source, template_syntax
 
 _SCHEMA_VERSION = 8
 _PATH_TYPE = type(Path())
@@ -103,6 +109,7 @@ _SAFE_ERROR_CODES = frozenset(
         "stale_plan",
         "unsafe_file",
         "unsafe_path",
+        "undeclared_unsafe",
         "unsafe_stage",
         "write_failed",
         "write_unknown",
@@ -125,6 +132,7 @@ class EngineError(MutationError):
         "reverse_delete": "reverse sync cannot delete an input value",
         "reverse_destination": "reverse destination cannot accept the selected value",
         "reverse_consumer_change": "reverse sync would change another declared consumer",
+        "undeclared_unsafe": "undeclared changes cannot be written to the source safely",
         "write_failed": "write was not committed",
         "write_unknown": "write outcome is uncertain",
     }
@@ -160,15 +168,22 @@ class ActionResult:
     path: str
     state: str
     fields: tuple[str, ...] = ()
+    reason: str | None = None
+    replaces_live_on_apply: bool = False
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        action: dict[str, object] = {
             "kind": self.kind,
             "resource": self.resource,
             "path": self.path,
             "state": self.state,
             "fields": list(self.fields),
         }
+        if self.reason is not None:
+            action["reason"] = self.reason
+        if self.replaces_live_on_apply:
+            action["replaces_live_on_apply"] = True
+        return action
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +236,24 @@ class _ResourcePlan:
     baseline_missing_parents: tuple[Path, ...] = field(repr=False)
     input_missing_parents: Mapping[Path, tuple[Path, ...]] = field(repr=False)
     parent_states: Mapping[Path, tuple[int, int] | None] = field(repr=False)
+    link_value: str | None = field(default=None, repr=False)
+
+    @property
+    def undeclared_blocks(self) -> bool:
+        return self.undeclared_changed and self.resource.undeclared == "block"
+
+    @property
+    def replaces_live_on_adopt(self) -> bool:
+        """Whether adopting this copy and applying would replace live bytes."""
+
+        return (
+            self.resource.kind == "copy"
+            and self.action in {"adopt", "review"}
+            and self.desired_data is not None
+            and self.target_observation is not None
+            and self.target_observation.data is not None
+            and self.target_observation.data != self.desired_data
+        )
 
     def to_dict(self, manifest: Manifest) -> dict[str, object]:
         ownership = None
@@ -319,6 +352,7 @@ class _ResourcePlan:
             "ownership": ownership,
             "input_provenance": input_provenance,
             "undeclared_changed": self.undeclared_changed,
+            "replaces_live_on_apply": self.replaces_live_on_adopt,
             "parents": self.resource.parents,
             "parent_mode": _mode_text(self.resource.parent_mode),
             "mode": None
@@ -364,7 +398,12 @@ class _PlanRecord:
     manifest: Manifest = field(repr=False)
     resources: tuple[_ResourcePlan, ...] = field(repr=False)
     evidence: _PlanEvidence = field(repr=False)
+    entered_at: float | None = field(default=None, repr=False)
 
+
+# A plan built for a mutation counts as the mutation-entry observation only when
+# the same command uses it at once. A longer gap, or a second use, observes again.
+_ENTRY_WINDOW_SECONDS = 0.25
 
 _PLAN_REGISTRY: weakref.WeakKeyDictionary[Plan, _PlanRecord] = (
     weakref.WeakKeyDictionary()
@@ -381,11 +420,13 @@ class _WriteSpec:
     expected: FileObservation = field(repr=False)
     mode: int | None
     fields: tuple[str, ...] = ()
+    link: str | None = None
 
 
 @dataclass(slots=True)
 class _ReverseGroup:
     format: str
+    public_names: frozenset[str] = frozenset()
     edits: dict[LeafPath, object] = field(default_factory=dict)
     fields: list[str] = field(default_factory=list)
 
@@ -393,6 +434,21 @@ class _ReverseGroup:
 def build_plan(manifest: Manifest) -> Plan:
     """Observe every selected resource and return a sealed in-memory plan."""
 
+    return _build_plan(manifest, entering_mutation=False)
+
+
+def build_mutation_plan(manifest: Manifest) -> Plan:
+    """Build the plan a command applies in the same call.
+
+    The first mutation that uses it within a moment takes this observation as
+    its entry observation instead of observing the whole profile again. A plan
+    that waits longer, or is used twice, is observed again like any other.
+    """
+
+    return _build_plan(manifest, entering_mutation=True)
+
+
+def _build_plan(manifest: Manifest, *, entering_mutation: bool) -> Plan:
     try:
         resources = _observe_all(manifest)
         verify_manifest(manifest)
@@ -410,6 +466,7 @@ def build_plan(manifest: Manifest) -> Plan:
         manifest,
         resources,
         evidence,
+        time.monotonic() if entering_mutation else None,
     )
     return plan
 
@@ -420,75 +477,73 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
     record = _mutation_record(plan, operation="apply")
     if record is None:
         return Result("apply", "not_attempted", error_code="stale_plan")
+    target_root = record.manifest.roots.target.path
+    skipped = tuple(
+        (item, reason)
+        for item in record.resources
+        if (reason := _skip_reason(item)) is not None
+    )
+    skipped_names = frozenset(item.resource.name for item, _ in skipped)
+    skip_actions = [
+        ActionResult(
+            "resource_skip",
+            item.resource.name,
+            _relative_path(target_root, item.resource.target),
+            "skipped",
+            reason=reason,
+        )
+        for item, reason in skipped
+    ]
     specs = _forward_specs(record.resources, record.manifest)
+    baseline_specs = _baseline_advance_specs(record, specs)
     target_directories = {
         item.resource.target: item.target_missing_parents
         for item in record.resources
         if item.action in {"forward", "create"}
     }
-    review_required = any(
-        item.undeclared_changed
-        or item.status in {"blocked", "conflict", "unbased", "adopt_required"}
-        for item in record.resources
-    )
-    if review_required and (
-        not confirm or any(item.undeclared_changed for item in record.resources)
-    ):
-        return _result_for_specs(
+
+    def preview(outcome: str, error_code: str | None = None) -> Result:
+        return Result(
             "apply",
-            "not_attempted",
-            specs,
-            error_code="review_required",
-            include_directories=target_directories,
-            root=record.manifest.roots.target.path,
+            outcome,
+            tuple(
+                _initial_action_results(
+                    specs,
+                    include_directories=target_directories,
+                    root=target_root,
+                )
+                + _initial_action_results(baseline_specs)
+                + skip_actions
+            ),
+            error_code=error_code,
         )
+
     if _shared_directory_mode_conflict(record.resources):
-        return _result_for_specs(
-            "apply",
-            "not_attempted",
-            specs,
-            error_code="parent_mode_conflict",
-            include_directories=target_directories,
-            root=record.manifest.roots.target.path,
-        )
+        return preview("not_attempted", "parent_mode_conflict")
     target_parents = tuple(
         directory for parents in target_directories.values() for directory in parents
     )
     if _unsafe_shared_parent_mode(record.resources, target_parents):
-        return _result_for_specs(
-            "apply",
-            "not_attempted",
-            specs,
-            error_code="parent_mode_unsafe",
-            include_directories=target_directories,
-            root=record.manifest.roots.target.path,
-        )
-    if not confirm:
-        return _result_for_specs(
-            "apply",
-            "confirmation_required",
-            specs,
-            include_directories={
-                item.resource.target: item.target_missing_parents
-                for item in record.resources
-                if item.action in {"forward", "create"}
-            },
-            root=record.manifest.roots.target.path,
-        )
-    if review_required:
-        raise EngineError("review_required", operation="apply")
-    if not specs:
+        return preview("not_attempted", "parent_mode_unsafe")
+    if any(
+        _resource_by_name(record.resources, spec.resource.name).baseline_missing_parents
+        for spec in baseline_specs
+    ):
+        return preview("not_attempted", "parent_required")
+    if not specs and not baseline_specs:
+        if skipped:
+            return preview("not_attempted", "review_required")
+        if not confirm:
+            return preview("confirmation_required")
         try:
             _assert_fresh(record)
         except EngineError as exc:
             return Result("apply", "not_attempted", error_code=exc.code)
         return Result("apply", "no_changes", verification_status="verified")
+    if not confirm:
+        return preview("confirmation_required")
 
-    actions = _initial_action_results(
-        specs,
-        include_directories=target_directories,
-        root=record.manifest.roots.target.path,
-    )
+    actions = list(preview("not_attempted").actions)
     expected_targets: dict[Path, FileObservation] = {}
     expected_baselines: dict[Path, FileObservation] = {}
     expected_inputs: dict[Path, FileObservation] = {}
@@ -498,7 +553,6 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
     for spec in specs:
         item = _resource_for_path(record.resources, spec.resource.target)
         resource_names = frozenset({item.resource.name})
-        target_root = record.manifest.roots.target.path
         parents = item.target_missing_parents
         if parents and item.resource.parents != "create":
             return _finish_actions(
@@ -521,6 +575,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                     expected_baselines=expected_baselines,
                     expected_inputs=expected_inputs,
                     expected_directories=expected_directories,
+                    skipped=skipped_names,
                 )
                 identity = create_parent(
                     target_root,
@@ -534,6 +589,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                             expected_baselines=expected_baselines,
                             expected_inputs=expected_inputs,
                             expected_directories=expected_directories,
+                            skipped=skipped_names,
                         )
                     ),
                 )
@@ -592,6 +648,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                 expected_baselines=expected_baselines,
                 expected_inputs=expected_inputs,
                 expected_directories=expected_directories,
+                skipped=skipped_names,
             )
             fresh_item = _resource_by_name(fresh_resources, item.resource.name)
             fresh_spec = _forward_specs_for_item(fresh_item, record.manifest)
@@ -607,24 +664,35 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                 "apply", actions, "partial" if committed else "not_attempted", exc.code
             )
 
-        try:
-            identity = write_file(
-                fresh_spec.root,
-                fresh_spec.path,
-                fresh_spec.data,
-                expected=expected,
-                mode=fresh_spec.mode,
-                check_inputs=lambda resource_names=resource_names: (
-                    _recheck_forward_fresh(
-                        record,
-                        resource_names=resource_names,
-                        expected_targets=expected_targets,
-                        expected_baselines=expected_baselines,
-                        expected_inputs=expected_inputs,
-                        expected_directories=expected_directories,
-                    )
-                ),
+        def recheck(resource_names: frozenset[str] = resource_names) -> None:
+            _recheck_forward_fresh(
+                record,
+                resource_names=resource_names,
+                expected_targets=expected_targets,
+                expected_baselines=expected_baselines,
+                expected_inputs=expected_inputs,
+                expected_directories=expected_directories,
+                skipped=skipped_names,
             )
+
+        try:
+            if fresh_spec.link is not None:
+                identity = create_link(
+                    fresh_spec.root,
+                    fresh_spec.path,
+                    fresh_spec.link,
+                    expected=expected,
+                    check_inputs=recheck,
+                )
+            else:
+                identity = write_file(
+                    fresh_spec.root,
+                    fresh_spec.path,
+                    fresh_spec.data,
+                    expected=expected,
+                    mode=fresh_spec.mode,
+                    check_inputs=recheck,
+                )
         except FilesystemError as exc:
             return _write_failure_result(
                 "apply",
@@ -638,9 +706,17 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                 committed_before=committed,
             )
 
-        expected_written = _expected_write_observation(
-            expected, fresh_spec.data, identity, fresh_spec.mode
-        )
+        if fresh_spec.link is not None:
+            expected_written = replace(
+                expected,
+                identity=identity,
+                link_target=fresh_spec.link,
+                missing_chain=(),
+            )
+        else:
+            expected_written = _expected_write_observation(
+                expected, fresh_spec.data, identity, fresh_spec.mode
+            )
         expected_targets[fresh_spec.path] = expected_written
         committed = True
         executed_specs.append(fresh_spec)
@@ -653,7 +729,10 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
             fresh_spec.fields,
         )
         try:
-            written = observe_file(fresh_spec.root, fresh_spec.path)
+            if fresh_spec.link is not None:
+                written = observe_link(fresh_spec.root, fresh_spec.path)
+            else:
+                written = observe_file(fresh_spec.root, fresh_spec.path)
         except FilesystemError as exc:
             return _finish_actions(
                 "apply",
@@ -661,8 +740,12 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                 "committed_but_verification_failed",
                 exc.code,
             )
-        if not _matches_own_write(
-            expected_written, written, identity, fresh_spec.data, fresh_spec.mode
+        if not (
+            _matches_own_link(expected_written, written, identity)
+            if fresh_spec.link is not None
+            else _matches_own_write(
+                expected_written, written, identity, fresh_spec.data, fresh_spec.mode
+            )
         ):
             return _finish_actions(
                 "apply", actions, "committed_state_unknown", "write_unknown"
@@ -685,9 +768,275 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
         return _finish_actions(
             "apply", actions, "committed_but_verification_failed", exc.code
         )
-    return _finish_actions(
-        "apply", actions, "committed", None, verification_status="verified"
+    failure = _advance_baselines(
+        record,
+        fresh,
+        baseline_specs,
+        actions,
+        expected_targets=expected_targets,
+        expected_baselines=expected_baselines,
+        expected_inputs=expected_inputs,
+        expected_directories=expected_directories,
     )
+    if failure is not None:
+        return failure
+    return _finish_actions(
+        "apply",
+        actions,
+        "partial" if skipped else "committed",
+        "review_required" if skipped else None,
+        verification_status="verified",
+    )
+
+
+def _baseline_fields(item: _ResourcePlan) -> tuple[str, ...]:
+    """Fields whose baseline an apply of this template may advance."""
+
+    if item.resource.kind != "template":
+        return ()
+    converged = (
+        set()
+        if item.ownership is None
+        else {
+            field_item.name
+            for field_item in item.ownership.fields
+            if field_item.status == "converged"
+        }
+    )
+    return tuple(
+        sorted(
+            name
+            for name in set(item.forward_fields) | converged
+            if name in item.resource.fields
+            and item.resource.fields[name].owner != "ignore"
+        )
+    )
+
+
+def _advances_baseline(item: _ResourcePlan) -> bool:
+    if item.resource.kind == "copy":
+        return True
+    return item.resource.kind == "template" and bool(_baseline_fields(item))
+
+
+def _needs_baseline_repair(item: _ResourcePlan) -> bool:
+    """Whether a converged resource still records an older accepted value.
+
+    This is what a reverse sync or an interrupted apply leaves behind: live
+    and desired already agree, so no target write is planned, but a later
+    source change would read as a change on both sides.
+    """
+
+    if item.baseline is None or _skip_reason(item) is not None:
+        return False
+    if item.resource.kind == "copy":
+        target = item.target_observation
+        return (
+            item.status == "in_sync"
+            and target is not None
+            and target.data is not None
+            and (
+                item.baseline.whole_file_digest
+                != hashlib.sha256(target.data).hexdigest()
+                or item.baseline.whole_file_mode != target.mode
+            )
+        )
+    if item.resource.kind != "template" or item.status != "converged":
+        return False
+    fields = _baseline_fields(item)
+    return bool(fields) and not _mapping_values_equal(
+        item.baseline.values, item.live_values, fields
+    )
+
+
+def _baseline_advance_specs(
+    record: _PlanRecord, specs: tuple[_WriteSpec, ...]
+) -> tuple[_WriteSpec, ...]:
+    advance: list[_WriteSpec] = []
+    written = {spec.resource.name for spec in specs}
+    for item in record.resources:
+        if item.resource.name not in written and not _needs_baseline_repair(item):
+            continue
+        if not _advances_baseline(item) or item.baseline_observation is None:
+            continue
+        advance.append(
+            _WriteSpec(
+                "baseline_write",
+                item.resource,
+                record.manifest.roots.inputs.path,
+                item.resource.baseline_path(),
+                b"",
+                item.baseline_observation,
+                0o600,
+                _baseline_fields(item),
+            )
+        )
+    return tuple(advance)
+
+
+def _advanced_baseline_data(
+    manifest: Manifest, item: _ResourcePlan, fresh_item: _ResourcePlan
+) -> bytes:
+    target = fresh_item.target_observation
+    if item.resource.kind == "copy":
+        if target is None or target.data is None or target.mode is None:
+            raise EngineError("stale_plan", resource=item.resource.name)
+        return make_copy_baseline(
+            manifest,
+            item.resource,
+            accepted_data=target.data,
+            accepted_mode=target.mode,
+        )
+    fields = _baseline_fields(item)
+    if not _mapping_values_equal(
+        fresh_item.desired_values, fresh_item.live_values, fields
+    ):
+        raise EngineError("stale_plan", resource=item.resource.name)
+    return make_field_baseline(
+        manifest,
+        item.resource,
+        current=fresh_item.live_values,
+        selected_fields=fields,
+        existing=fresh_item.baseline,
+    )
+
+
+def _baseline_advanced(item: _ResourcePlan, fresh_item: _ResourcePlan) -> bool:
+    baseline = fresh_item.baseline
+    target = fresh_item.target_observation
+    if baseline is None or target is None:
+        return False
+    if item.resource.kind == "copy":
+        return (
+            target.data is not None
+            and baseline.whole_file_digest == hashlib.sha256(target.data).hexdigest()
+            and baseline.whole_file_mode == target.mode
+        )
+    return _mapping_values_equal(
+        baseline.values, fresh_item.live_values, _baseline_fields(item)
+    )
+
+
+def _advance_baselines(
+    record: _PlanRecord,
+    fresh: tuple[_ResourcePlan, ...],
+    executed: tuple[_WriteSpec, ...],
+    actions: list[ActionResult],
+    *,
+    expected_targets: dict[Path, FileObservation],
+    expected_baselines: dict[Path, FileObservation],
+    expected_inputs: dict[Path, FileObservation],
+    expected_directories: dict[Path, tuple[tuple[int, int], int]],
+) -> Result | None:
+    """Record what an apply just wrote as accepted, or return the failure.
+
+    The targets are already committed here, so a failure never rolls them back;
+    it reports that the baseline did not advance.
+    """
+
+    root = record.manifest.roots.inputs.path
+    advanced: list[_ResourcePlan] = []
+    for spec in executed:
+        item = _resource_by_name(record.resources, spec.resource.name)
+        if not _advances_baseline(item):
+            continue
+        name = item.resource.name
+        names = frozenset({name})
+        path = item.resource.baseline_path()
+        fields = _baseline_fields(item)
+
+        def recheck(names: frozenset[str] = names) -> None:
+            _recheck_fresh(
+                record,
+                resource_names=names,
+                expected_targets=expected_targets,
+                expected_baselines=expected_baselines,
+                expected_inputs=expected_inputs,
+                expected_directories=expected_directories,
+            )
+
+        try:
+            data = _advanced_baseline_data(
+                record.manifest, item, _resource_by_name(fresh, name)
+            )
+            _assert_fresh(
+                record,
+                resource_names=names,
+                expected_targets=expected_targets,
+                expected_baselines=expected_baselines,
+                expected_inputs=expected_inputs,
+                expected_directories=expected_directories,
+            )
+            expected = expected_baselines.get(path, item.baseline_observation)
+            if expected is None:
+                raise EngineError("stale_plan", resource=name)
+            identity = write_baseline(
+                record.manifest,
+                item.resource,
+                data=data,
+                expected=expected,
+                check_inputs=recheck,
+            )
+        except FilesystemError as exc:
+            state = _filesystem_failure_state(exc)
+            _mark_action(
+                actions, "baseline_write", name, _relative_path(root, path), state
+            )
+            outcome = (
+                "committed_state_unknown"
+                if state in {"committed", "uncertain"}
+                else "committed_but_baseline_not_advanced"
+            )
+            return _finish_actions("apply", actions, outcome, exc.code)
+        except LuwuError as exc:
+            return _finish_actions(
+                "apply", actions, "committed_but_baseline_not_advanced", exc.code
+            )
+        expected_written = _expected_write_observation(expected, data, identity, 0o600)
+        expected_baselines[path] = expected_written
+        _mark_action(
+            actions,
+            "baseline_write",
+            name,
+            _relative_path(root, path),
+            "committed",
+            fields,
+        )
+        try:
+            observed = observe_file(root, path)
+        except FilesystemError as exc:
+            return _finish_actions(
+                "apply", actions, "committed_but_verification_failed", exc.code
+            )
+        if not _matches_own_write(expected_written, observed, identity, data, 0o600):
+            return _finish_actions(
+                "apply", actions, "committed_state_unknown", "write_unknown"
+            )
+        expected_baselines[path] = observed
+        advanced.append(item)
+
+    if not advanced:
+        return None
+    try:
+        after = _assert_fresh(
+            record,
+            expected_targets=expected_targets,
+            expected_baselines=expected_baselines,
+            expected_inputs=expected_inputs,
+            expected_directories=expected_directories,
+        )
+    except EngineError as exc:
+        return _finish_actions(
+            "apply", actions, "committed_but_verification_failed", exc.code
+        )
+    if not all(
+        _baseline_advanced(item, _resource_by_name(after, item.resource.name))
+        for item in advanced
+    ):
+        return _finish_actions(
+            "apply", actions, "committed_but_verification_failed", "stale_plan"
+        )
+    return None
 
 
 def accept_baseline(
@@ -719,7 +1068,7 @@ def accept_baseline(
         raise EngineError(
             "review_required", operation="accept", resource=resource, fields=fields
         )
-    if item.undeclared_changed:
+    if item.undeclared_blocks:
         raise EngineError(
             "review_required", operation="accept", resource=resource, fields=fields
         )
@@ -927,21 +1276,110 @@ def adopt_resource(plan: Plan, *, resource: str, confirm: bool) -> Result:
     record = _mutation_record(plan, operation="adopt")
     if record is None:
         return Result("adopt", "not_attempted", error_code="stale_plan")
+    return _adopt_item(
+        record,
+        resource,
+        confirm,
+        expected_baselines={},
+        expected_directories={},
+        committed_before=False,
+    )
+
+
+def adopt_resources(plan: Plan, *, resources: tuple[str, ...], confirm: bool) -> Result:
+    """Adopt several copy resources from one plan in the order given.
+
+    The batch observes the profile once. Each resource is then rechecked and
+    written like a single adopt; the first failure stops the batch and earlier
+    baselines stay committed (outcome ``partial``).
+    """
+
+    if len(resources) == 1:
+        return adopt_resource(plan, resource=resources[0], confirm=confirm)
+    record = _mutation_record(plan, operation="adopt")
+    if record is None:
+        return Result("adopt", "not_attempted", error_code="stale_plan")
+    if not resources or len(set(resources)) != len(resources):
+        raise EngineError("operation_invalid", operation="adopt")
+    for name in resources:
+        item = _resource_by_name(record.resources, name)
+        if item.resource.kind != "copy" or item.status == "blocked":
+            raise EngineError("operation_invalid", operation="adopt", resource=name)
+    expected_baselines: dict[Path, FileObservation] = {}
+    expected_directories: dict[Path, tuple[tuple[int, int], int]] = {}
+    actions: list[ActionResult] = []
+    directories: set[str] = set()
+    committed = False
+    for name in resources:
+        result = _adopt_item(
+            record,
+            name,
+            confirm,
+            expected_baselines=expected_baselines,
+            expected_directories=expected_directories,
+            committed_before=committed,
+        )
+        for action in result.actions:
+            # A shared parent is created, and reported, once for the batch.
+            if action.kind == "mkdir":
+                if action.path in directories:
+                    continue
+                directories.add(action.path)
+            actions.append(action)
+        if not confirm:
+            continue
+        if result.outcome != "committed":
+            outcome = result.outcome
+            if outcome == "not_attempted" and committed:
+                outcome = "partial"
+            return Result(
+                "adopt",
+                outcome,
+                tuple(actions),
+                error_code=result.error_code,
+                verification_status=result.verification_status,
+            )
+        committed = True
+    if not confirm:
+        return Result("adopt", "confirmation_required", tuple(actions))
+    return Result("adopt", "committed", tuple(actions), verification_status="verified")
+
+
+def _adopt_item(
+    record: _PlanRecord,
+    resource: str,
+    confirm: bool,
+    *,
+    expected_baselines: dict[Path, FileObservation],
+    expected_directories: dict[Path, tuple[tuple[int, int], int]],
+    committed_before: bool,
+) -> Result:
     item = _resource_by_name(record.resources, resource)
     if item.resource.kind != "copy" or item.status == "blocked":
         raise EngineError("operation_invalid", operation="adopt", resource=resource)
     if not confirm:
         spec = _baseline_preview_spec(record.manifest, item, ())
-        return _result_for_specs(
+        preview = _result_for_specs(
             "adopt",
             "confirmation_required",
             (spec,),
-            include_directories={item.resource.baseline: item.baseline_missing_parents},
+            include_directories={
+                item.resource.baseline_path(): item.baseline_missing_parents
+            },
             root=record.manifest.roots.inputs.path,
         )
-    source_data = (
-        None if item.source_observation is None else item.source_observation.data
-    )
+        if not item.replaces_live_on_adopt:
+            return preview
+        return replace(
+            preview,
+            actions=tuple(
+                replace(action, replaces_live_on_apply=True)
+                if action.kind == "baseline_write"
+                else action
+                for action in preview.actions
+            ),
+        )
+    source_data = item.desired_data
     live_data = (
         None if item.target_observation is None else item.target_observation.data
     )
@@ -988,9 +1426,7 @@ def adopt_resource(plan: Plan, *, resource: str, confirm: bool) -> Result:
         )
     if _unsafe_shared_parent_mode(record.resources, parent_paths):
         return _finish_actions("adopt", actions, "not_attempted", "parent_mode_unsafe")
-    expected_baselines: dict[Path, FileObservation] = {}
-    expected_directories: dict[Path, tuple[tuple[int, int], int]] = {}
-    committed = False
+    committed = committed_before
     resource_names = frozenset({resource})
     for parent in parent_paths:
         if parent in expected_directories:
@@ -1147,7 +1583,7 @@ def reverse_inputs(
             resource=resource,
             fields=fields,
         )
-    if item.undeclared_changed:
+    if item.undeclared_blocks:
         raise EngineError(
             "review_required",
             operation="reverse-sync",
@@ -1438,6 +1874,240 @@ def reverse_inputs(
     )
 
 
+def reverse_undeclared(
+    plan: Plan, *, resource: str, paths: tuple[LeafPath, ...], confirm: bool
+) -> Result:
+    """Write named live changes outside the declared fields into a literal template.
+
+    This is the only operation that writes the source tree. The caller names
+    each leaf path, so the write is declared at invocation, and nothing else
+    is touched. It proceeds only when the rewritten template is proven, by
+    rendering it in memory, to reproduce the live value at each named path
+    while leaving every declared field and every other undeclared value as it
+    was. The plan cannot tell whether the source or the application changed an
+    undeclared value, so naming the path is the operator's claim that the live
+    side is the one to keep.
+    """
+
+    record = _mutation_record(plan, operation="reverse-sync")
+    if record is None:
+        return Result("reverse-sync", "not_attempted", error_code="stale_plan")
+    item = _resource_by_name(record.resources, resource)
+    update = _undeclared_source_update(record, item, paths)
+    names = frozenset({resource})
+    data = None if update is None else update[0]
+    remaining = {} if update is None else update[1]
+    if data is None:
+        try:
+            _assert_fresh(record, resource_names=names)
+        except EngineError as exc:
+            return Result("reverse-sync", "not_attempted", error_code=exc.code)
+        return Result("reverse-sync", "no_changes", verification_status="verified")
+    observation = item.source_observation
+    if observation is None:
+        raise EngineError(
+            "review_required", operation="reverse-sync", resource=resource
+        )
+    root = record.manifest.roots.source.path
+    path = item.resource.source
+    spec = _WriteSpec(
+        "source_write", item.resource, root, path, data, observation, None, ()
+    )
+    actions = _initial_action_results((spec,))
+    if not confirm:
+        return Result("reverse-sync", "confirmation_required", tuple(actions))
+    try:
+        _assert_fresh(record, resource_names=names)
+        identity = write_file(
+            root,
+            path,
+            data,
+            expected=observation,
+            mode=None,
+            check_inputs=lambda: _recheck_fresh(record, resource_names=names),
+        )
+    except EngineError as exc:
+        return _finish_actions("reverse-sync", actions, "not_attempted", exc.code)
+    except FilesystemError as exc:
+        return _write_failure_result(
+            "reverse-sync",
+            actions,
+            kind="source_write",
+            resource=item.resource,
+            root=root,
+            path=path,
+            fields=(),
+            error=exc,
+            committed_before=False,
+        )
+    expected_written = _expected_write_observation(observation, data, identity, None)
+    _mark_action(
+        actions, "source_write", resource, _relative_path(root, path), "committed"
+    )
+    try:
+        written = observe_file(root, path)
+    except FilesystemError as exc:
+        return _finish_actions(
+            "reverse-sync", actions, "committed_but_verification_failed", exc.code
+        )
+    if not _matches_own_write(expected_written, written, identity, data, None):
+        return _finish_actions(
+            "reverse-sync", actions, "committed_state_unknown", "write_unknown"
+        )
+    try:
+        fresh = _resource_by_name(
+            _assert_fresh(record, expected_sources={path: written}), resource
+        )
+    except EngineError as exc:
+        return _finish_actions(
+            "reverse-sync", actions, "committed_but_verification_failed", exc.code
+        )
+    after = (
+        None
+        if fresh.desired_document is None or fresh.target_document is None
+        else unselected_scalar_changes(
+            fresh.desired_document,
+            fresh.target_document,
+            tuple(binding.path for binding in item.resource.fields.values()),
+        )
+    )
+    if (
+        fresh.status == "blocked"
+        or not _same_changes(after, remaining)
+        or not _mapping_values_equal(
+            fresh.desired_values, item.desired_values, tuple(item.resource.fields)
+        )
+    ):
+        return _finish_actions(
+            "reverse-sync", actions, "committed_but_verification_failed", "stale_plan"
+        )
+    return _finish_actions(
+        "reverse-sync", actions, "committed", None, verification_status="verified"
+    )
+
+
+def _same_changes(
+    left: Mapping[LeafPath, object] | None, right: Mapping[LeafPath, object]
+) -> bool:
+    return (
+        left is not None
+        and left.keys() == right.keys()
+        and all(semantic_equal(left[path], right[path]) for path in right)
+    )
+
+
+def _undeclared_source_update(
+    record: _PlanRecord, item: _ResourcePlan, paths: tuple[LeafPath, ...]
+) -> tuple[bytes, dict[LeafPath, object]] | None:
+    """Return the rewritten template bytes and the changes left, or None.
+
+    None means no undeclared content differs. Every named path must be one of
+    the differing leaves; otherwise the request is refused.
+    """
+
+    resource = item.resource
+    name = resource.name
+
+    def refuse(code: str = "undeclared_unsafe") -> EngineError:
+        return EngineError(code, operation="reverse-sync", resource=name)
+
+    if resource.kind != "template":
+        raise refuse("operation_invalid")
+    if (
+        item.status in {"blocked", "conflict", "unbased", "adopt_required"}
+        or item.desired_document is None
+        or item.target_document is None
+        or item.inputs is None
+        or item.source_observation is None
+        or item.source_observation.data is None
+    ):
+        raise refuse("review_required")
+    if not item.undeclared_changed:
+        return None
+    selected = tuple(binding.path for binding in resource.fields.values())
+    changes = unselected_scalar_changes(
+        item.desired_document, item.target_document, selected
+    )
+    if not changes or not paths or any(path not in changes for path in paths):
+        raise refuse()
+    wanted = {path: changes[path] for path in dict.fromkeys(paths)}
+    remaining = {path: value for path, value in changes.items() if path not in wanted}
+    public = resource.public_names
+    fmt = resource.format or ""
+    try:
+        source_text = item.source_observation.data.decode("utf-8")
+        template = parse_document(
+            item.source_observation.data, format=fmt, public_names=public
+        )
+    except (UnicodeDecodeError, LuwuError):
+        raise refuse() from None
+    if "{%" in source_text or "{#" in source_text:
+        raise refuse()
+    for path, value in wanted.items():
+        if any(_has_template_markup(segment) for segment in path):
+            raise refuse()
+        if isinstance(value, str) and (
+            "\n" in value or "\r" in value or _has_template_markup(value)
+        ):
+            raise refuse()
+        if not _literal_in_both(template, item.desired_document, path):
+            raise refuse()
+    try:
+        patched = patch_document(template, dict(wanted))
+        if template_syntax(source_text) != template_syntax(patched.decode("utf-8")):
+            raise refuse()
+        rendered = render_source(
+            patched.decode("utf-8"),
+            dict(item.inputs.template_variables()),
+            resource_name=name,
+        ).encode("utf-8")
+        reparsed = parse_document(rendered, format=fmt, public_names=public)
+    except (UnicodeDecodeError, LuwuError):
+        raise refuse() from None
+    if not _same_changes(
+        unselected_scalar_changes(reparsed, item.target_document, selected), remaining
+    ):
+        raise refuse()
+    if not _mapping_values_equal(
+        _project(reparsed, resource.fields), item.desired_values, tuple(resource.fields)
+    ):
+        raise refuse()
+    return patched, remaining
+
+
+def _has_template_markup(text: str) -> bool:
+    return "{{" in text or "{%" in text or "{#" in text
+
+
+def _literal_in_both(template: Document, rendered: Document, path: LeafPath) -> bool:
+    """Whether a path and its ancestors read the same in the source and its render."""
+
+    for depth in range(1, len(path)):
+        prefix = path[:depth]
+        source_value = _tree_value(template.value, prefix)
+        rendered_value = _tree_value(rendered.value, prefix)
+        if source_value is MISSING and rendered_value is MISSING:
+            continue
+        if not (isinstance(source_value, dict) and isinstance(rendered_value, dict)):
+            return False
+    source_leaf = _tree_value(template.value, path)
+    rendered_leaf = _tree_value(rendered.value, path)
+    if isinstance(source_leaf, (dict, list)) or isinstance(rendered_leaf, (dict, list)):
+        return False
+    if isinstance(source_leaf, str) and _has_template_markup(source_leaf):
+        return False
+    return semantic_equal(source_leaf, rendered_leaf)
+
+
+def _tree_value(root: object, path: LeafPath) -> object:
+    current = root
+    for segment in path:
+        if not isinstance(current, dict) or segment not in current:
+            return MISSING
+        current = current[segment]
+    return current
+
+
 def _observe_all(manifest: Manifest) -> tuple[_ResourcePlan, ...]:
     return tuple(
         _observe_resource(manifest, resource) for resource in manifest.resources
@@ -1472,6 +2142,8 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
         parent_states=MappingProxyType({}),
     )
     try:
+        if resource.kind == "symlink":
+            return _observe_link_resource(manifest, resource)
         roots = manifest.roots
         source = observe_file(roots.source.path, resource.source)
         if source.data is None:
@@ -1482,31 +2154,37 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
         )
         baseline_replaced = baseline is None and baseline_observation.data is not None
         inputs = (
-            load_inputs(manifest, resource) if resource.kind == "template" else None
+            load_inputs(manifest, resource)
+            if resource.kind == "template" or resource.templated
+            else None
         )
-        if resource.kind == "copy":
-            desired_data = source.data
-            desired_document = None
-            desired_values: Mapping[str, object] = MappingProxyType({})
-        elif resource.kind == "template":
-            assert inputs is not None and resource.format is not None
+        desired_document: Document | None = None
+        desired_values: Mapping[str, object] = MappingProxyType({})
+        if resource.templated:
+            assert inputs is not None
             try:
                 template_text = source.data.decode("utf-8")
             except UnicodeDecodeError:
                 raise EngineError("review_required") from None
-            variables = inputs.template_variables()
-            rendered = render_source(
+            desired_data = render_source(
                 template_text,
-                dict(variables),
+                dict(inputs.template_variables()),
                 resource_name=resource.name,
+            ).encode("utf-8")
+        elif resource.kind == "copy":
+            desired_data = source.data
+        else:
+            raise EngineError("operation_invalid")
+        if resource.kind == "template":
+            assert resource.format is not None
+            desired_document = parse_document(
+                desired_data,
+                format=resource.format,
+                public_names=resource.public_names,
             )
-            desired_data = rendered.encode("utf-8")
-            desired_document = parse_document(desired_data, format=resource.format)
             desired_values = MappingProxyType(
                 _project(desired_document, resource.fields)
             )
-        else:
-            raise EngineError("operation_invalid")
 
         target_document: Document | None = None
         live_values: Mapping[str, object] = MappingProxyType({})
@@ -1518,7 +2196,9 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
         if target.data is None:
             complete = _baseline_complete(resource, baseline)
             if resource.kind == "copy":
-                if baseline is None or baseline.whole_file_digest is None:
+                if (baseline is not None and baseline.whole_file_digest is None) or (
+                    baseline is None and baseline_replaced
+                ):
                     status, action, reason = (
                         "adopt_required",
                         "adopt",
@@ -1548,7 +2228,7 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
                 forward_fields = tuple(sorted(resource.fields))
         elif resource.kind == "copy":
             baseline_digest = None if baseline is None else baseline.whole_file_digest
-            source_digest = source.digest
+            source_digest = hashlib.sha256(desired_data).hexdigest()
             live_digest = target.digest
             baseline_mode = None if baseline is None else baseline.whole_file_mode
             live_mode_changed = (
@@ -1612,7 +2292,11 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
                 )
         else:
             assert desired_document is not None
-            target_document = parse_document(target.data, format=resource.format or "")
+            target_document = parse_document(
+                target.data,
+                format=resource.format or "",
+                public_names=resource.public_names,
+            )
             live_values = MappingProxyType(_project(target_document, resource.fields))
             synthetic_baseline = _ownership_baseline(resource, baseline)
             ownership = classify_fields(
@@ -1721,11 +2405,13 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
 
         parent_states: dict[Path, tuple[int, int] | None] = {}
         target_missing = missing_parents(roots.target.path, resource.target)
-        baseline_missing = missing_parents(roots.inputs.path, resource.baseline)
+        baseline_missing = missing_parents(roots.inputs.path, resource.baseline_path())
         input_missing: dict[Path, tuple[Path, ...]] = {}
         _extend_parent_states(parent_states, roots.target.path, resource.target)
         _extend_parent_states(parent_states, roots.source.path, resource.source)
-        _extend_parent_states(parent_states, roots.inputs.path, resource.baseline)
+        _extend_parent_states(
+            parent_states, roots.inputs.path, resource.baseline_path()
+        )
         if inputs is not None:
             for path in inputs.files:
                 _extend_parent_states(parent_states, roots.inputs.path, path)
@@ -1745,7 +2431,7 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
                 "accepting it again replaces the old baseline"
             )
             error_code = "baseline_stale"
-        if undeclared_changed:
+        if undeclared_changed and resource.undeclared == "block":
             status, action, reason = (
                 "review",
                 "blocked",
@@ -1788,6 +2474,66 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
         return _replace_blocked(empty, code="resource_blocked")
 
 
+def _observe_link_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
+    roots = manifest.roots
+    source = observe_file(roots.source.path, resource.source)
+    if source.data is None:
+        raise EngineError("review_required")
+    link_value = str(resource.source)
+    target = observe_link(roots.target.path, resource.target)
+    target_missing = missing_parents(roots.target.path, resource.target)
+    parent_states: dict[Path, tuple[int, int] | None] = {}
+    _extend_parent_states(parent_states, roots.target.path, resource.target)
+    _extend_parent_states(parent_states, roots.source.path, resource.source)
+    forward_fields: tuple[str, ...] = ()
+    if target.link_target == link_value:
+        status, action, reason = "in_sync", "noop", "link points at the source"
+    elif target.identity is not None:
+        status, action, reason = (
+            "blocked",
+            "blocked",
+            "target is a symlink to a different path"
+            if target.link_target is not None
+            else "target exists and is not a symlink",
+        )
+    elif target_missing and resource.parents == "require":
+        status, action, reason = "blocked", "blocked", "target parents are missing"
+    else:
+        status, action, reason = (
+            "missing",
+            "create",
+            "target is absent and requires explicit apply",
+        )
+        forward_fields = ("link",)
+    return _ResourcePlan(
+        resource=resource,
+        status=status,
+        action=action,
+        reason=reason,
+        error_code=None,
+        desired_data=None,
+        desired_document=None,
+        desired_values=MappingProxyType({}),
+        source_observation=source,
+        target_observation=target,
+        target_document=None,
+        live_values=MappingProxyType({}),
+        baseline_observation=None,
+        baseline=None,
+        inputs=None,
+        ownership=None,
+        undeclared_changed=False,
+        forward_fields=forward_fields,
+        reverse_fields=(),
+        write_data=None,
+        target_missing_parents=target_missing,
+        baseline_missing_parents=(),
+        input_missing_parents=MappingProxyType({}),
+        parent_states=MappingProxyType(parent_states),
+        link_value=link_value,
+    )
+
+
 def _replace_blocked(item: _ResourcePlan, *, code: str) -> _ResourcePlan:
     return _ResourcePlan(
         resource=item.resource,
@@ -1814,6 +2560,7 @@ def _replace_blocked(item: _ResourcePlan, *, code: str) -> _ResourcePlan:
         baseline_missing_parents=item.baseline_missing_parents,
         input_missing_parents=item.input_missing_parents,
         parent_states=item.parent_states,
+        link_value=item.link_value,
     )
 
 
@@ -1910,6 +2657,7 @@ def _prepare_reverse_groups(
             )
         group.edits[destination.path] = value
         group.fields.append(name)
+        group.public_names |= input_binding.public_names
 
     prepared: dict[Path, tuple[bytes, FileObservation, tuple[str, ...]]] = {}
     for path, group in groups.items():
@@ -1921,9 +2669,13 @@ def _prepare_reverse_groups(
         format_name = group.format
         if expected.data is None:
             empty = b"" if format_name == "toml" else b"{}"
-            document = parse_document(empty, format=format_name)
+            document = parse_document(
+                empty, format=format_name, public_names=group.public_names
+            )
         else:
-            document = parse_document(expected.data, format=format_name)
+            document = parse_document(
+                expected.data, format=format_name, public_names=group.public_names
+            )
         data = patch_document(document, group.edits)
         prepared[path] = (data, expected, tuple(sorted(group.fields)))
     return prepared
@@ -1938,6 +2690,15 @@ def _preflight_reverse_consumers(
     for consumer in record.resources:
         if consumer.inputs is None:
             continue
+        if consumer.resource.kind == "copy" and any(
+            _input_binding_uses_locations(record.manifest, name, updates)
+            for name in consumer.resource.input_names
+        ):
+            raise EngineError(
+                "reverse_consumer_change",
+                operation="reverse-sync",
+                resource=consumer.resource.name,
+            )
         affected = tuple(
             sorted(
                 name
@@ -1950,7 +2711,7 @@ def _preflight_reverse_consumers(
         )
         if not affected:
             continue
-        if consumer.undeclared_changed or consumer.desired_document is None:
+        if consumer.undeclared_blocks or consumer.desired_document is None:
             raise EngineError(
                 "review_required",
                 operation="reverse-sync",
@@ -1975,7 +2736,9 @@ def _preflight_reverse_consumers(
                 resource_name=consumer.resource.name,
             )
             simulated_document = parse_document(
-                rendered.encode("utf-8"), format=consumer.resource.format
+                rendered.encode("utf-8"),
+                format=consumer.resource.format,
+                public_names=consumer.resource.public_names,
             )
             simulated_values = _project(simulated_document, consumer.resource.fields)
         except (LuwuError, UnicodeError, ValueError, TypeError):
@@ -2105,21 +2868,27 @@ def _reverse_consumer_resource_names(
         item.resource.name
         for item in record.resources
         if item.inputs is not None
-        and any(
-            binding.input is not None
-            and _input_binding_uses_locations(record.manifest, binding.input, updates)
-            for binding in item.resource.fields.values()
+        and (
+            any(
+                binding.input is not None
+                and _input_binding_uses_locations(
+                    record.manifest, binding.input, updates
+                )
+                for binding in item.resource.fields.values()
+            )
+            or any(
+                _input_binding_uses_locations(record.manifest, name, updates)
+                for name in item.resource.input_names
+            )
         )
     )
 
 
 def _absolute_input_path(root: Path, path: Path) -> Path:
-    candidate = path if path.is_absolute() else root / path
     try:
-        candidate.relative_to(root)
-    except ValueError:
+        return absolute_input_path(root, path)
+    except InputError:
         raise EngineError("reverse_destination") from None
-    return candidate
 
 
 def _with_input_location_updates(
@@ -2144,7 +2913,11 @@ def _with_input_location_updates(
                     raise EngineError("reverse_destination")
             else:
                 try:
-                    document = parse_document(observation.data, format=layer.format)
+                    document = parse_document(
+                        observation.data,
+                        format=layer.format,
+                        public_names=binding.public_names,
+                    )
                     value = get_leaf(document, layer.path)
                 except LuwuError:
                     raise EngineError("reverse_destination") from None
@@ -2214,7 +2987,7 @@ def _verify_reverse_results(
         )
         if not affected:
             continue
-        if candidate.status == "blocked" or candidate.undeclared_changed:
+        if candidate.status == "blocked" or candidate.undeclared_blocks:
             return False
         for name in affected:
             binding = candidate.resource.fields[name]
@@ -2246,11 +3019,13 @@ def _verify_forward_results(
         current = _resource_by_name(fresh, item.resource.name)
         if current.status == "blocked" or current.target_observation is None:
             return False
-        if item.resource.kind == "copy":
-            source_observation = current.source_observation
+        if item.resource.kind == "symlink":
+            if current.status != "in_sync":
+                return False
+        elif item.resource.kind == "copy":
             if (
-                source_observation is None
-                or current.target_observation.data != source_observation.data
+                current.desired_data is None
+                or current.target_observation.data != current.desired_data
             ):
                 return False
         elif any(
@@ -2261,6 +3036,16 @@ def _verify_forward_results(
     return True
 
 
+def _skip_reason(item: _ResourcePlan) -> str | None:
+    """Return why a resource needs review before apply, or None when it may run."""
+
+    if item.undeclared_blocks:
+        return "undeclared_changed"
+    if item.status in {"blocked", "conflict", "unbased", "adopt_required"}:
+        return item.status
+    return None
+
+
 def _assert_fresh(
     record: _PlanRecord,
     *,
@@ -2269,7 +3054,9 @@ def _assert_fresh(
     expected_baselines: Mapping[Path, FileObservation] | None = None,
     expected_inputs: Mapping[Path, FileObservation] | None = None,
     expected_directories: Mapping[Path, tuple[tuple[int, int], int]] | None = None,
+    expected_sources: Mapping[Path, FileObservation] | None = None,
 ) -> tuple[_ResourcePlan, ...]:
+    expected_sources = {} if expected_sources is None else expected_sources
     expected_targets = {} if expected_targets is None else expected_targets
     expected_baselines = {} if expected_baselines is None else expected_baselines
     expected_inputs = {} if expected_inputs is None else expected_inputs
@@ -2289,7 +3076,7 @@ def _assert_fresh(
                 _observe_resource(record.manifest, resource)
                 for resource in selected_resources
             )
-        verify_manifest(record.manifest)
+        verify_manifest(record.manifest, resources=resource_names)
     except EngineError:
         raise
     except LuwuError:
@@ -2300,7 +3087,10 @@ def _assert_fresh(
         raise EngineError("stale_plan")
     for current in fresh:
         old = _resource_by_name(record.resources, current.resource.name)
-        if old.source_observation != current.source_observation:
+        source_expected = expected_sources.get(
+            old.resource.source, old.source_observation
+        )
+        if source_expected != current.source_observation:
             raise EngineError("stale_plan", resource=old.resource.name)
         target_path = old.resource.target
         target_expected = expected_targets.get(target_path, old.target_observation)
@@ -2322,7 +3112,7 @@ def _assert_fresh(
                 raise EngineError("stale_plan", resource=old.resource.name)
         if old.desired_data != current.desired_data:
             changed_inputs = set(old_files) & set(expected_inputs)
-            if not changed_inputs:
+            if not changed_inputs and old.resource.source not in expected_sources:
                 raise EngineError("stale_plan", resource=old.resource.name)
         paths = set(old.parent_states) | set(current.parent_states)
         for path in paths:
@@ -2350,6 +3140,7 @@ def _assert_forward_fresh(
     expected_baselines: Mapping[Path, FileObservation] | None = None,
     expected_inputs: Mapping[Path, FileObservation] | None = None,
     expected_directories: Mapping[Path, tuple[tuple[int, int], int]] | None = None,
+    skipped: frozenset[str] = frozenset(),
 ) -> tuple[_ResourcePlan, ...]:
     """Recheck selected dependencies and their current eligibility."""
 
@@ -2362,8 +3153,7 @@ def _assert_forward_fresh(
         expected_directories=expected_directories,
     )
     if any(
-        item.undeclared_changed
-        or item.status in {"blocked", "conflict", "unbased", "adopt_required"}
+        item.resource.name not in skipped and _skip_reason(item) is not None
         for item in fresh
     ):
         raise EngineError("review_required", operation="apply")
@@ -2397,6 +3187,7 @@ def _recheck_forward_fresh(
     expected_baselines: Mapping[Path, FileObservation],
     expected_inputs: Mapping[Path, FileObservation],
     expected_directories: Mapping[Path, tuple[tuple[int, int], int]],
+    skipped: frozenset[str] = frozenset(),
 ) -> None:
     _assert_forward_fresh(
         record,
@@ -2405,6 +3196,19 @@ def _recheck_forward_fresh(
         expected_baselines=expected_baselines,
         expected_inputs=expected_inputs,
         expected_directories=expected_directories,
+        skipped=skipped,
+    )
+
+
+def _matches_own_link(
+    expected: FileObservation, observed: FileObservation, identity: tuple[int, int]
+) -> bool:
+    return (
+        observed.identity == identity
+        and observed.link_target == expected.link_target
+        and not observed.foreign
+        and observed.existing_ancestors == expected.existing_ancestors
+        and not observed.missing_chain
     )
 
 
@@ -2580,13 +3384,8 @@ def _observe_directory_mode(root: Path, path: Path) -> tuple[tuple[int, int], in
     child_descriptor: int | None = None
     try:
         parent_descriptor, name = open_parent_directory(root, path)
-        child_descriptor = os.open(name, directory_flags(), dir_fd=parent_descriptor)
-        opened = os.fstat(child_descriptor)
-        entry = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
-        identity = (opened.st_dev, opened.st_ino)
-        if identity != (entry.st_dev, entry.st_ino):
-            raise ValueError
-        return identity, stat.S_IMODE(opened.st_mode)
+        child_descriptor, opened = open_child_directory(parent_descriptor, name)
+        return (opened.st_dev, opened.st_ino), stat.S_IMODE(opened.st_mode)
     except (OSError, ValueError, NotImplementedError):
         raise EngineError("stale_plan") from None
     finally:
@@ -2637,7 +3436,9 @@ def _plan_projection(plan: Plan) -> list[object]:
                 "source": _projection_path(resource.source),
                 "target": _projection_path(resource.target),
                 "format": resource.format,
-                "baseline": _projection_path(resource.baseline),
+                "baseline": None
+                if resource.baseline is None
+                else _projection_path(resource.baseline),
                 "parents": resource.parents,
                 "parent_mode": resource.parent_mode,
                 "mode": resource.mode,
@@ -2664,6 +3465,7 @@ def _plan_projection(plan: Plan) -> list[object]:
             if item.baseline_observation is not None
             else None,
             "desired_data": item.desired_data,
+            "link_value": item.link_value,
             "desired_document": _document_value(item.desired_document),
             "target_document": _document_value(item.target_document),
             "write_data": item.write_data,
@@ -2792,6 +3594,8 @@ def _observation_value(observation: FileObservation) -> dict[str, object]:
             for path, identity in observation.existing_ancestors
         ],
         "missing_chain": [_projection_path(path) for path in observation.missing_chain],
+        "link_target": observation.link_target,
+        "foreign": observation.foreign,
     }
 
 
@@ -2843,6 +3647,10 @@ def _require_plan(plan: Plan, *, operation: str) -> _PlanRecord:
         raise EngineError("plan_invalid", operation=operation) from None
     if not matches:
         raise EngineError("plan_invalid", operation=operation)
+    if record.entered_at is not None:
+        _PLAN_REGISTRY[plan] = replace(record, entered_at=None)
+        if time.monotonic() - record.entered_at <= _ENTRY_WINDOW_SECONDS:
+            return _PlanRecord(record.manifest, record.resources, record.evidence)
     try:
         verify_manifest(record.manifest)
         manifest = record.manifest
@@ -2963,11 +3771,21 @@ def _extend_parent_states(
 def _forward_specs_for_item(
     item: _ResourcePlan, manifest: Manifest
 ) -> _WriteSpec | None:
-    if (
-        item.action not in {"forward", "create"}
-        or item.write_data is None
-        or item.target_observation is None
-    ):
+    if item.action not in {"forward", "create"} or item.target_observation is None:
+        return None
+    if item.link_value is not None:
+        return _WriteSpec(
+            "link_create",
+            item.resource,
+            manifest.roots.target.path,
+            item.resource.target,
+            b"",
+            item.target_observation,
+            None,
+            item.forward_fields,
+            link=item.link_value,
+        )
+    if item.write_data is None:
         return None
     return _WriteSpec(
         "target_write",
@@ -3205,6 +4023,8 @@ def _mode_text(mode: int) -> str:
 def _effective_mode_text(
     resource: Resource, target: FileObservation | None
 ) -> str | None:
+    if resource.kind == "symlink":
+        return None
     if resource.mode is not None:
         return _mode_text(resource.mode)
     if target is None:

@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from .errors import LuwuError
-from .semantic import _json_values_equal, _parse_strict_json
+from .semantic import _json_values_equal, parse_strict_json
 
 _OWNERS = frozenset({"source", "live", "merge", "ignore"})
 _MISSING = object()
@@ -167,7 +167,7 @@ def _reverse_decision(owner: str) -> str:
 
 
 def _parse_object(data: bytes) -> dict[str, Any]:
-    value, error = _parse_strict_json(data)
+    value, error = parse_strict_json(data)
     if error is not None or not isinstance(value, dict):
         raise _invalid()
     return value
@@ -182,7 +182,7 @@ def _parse_baseline(
 ) -> dict[str, Any] | None:
     if data is None:
         return None
-    value, error = _parse_strict_json(data)
+    value, error = parse_strict_json(data)
     if error is not None or not isinstance(value, dict):
         raise _invalid()
     if set(value) != {

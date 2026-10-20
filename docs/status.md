@@ -3,8 +3,9 @@
 Status: the single manifest contract (version 8) is implemented and technically
 verified in isolated, synthetic environments. Manifest versions 1 through 7
 were retired and are no longer loadable. Droid workspace trust is not
-supported by decision. Real-application and real-target use is unverified, and
-the daily edit-and-apply loop still has known gaps (below).
+supported by decision. Real-application and real-target use is unverified. The
+daily-loop fixes and the text-template and symlink resources are implemented
+but have not yet had a real trial (below).
 
 This document owns the current implementation snapshot. It does not define
 product direction, public command or manifest behavior, internal mechanisms,
@@ -16,14 +17,18 @@ for those subjects.
 
 | Capability                   | Status                  | Open limits                                                                                        |
 | ---------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------- |
-| Template and copy resources  | Implemented             | Structured templates only (JSON, JSONC, TOML); no text templates and no symlink resources          |
-| Directory resources          | Implemented             | Enumerated into copy leaves; a new leaf needs explicit adoption                                    |
+| Structured templates         | Implemented             | JSON, JSONC, and TOML fields only                                                                  |
+| Whole-file text templates    | Implemented             | Rendered bytes use the copy baseline; an absent target is created, an existing one needs adoption  |
+| Symlink resources            | Implemented             | Default deploy; an existing target that is not the declared link blocks the resource               |
+| Copy resources               | Implemented             | Explicit `deploy = "copy"`; an existing target needs explicit adoption                             |
+| Directory sources            | Implemented             | Expanded into per-file leaves; a copied leaf with an existing target needs explicit adoption       |
 | Profiles and package closure | Implemented             | Selection is explicit; no platform detection                                                       |
 | Layered public inputs        | Implemented             | Public scalar values only                                                                          |
 | Observation                  | Implemented             | An unsafe live path blocks that resource; the other resources are still observed                   |
 | Ownership and baselines      | Implemented             | Undeclared content is never adopted implicitly                                                     |
 | Accept, adopt, reverse sync  | Implemented             | One resource per command; a changed declaration needs an explicit re-accept                        |
-| Profile-wide apply           | Implemented             | Any blocked, review, or unbased resource stops the whole batch; no per-resource apply              |
+| Undeclared write-back        | Implemented             | Literal template subtrees only; every other case is refused                                        |
+| Profile-wide apply           | Implemented             | Review resources are skipped and the outcome is `partial`; batch-level blockers stop the batch     |
 | Batch performance            | Implemented             | Budgets are in [maintenance](maintenance.md#performance-acceptance); rerun them on the target host |
 | Providers and secrets        | Not implemented         | Retired with version 6; planned in the [roadmap](roadmap.md)                                       |
 | Droid workspace trust        | Unsupported by decision | No stable public file schema is known                                                              |
@@ -32,24 +37,34 @@ The exact fields, states, error codes, output projections, compatibility
 behavior, and unsupported cases are owned only by [reference](reference.md).
 The rows above are status claims, not a second contract.
 
-## Known daily-loop gaps
+## Daily-loop changes awaiting a real trial
 
-These behaviors were found by adversarial review against the synthetic
-fixtures and are open. The [roadmap](roadmap.md) owns the plan to close them.
+These changes closed the gaps that adversarial review found against the
+synthetic fixtures. They are implemented and covered by the tests and
+ablations, but the [roadmap](roadmap.md#m7a-daily-loop-usability) keeps M7a
+open until a trial on real public application files. Treat them as unproven on
+a real profile.
 
-- A successful apply does not advance the baseline, so a routine edit-and-apply
-  cycle needs a manual accept before the next apply.
-- One resource that needs review stops the whole profile, and there is no
-  way to apply a single resource.
-- A key written by the application outside the declared fields blocks that
-  resource until the declaration or the content is corrected by hand.
-- Several no-follow directory walks in `manifest.py` and `engine.py` duplicate
-  `luwu/filesystem.py`. The guard test caps them, and they are not yet merged.
-- The sensitive-name check is deliberately conservative: a declared or
-  parsed key such as `env_key` is rejected even when it holds no secret.
-- Adopting a copy records the live bytes as the baseline, so the next apply
-  reports the source as changed and replaces those live bytes. Live edits
-  present at adoption are lost unless the operator saves them first.
+- A confirmed apply advances the baseline of the resources it wrote.
+- Apply skips a resource that needs review and writes the others.
+- `undeclared = "preserve"` keeps application-written keys without adopting
+  them.
+- `public_names` admits a named key that the sensitive-name check rejects.
+- The adopt preview says when applying would replace live bytes.
+- `reverse-sync --undeclared PATH` writes named literal leaves into a template
+  source.
+
+Known limits found by review and left open:
+
+- The plan keeps no record of undeclared values, so it cannot tell whether the
+  application or the source changed one. `--undeclared` therefore relies on the
+  operator naming only leaves whose live value should win.
+- If a resource has one field to forward and another that needs review, apply
+  still writes the forward field and leaves the other untouched instead of
+  skipping the resource.
+- After the first directory is created, the per-action freshness check no
+  longer compares the rendered desired bytes of later actions; the source,
+  input, and target observations still catch changes.
 
 ## Verified scope and limits
 

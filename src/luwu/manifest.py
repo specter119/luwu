@@ -10,9 +10,11 @@ import stat
 import tomllib
 import unicodedata
 import weakref
-from collections.abc import Mapping
+from collections.abc import Generator, Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from dataclasses import replace as dataclass_replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from urllib.parse import quote
@@ -20,10 +22,17 @@ from urllib.parse import quote
 from .errors import ManifestError
 from .filesystem import (
     DirectoryBoundary,
+    FileChangedError,
+    RootChangedError,
+    UnsafeEntryError,
     capture_directory_boundary,
-    directory_flags,
-    open_directory,
-    read_flags,
+    child_is_directory,
+    list_directory,
+    open_boundary,
+    open_child_directory,
+    open_child_file,
+    read_stable_file,
+    verify_directory_binding,
 )
 from .sensitivity import is_sensitive_name
 
@@ -70,6 +79,7 @@ class InputBinding:
     name: str
     layers: tuple[InputLayer, ...] = dataclass_field(repr=False)
     reverse_to: InputLayer | None = dataclass_field(default=None, repr=False)
+    public_names: frozenset[str] = dataclass_field(default=frozenset(), repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +93,13 @@ class FieldBinding:
 
 @dataclass(frozen=True, slots=True)
 class Resource:
-    """One selected resource; directory declarations become copy leaves."""
+    """One selected resource; directory sources become one resource per file.
+
+    ``kind`` is ``template`` for a structured template with declared fields,
+    ``copy`` for whole-file content that Luwu writes (a copied file or a
+    whole-file template, see ``templated``), and ``symlink`` for a link to the
+    source file.
+    """
 
     name: str
     kind: str
@@ -91,12 +107,23 @@ class Resource:
     target: Path = dataclass_field(repr=False)
     format: str | None
     fields: Mapping[str, FieldBinding] = dataclass_field(repr=False)
-    baseline: Path = dataclass_field(repr=False)
+    baseline: Path | None = dataclass_field(repr=False)
     parents: str
     parent_mode: int
     mode: int | None
     source_name: str = dataclass_field(repr=False)
     target_name: str = dataclass_field(repr=False)
+    templated: bool = False
+    undeclared: str = "block"
+    public_names: frozenset[str] = dataclass_field(default=frozenset(), repr=False)
+    input_names: tuple[str, ...] = dataclass_field(default=(), repr=False)
+
+    def baseline_path(self) -> Path:
+        """Return the baseline file, which a symlink resource does not have."""
+
+        if self.baseline is None:
+            raise ManifestError("resource has no baseline", code="resource_baseline")
+        return self.baseline
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +134,8 @@ class _DirectorySource:
     relative: Path
     exclude: tuple[str, ...]
     recursive: bool
+    freshness: tuple[tuple[object, ...], ...] = ()
+    entries: tuple[tuple[object, ...], ...] = ()
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
@@ -186,6 +215,8 @@ def _manifest_storage_identity(manifest: Manifest) -> tuple[object, ...]:
                 id(source),
                 id(source.exclude),
                 tuple(id(pattern) for pattern in source.exclude),
+                tuple(id(entry) for entry in source.freshness),
+                tuple(id(entry) for entry in source.entries),
             )
             for source in manifest._directory_sources
         ),
@@ -211,21 +242,40 @@ def _register_manifest(manifest: Manifest) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class _Defaults:
+    deploy: str = "symlink"
+    parents: str = "require"
+    parent_mode: int = 0o700
+
+
+@dataclass(frozen=True, slots=True)
 class _ResourceDeclaration:
+    """A declaration before its source is inspected.
+
+    ``kind`` is ``structured`` when fields are declared and otherwise ``entry``;
+    inspecting the source turns an ``entry`` into a file or a ``directory``.
+    """
+
     name: str
     kind: str
     source_relative: Path
     target_relative: Path
-    baseline_relative: Path
+    baseline_relative: Path | None
     parents: str
     parent_mode: int
     mode: int | None
+    kind_hint: str | None = None
+    deploy: str | None = None
     format: str | None = None
     fields: Mapping[str, FieldBinding] = dataclass_field(
         default_factory=lambda: MappingProxyType({}), repr=False
     )
     exclude: tuple[str, ...] = ()
     recursive: bool = True
+    input_names: tuple[str, ...] = ()
+    undeclared: str = "block"
+    public_names: frozenset[str] = frozenset()
+    defaults: _Defaults = _Defaults()
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,16 +294,25 @@ def load_manifest(path: Path, *, profile: str) -> Manifest:
         raise ManifestError("manifest version must be 8", code="manifest_version")
     _require_exact_keys(
         document,
-        required={"version", "roots", "profiles", "packages", "inputs", "resources"},
-        allowed={"version", "roots", "profiles", "packages", "inputs", "resources"},
+        required={"version", "roots", "profiles", "packages", "resources"},
+        allowed={
+            "version",
+            "roots",
+            "profiles",
+            "packages",
+            "inputs",
+            "resources",
+            "defaults",
+        },
         code="manifest_schema",
     )
 
     roots = _parse_roots(document["roots"], manifest_root=manifest_path.parent)
     profiles = _parse_profiles(document["profiles"])
     packages = _parse_packages(document["packages"])
-    declarations = _parse_resources(document["resources"])
-    inputs = _parse_inputs(document["inputs"], roots=roots)
+    defaults = _parse_defaults(document.get("defaults", {}))
+    declarations = _parse_resources(document["resources"], defaults)
+    inputs = _parse_inputs(document.get("inputs", {}), roots=roots)
     _validate_package_references(packages, declarations, inputs)
 
     if not isinstance(profile, str) or not _valid_name(profile):
@@ -276,6 +335,10 @@ def load_manifest(path: Path, *, profile: str) -> Manifest:
         for declaration in selected_declarations
         for binding in declaration.fields.values()
         if binding.input is not None
+    } | {
+        name
+        for declaration in selected_declarations
+        for name in declaration.input_names
     }
     selected_inputs = MappingProxyType(
         {name: inputs[name] for name in sorted(used_input_names)}
@@ -287,19 +350,28 @@ def load_manifest(path: Path, *, profile: str) -> Manifest:
     expanded_resources: list[Resource] = []
     directory_scopes: list[tuple[str, Path, Path]] = []
 
+    resolved_declarations: list[_ResourceDeclaration] = []
     for declaration in selected_declarations:
+        entry = _inspect_source(roots.source, declaration.source_relative)
+        if entry == "directory":
+            if declaration.kind == "structured":
+                raise ManifestError(
+                    "a template with fields must have a file source",
+                    code="resource_kind",
+                )
+            declaration = dataclass_replace(declaration, kind="directory")
+        elif declaration.exclude or not declaration.recursive:
+            raise ManifestError(
+                "exclude and recursive apply only to a directory source",
+                code="directory_schema",
+            )
+        resolved_declarations.append(declaration)
+
+    for declaration in resolved_declarations:
         if declaration.kind == "directory":
             source_dir = roots.source.path / declaration.source_relative
             target_dir = roots.target.path / declaration.target_relative
             directory_scopes.append((declaration.name, source_dir, target_dir))
-            directory_sources.append(
-                _DirectorySource(
-                    name=declaration.name,
-                    relative=declaration.source_relative,
-                    exclude=declaration.exclude,
-                    recursive=declaration.recursive,
-                )
-            )
             leaves, snapshots, directory_entries = _expand_directory(
                 roots.source,
                 declaration.source_relative,
@@ -307,70 +379,81 @@ def load_manifest(path: Path, *, profile: str) -> Manifest:
                 recursive=declaration.recursive,
                 resource_name=declaration.name,
             )
+            directory_sources.append(
+                _DirectorySource(
+                    name=declaration.name,
+                    relative=declaration.source_relative,
+                    exclude=declaration.exclude,
+                    recursive=declaration.recursive,
+                    freshness=_canonical_freshness(snapshots),
+                    entries=_canonical_entries(directory_entries),
+                )
+            )
             directory_freshness.extend(snapshots)
             expansion.extend(directory_entries)
             for relative_leaf in leaves:
-                source_relative = declaration.source_relative / relative_leaf
-                target_relative = declaration.target_relative / relative_leaf
-                baseline_relative = _directory_baseline(
-                    declaration.baseline_relative, relative_leaf
+                target_leaf = (
+                    relative_leaf.with_name(relative_leaf.name.removesuffix(".j2"))
+                    if _is_templated(declaration.kind_hint, relative_leaf.name)
+                    else relative_leaf
                 )
                 expanded_resources.append(
-                    Resource(
+                    _build_resource(
+                        roots,
+                        declaration,
                         name=f"{declaration.name}:{relative_leaf.as_posix()}",
-                        kind="copy",
-                        source=roots.source.path / source_relative,
-                        target=roots.target.path / target_relative,
-                        format=None,
-                        fields=MappingProxyType({}),
-                        baseline=roots.inputs.path / baseline_relative,
-                        parents=declaration.parents,
-                        parent_mode=declaration.parent_mode,
-                        mode=declaration.mode,
-                        source_name=source_relative.as_posix(),
-                        target_name=target_relative.as_posix(),
+                        source_relative=declaration.source_relative / relative_leaf,
+                        target_relative=declaration.target_relative / target_leaf,
+                        baseline_relative=(
+                            None
+                            if declaration.baseline_relative is None
+                            else _directory_baseline(
+                                declaration.baseline_relative, relative_leaf
+                            )
+                        ),
+                        structured=False,
                     )
                 )
         else:
+            structured = declaration.kind == "structured"
+            if (
+                declaration.deploy is not None
+                and not structured
+                and _is_templated(
+                    declaration.kind_hint, declaration.source_relative.name
+                )
+            ):
+                raise ManifestError(
+                    "templates are written, not deployed", code="resource_deploy"
+                )
             expanded_resources.append(
-                Resource(
+                _build_resource(
+                    roots,
+                    declaration,
                     name=declaration.name,
-                    kind=declaration.kind,
-                    source=roots.source.path / declaration.source_relative,
-                    target=roots.target.path / declaration.target_relative,
-                    format=declaration.format,
-                    fields=declaration.fields,
-                    baseline=roots.inputs.path / declaration.baseline_relative,
-                    parents=declaration.parents,
-                    parent_mode=declaration.parent_mode,
-                    mode=declaration.mode,
-                    source_name=declaration.source_relative.as_posix(),
-                    target_name=declaration.target_relative.as_posix(),
+                    source_relative=declaration.source_relative,
+                    target_relative=declaration.target_relative,
+                    baseline_relative=declaration.baseline_relative,
+                    structured=structured,
                 )
             )
+            if (
+                expanded_resources[-1].kind == "symlink"
+                and declaration.baseline_relative is not None
+            ):
+                raise ManifestError(
+                    "a symlink resource has no baseline", code="resource_schema"
+                )
+            _inspect_source_file(roots.source, declaration.source_relative)
 
     _validate_declared_relationships(
         expanded_resources,
-        selected_declarations,
+        tuple(resolved_declarations),
         selected_inputs,
         directory_scopes,
         roots,
         manifest_path,
     )
-
-    # Only source files are author-controlled, so only they may abort loading.
-    # Live targets, baselines, and input layers are observed per resource by
-    # the engine, where an unsafe entry blocks that resource instead of the
-    # whole profile.
-    direct_declarations = {
-        declaration.name: declaration
-        for declaration in selected_declarations
-        if declaration.kind != "directory"
-    }
-    for resource in expanded_resources:
-        declaration = direct_declarations.get(resource.name)
-        if declaration is not None:
-            _inspect_source_file(roots.source, declaration.source_relative)
 
     try:
         roots.verify()
@@ -419,8 +502,33 @@ def load_manifest(path: Path, *, profile: str) -> Manifest:
     return result
 
 
-def verify_manifest(manifest: Manifest) -> None:
-    """Verify declaration bytes, roots, and declared SOURCE directory expansions."""
+def _canonical_freshness(
+    snapshots: Iterable[tuple[object, ...]],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(sorted(set(snapshots), key=repr))
+
+
+def _canonical_entries(
+    entries: Iterable[tuple[object, ...]],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(sorted(entries, key=repr))
+
+
+def _owns_resource(source_name: str, resource_name: str) -> bool:
+    return resource_name == source_name or resource_name.startswith(f"{source_name}:")
+
+
+def verify_manifest(
+    manifest: Manifest, *, resources: frozenset[str] | None = None
+) -> None:
+    """Verify declaration bytes, roots, and declared SOURCE directory expansions.
+
+    Without `resources` every declared source directory is expanded again.
+    With it only the directories that produced the named resources are, so a
+    per-resource recheck costs the size of that resource rather than of the
+    whole manifest. A complete verification still runs before and after every
+    mutating command.
+    """
 
     if (
         not isinstance(manifest, Manifest)
@@ -457,9 +565,12 @@ def verify_manifest(manifest: Manifest) -> None:
                 "manifest selection or expansion is stale", code="stale"
             )
         manifest.roots.verify()
-        directory_freshness: list[tuple[object, ...]] = []
-        expansion: list[tuple[object, ...]] = []
+        changed = False
         for source in manifest._directory_sources:
+            if resources is not None and not any(
+                _owns_resource(source.name, name) for name in resources
+            ):
+                continue
             _, snapshots, entries = _expand_directory(
                 manifest.roots.source,
                 source.relative,
@@ -467,8 +578,11 @@ def verify_manifest(manifest: Manifest) -> None:
                 recursive=source.recursive,
                 resource_name=source.name,
             )
-            directory_freshness.extend(snapshots)
-            expansion.extend(entries)
+            if (
+                _canonical_freshness(snapshots) != source.freshness
+                or _canonical_entries(entries) != source.entries
+            ):
+                changed = True
     except ManifestError:
         raise ManifestError(
             "manifest selection or expansion is stale", code="stale"
@@ -477,12 +591,7 @@ def verify_manifest(manifest: Manifest) -> None:
         raise ManifestError(
             "manifest selection or expansion is stale", code="stale"
         ) from None
-    directory_freshness_tuple = tuple(sorted(set(directory_freshness), key=repr))
-    expansion_tuple = tuple(sorted(expansion, key=repr))
-    if (
-        directory_freshness_tuple != manifest._directory_freshness
-        or expansion_tuple != manifest.expansion
-    ):
+    if changed:
         raise ManifestError("manifest selection or expansion is stale", code="stale")
 
 
@@ -503,46 +612,22 @@ def _absolute_path(path: Path) -> Path:
 def _read_manifest_snapshot(path: Path) -> tuple[bytes, tuple[int, int]]:
     """Read a manifest and retain the no-follow identity of its opened file."""
 
-    flags = read_flags()
-    descriptor = -1
     parent_descriptor = -1
     try:
         parent = capture_directory_boundary(path.parent)
         parent_descriptor = _open_boundary(parent)
-        descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        try:
+            raw, info = read_stable_file(parent_descriptor, path.name)
+        except UnsafeEntryError:
             raise ManifestError(
                 "manifest must be a regular single-linked file", code="manifest_path"
-            )
-        chunks: list[bytes] = []
-        while True:
-            part = os.read(descriptor, 1024 * 1024)
-            if not part:
-                break
-            chunks.append(part)
-        after = os.fstat(descriptor)
-        current_path = os.stat(
-            path.name, dir_fd=parent_descriptor, follow_symlinks=False
-        )
-        if (
-            info.st_dev,
-            info.st_ino,
-            info.st_size,
-            info.st_mtime_ns,
-            info.st_ctime_ns,
-        ) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        ) or (current_path.st_dev, current_path.st_ino) != (info.st_dev, info.st_ino):
+            ) from None
+        except FileChangedError:
             raise ManifestError(
                 "manifest changed while being read", code="manifest_stale"
-            )
+            ) from None
         _verify_directory_binding(parent, Path(), parent_descriptor)
-        return b"".join(chunks), (info.st_dev, info.st_ino)
+        return raw, (info.st_dev, info.st_ino)
     except ManifestError:
         raise
     except (OSError, ValueError, TypeError):
@@ -550,8 +635,6 @@ def _read_manifest_snapshot(path: Path) -> tuple[bytes, tuple[int, int]]:
             "manifest cannot be read safely", code="manifest_unreadable"
         ) from None
     finally:
-        if descriptor >= 0:
-            _close_descriptor(descriptor)
         if parent_descriptor >= 0:
             _close_descriptor(parent_descriptor)
 
@@ -684,103 +767,261 @@ def _parse_packages(raw: object) -> Mapping[str, _Package]:
     return MappingProxyType(packages)
 
 
-def _parse_resources(raw: object) -> Mapping[str, _ResourceDeclaration]:
+_RESOURCE_KEYS = frozenset(
+    {
+        "source",
+        "target",
+        "baseline",
+        "kind",
+        "format",
+        "fields",
+        "deploy",
+        "mode",
+        "parents",
+        "parent_mode",
+        "content_sensitivity",
+        "exclude",
+        "recursive",
+        "undeclared",
+        "public_names",
+        "inputs",
+    }
+)
+_DEPLOYS = frozenset({"symlink", "copy"})
+_FORMAT_SUFFIXES = {".toml": "toml", ".json": "json", ".jsonc": "jsonc"}
+
+
+def _is_templated(kind_hint: str | None, name: str) -> bool:
+    if kind_hint is not None:
+        return kind_hint == "template"
+    return name.endswith(".j2")
+
+
+def _build_resource(
+    roots: Roots,
+    declaration: _ResourceDeclaration,
+    *,
+    name: str,
+    source_relative: Path,
+    target_relative: Path,
+    baseline_relative: Path | None,
+    structured: bool,
+) -> Resource:
+    templated = structured or _is_templated(declaration.kind_hint, source_relative.name)
+    if structured:
+        kind = "template"
+    elif templated:
+        kind = "copy"
+    else:
+        kind = declaration.deploy or declaration.defaults.deploy
+    if kind == "symlink":
+        if declaration.mode is not None:
+            raise ManifestError(
+                "a symlink resource has no file mode", code="resource_schema"
+            )
+        baseline = None
+    else:
+        if baseline_relative is None:
+            raise ManifestError(
+                "a resource that Luwu writes must declare a baseline",
+                code="resource_schema",
+            )
+        baseline = roots.inputs.path / baseline_relative
+    return Resource(
+        name=name,
+        kind=kind,
+        source=roots.source.path / source_relative,
+        target=roots.target.path / target_relative,
+        format=declaration.format if structured else None,
+        fields=declaration.fields if structured else MappingProxyType({}),
+        baseline=baseline,
+        parents=declaration.parents,
+        parent_mode=declaration.parent_mode,
+        mode=declaration.mode,
+        source_name=source_relative.as_posix(),
+        target_name=target_relative.as_posix(),
+        templated=templated,
+        undeclared=declaration.undeclared,
+        public_names=declaration.public_names,
+        input_names=declaration.input_names if templated else (),
+    )
+
+
+def _inspect_source(root: DirectoryBoundary, relative: Path) -> str:
+    """Name the declared source a directory or a file.
+
+    An unreadable source reads as a file so that ``_inspect_source_file`` raises
+    the precise error for it.
+    """
+
+    if not relative.parts:
+        return "file"
+    descriptor = -1
+    try:
+        descriptor = _open_boundary(root)
+        for component in relative.parts[:-1]:
+            child, _ = open_child_directory(descriptor, component)
+            _close_descriptor(descriptor)
+            descriptor = child
+        return (
+            "directory"
+            if child_is_directory(descriptor, relative.parts[-1])
+            else "file"
+        )
+    except (OSError, ValueError, NotImplementedError):
+        return "file"
+    finally:
+        if descriptor >= 0:
+            _close_descriptor(descriptor)
+
+
+def _parse_defaults(raw: object) -> _Defaults:
+    table = _require_table(raw, "defaults", code="defaults")
+    _require_exact_keys(
+        table,
+        required=set(),
+        allowed={"deploy", "parents", "parent_mode"},
+        code="defaults",
+    )
+    return _Defaults(
+        deploy=_parse_deploy(table.get("deploy", "symlink")),
+        parents=_parse_parents(table.get("parents", "require")),
+        parent_mode=_parse_mode(table.get("parent_mode", 0o700), code="resource_mode"),
+    )
+
+
+def _parse_deploy(value: object) -> str:
+    if not isinstance(value, str) or value not in _DEPLOYS:
+        raise ManifestError("deploy must be symlink or copy", code="resource_deploy")
+    return value
+
+
+def _parse_parents(value: object) -> str:
+    if not isinstance(value, str) or value not in {"require", "create"}:
+        raise ManifestError(
+            "resource parents must be require or create", code="resource_parents"
+        )
+    return value
+
+
+def _infer_format(source_name: str) -> str | None:
+    name = source_name.removesuffix(".j2")
+    return _FORMAT_SUFFIXES.get(PurePosixPath(name).suffix.lower())
+
+
+def _parse_resources(
+    raw: object, defaults: _Defaults
+) -> Mapping[str, _ResourceDeclaration]:
     table = _require_named_table(raw, "resources", code="resources")
     declarations: dict[str, _ResourceDeclaration] = {}
     for name, value in table.items():
         resource = _require_table(value, "resource", code="resources")
-        kind = resource.get("kind")
-        if not isinstance(kind, str) or kind not in {"template", "copy", "directory"}:
-            raise ManifestError(
-                "resource kind must be template, copy, or directory",
-                code="resource_kind",
-            )
-        common_required = {
-            "kind",
-            "source",
-            "target",
-            "baseline",
-            "content_sensitivity",
-            "parents",
-            "parent_mode",
-        }
-        common_allowed = common_required | {"mode"}
-        if kind == "template":
-            allowed = common_allowed | {"format", "scope", "fields"}
-            required = common_required | {"format", "scope", "fields"}
-        elif kind == "copy":
-            allowed = common_allowed | {"scope", "owner"}
-            required = common_required | {"scope", "owner"}
-        else:
-            allowed = common_allowed | {"scope", "owner", "exclude", "recursive"}
-            required = common_required | {"scope", "owner"}
         _require_exact_keys(
-            resource, required=required, allowed=allowed, code="resource_schema"
+            resource,
+            required={"source", "target"},
+            allowed=set(_RESOURCE_KEYS),
+            code="resource_schema",
         )
-        if resource["content_sensitivity"] != "public":
+        kind_hint = resource.get("kind")
+        if kind_hint is not None and (
+            not isinstance(kind_hint, str) or kind_hint not in {"template", "file"}
+        ):
+            raise ManifestError(
+                "resource kind must be template or file", code="resource_kind"
+            )
+        if resource.get("content_sensitivity", "public") != "public":
             raise ManifestError(
                 "version 8 resources must declare public content",
                 code="resource_sensitivity",
             )
-        parents = resource["parents"]
-        if not isinstance(parents, str) or parents not in {"require", "create"}:
+        source_relative = _relative_path(resource["source"], field="resource.source")
+        structured = "fields" in resource
+        if structured and kind_hint == "file":
             raise ManifestError(
-                "resource parents must be require or create", code="resource_parents"
+                "a resource with fields is a template", code="resource_kind"
             )
-        parent_mode = _parse_mode(resource["parent_mode"], code="resource_mode")
-        mode = (
-            _parse_mode(resource["mode"], code="resource_mode")
-            if "mode" in resource
-            else None
+        deploy = _parse_deploy(resource["deploy"]) if "deploy" in resource else None
+        format_name = (
+            _format(resource["format"])
+            if "format" in resource
+            else _infer_format(source_relative.name)
         )
-        if kind == "template":
-            if resource["scope"] != "fields":
+        public_names = frozenset(
+            _name_list(resource.get("public_names", []), code="resource_public_names")
+        )
+        fields: Mapping[str, FieldBinding] = MappingProxyType({})
+        if structured:
+            if format_name is None:
                 raise ManifestError(
-                    "template resources must use field scope", code="resource_scope"
+                    "template format cannot be inferred from the source name",
+                    code="format",
                 )
-            format_name = _format(resource["format"])
-            fields = _parse_field_bindings(resource["fields"])
-            exclude: tuple[str, ...] = ()
-            recursive = True
-        else:
-            if resource["scope"] != "whole-file" or resource["owner"] != "source":
+            if deploy is not None:
                 raise ManifestError(
-                    "copy and directory resources must own whole files",
-                    code="resource_scope",
+                    "templates are written, not deployed", code="resource_deploy"
                 )
-            format_name = None
-            fields = MappingProxyType({})
-            exclude = (
-                _glob_list(resource.get("exclude", [])) if kind == "directory" else ()
+            fields = _parse_field_bindings(resource["fields"], public_names)
+        undeclared = resource.get("undeclared", "block")
+        if not isinstance(undeclared, str) or undeclared not in {"block", "preserve"}:
+            raise ManifestError(
+                "undeclared must be block or preserve", code="resource_undeclared"
             )
-            recursive_value = (
-                resource.get("recursive", True) if kind == "directory" else True
+        if undeclared == "preserve" and not structured:
+            raise ManifestError(
+                "undeclared applies only to templates with fields",
+                code="resource_undeclared",
             )
-            if type(recursive_value) is not bool:
-                raise ManifestError(
-                    "directory recursive must be a boolean", code="directory_schema"
-                )
-            recursive = recursive_value
+        if "inputs" in resource and structured:
+            raise ManifestError(
+                "a template with fields takes inputs from its field bindings",
+                code="resource_schema",
+            )
+        if "public_names" in resource and not structured:
+            raise ManifestError(
+                "public_names applies only to templates with fields",
+                code="resource_schema",
+            )
+        recursive_value = resource.get("recursive", True)
+        if type(recursive_value) is not bool:
+            raise ManifestError(
+                "directory recursive must be a boolean", code="directory_schema"
+            )
         declarations[name] = _ResourceDeclaration(
             name=name,
-            kind=kind,
-            source_relative=_relative_path(resource["source"], field="resource.source"),
+            kind="structured" if structured else "entry",
+            source_relative=source_relative,
             target_relative=_relative_path(resource["target"], field="resource.target"),
-            baseline_relative=_relative_path(
-                resource["baseline"], field="resource.baseline"
+            baseline_relative=(
+                _relative_path(resource["baseline"], field="resource.baseline")
+                if "baseline" in resource
+                else None
             ),
-            parents=parents,
-            parent_mode=parent_mode,
-            mode=mode,
+            parents=_parse_parents(resource.get("parents", defaults.parents)),
+            parent_mode=_parse_mode(
+                resource.get("parent_mode", defaults.parent_mode), code="resource_mode"
+            ),
+            mode=(
+                _parse_mode(resource["mode"], code="resource_mode")
+                if "mode" in resource
+                else None
+            ),
+            kind_hint=kind_hint,
+            deploy=deploy,
             format=format_name,
             fields=fields,
-            exclude=exclude,
-            recursive=recursive,
+            exclude=_glob_list(resource.get("exclude", [])),
+            recursive=recursive_value,
+            input_names=_name_list(resource.get("inputs", []), code="resource_inputs"),
+            undeclared=undeclared,
+            public_names=public_names,
+            defaults=defaults,
         )
     return MappingProxyType(declarations)
 
 
-def _parse_field_bindings(raw: object) -> Mapping[str, FieldBinding]:
+def _parse_field_bindings(
+    raw: object, public: frozenset[str]
+) -> Mapping[str, FieldBinding]:
     table = _require_named_table(raw, "fields", code="fields")
     if not table:
         raise ManifestError("template fields must not be empty", code="fields")
@@ -796,7 +1037,7 @@ def _parse_field_bindings(raw: object) -> Mapping[str, FieldBinding]:
         owner = field_table["owner"]
         if not isinstance(owner, str) or owner not in _FIELD_OWNERS:
             raise ManifestError("field owner is unsupported", code="field_owner")
-        path = _leaf_path(field_table["path"], code="field_path")
+        path = _leaf_path(field_table["path"], code="field_path", public=public)
         input_name = field_table.get("input")
         if input_name is not None and (
             not isinstance(input_name, str) or not _valid_name(input_name)
@@ -831,8 +1072,11 @@ def _parse_inputs(raw: object, *, roots: Roots) -> Mapping[str, InputBinding]:
         _require_exact_keys(
             input_table,
             required={"layers"},
-            allowed={"layers", "reverse_to"},
+            allowed={"layers", "reverse_to", "public_names"},
             code="inputs",
+        )
+        public = frozenset(
+            _name_list(input_table.get("public_names", []), code="input_public_names")
         )
         raw_layers = input_table["layers"]
         if not isinstance(raw_layers, list) or not raw_layers:
@@ -840,22 +1084,31 @@ def _parse_inputs(raw: object, *, roots: Roots) -> Mapping[str, InputBinding]:
                 "input layers must be a non-empty array", code="input_layers"
             )
         layers = tuple(
-            _parse_layer(layer, roots.inputs, optional_allowed=True)
+            _parse_layer(layer, roots.inputs, optional_allowed=True, public=public)
             for layer in raw_layers
         )
         reverse_to = (
             _parse_layer(
-                input_table["reverse_to"], roots.inputs, optional_allowed=False
+                input_table["reverse_to"],
+                roots.inputs,
+                optional_allowed=False,
+                public=public,
             )
             if "reverse_to" in input_table
             else None
         )
-        inputs[name] = InputBinding(name=name, layers=layers, reverse_to=reverse_to)
+        inputs[name] = InputBinding(
+            name=name, layers=layers, reverse_to=reverse_to, public_names=public
+        )
     return MappingProxyType(inputs)
 
 
 def _parse_layer(
-    raw: object, root: DirectoryBoundary, *, optional_allowed: bool
+    raw: object,
+    root: DirectoryBoundary,
+    *,
+    optional_allowed: bool,
+    public: frozenset[str],
 ) -> InputLayer:
     table = _require_table(raw, "input layer", code="input_layer")
     allowed = {"file", "path", "format"} | ({"optional"} if optional_allowed else set())
@@ -870,7 +1123,7 @@ def _parse_layer(
             "input files must be declared below global or local",
             code="input_provenance",
         )
-    leaf_path = _leaf_path(table["path"], code="input_path")
+    leaf_path = _leaf_path(table["path"], code="input_path", public=public)
     optional = table.get("optional", False)
     if type(optional) is not bool:
         raise ManifestError("input optional must be a boolean", code="input_layer")
@@ -993,9 +1246,10 @@ def _validate_declared_relationships(
             (
                 ("source", resource.source),
                 ("target", resource.target),
-                ("baseline", resource.baseline),
             )
         )
+        if resource.baseline is not None:
+            whole_paths.append(("baseline", resource.baseline))
     for index, (_, left) in enumerate(whole_paths):
         for _, right in whole_paths[index + 1 :]:
             if paths_overlap(left, right):
@@ -1190,55 +1444,32 @@ def _inspect_source_file(
         descriptor = _open_boundary(root)
         for index, component in enumerate(relative.parts[:-1]):
             prefix = Path(*relative.parts[: index + 1])
-            try:
-                info = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
-            except FileNotFoundError:
-                raise ManifestError(
-                    "declared path parent does not exist", code="path_missing"
-                ) from None
-            if not stat.S_ISDIR(info.st_mode):
-                raise ManifestError(
+            with _walk_errors(
+                missing=("declared path parent does not exist", "path_missing"),
+                unsafe=(
                     "declared path parent is not a safe directory",
-                    code="path_boundary",
-                )
-            child = os.open(component, directory_flags(), dir_fd=descriptor)
-            opened = os.fstat(child)
-            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
-                _close_descriptor(child)
-                raise ManifestError(
-                    "declared path changed during validation", code="path_stale"
-                )
+                    "path_boundary",
+                ),
+                stale=("declared path changed during validation", "path_stale"),
+            ):
+                child, opened = open_child_directory(descriptor, component)
             snapshots.append(_stat_snapshot(root, prefix, opened))
             _close_descriptor(descriptor)
             descriptor = child
-        leaf = relative.parts[-1]
-        try:
-            info = os.stat(leaf, dir_fd=descriptor, follow_symlinks=False)
-        except FileNotFoundError:
-            raise ManifestError(
-                "declared file does not exist", code="path_missing"
-            ) from None
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ManifestError(
+        with _walk_errors(
+            missing=("declared file does not exist", "path_missing"),
+            unsafe=(
                 "declared file must be regular and single-linked",
-                code="path_boundary",
-            )
-        opened = os.open(leaf, read_flags(), dir_fd=descriptor)
+                "path_boundary",
+            ),
+            stale=("declared file changed during validation", "path_stale"),
+        ):
+            file_descriptor, current = open_child_file(descriptor, relative.parts[-1])
         try:
-            current = os.fstat(opened)
-            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-                raise ManifestError(
-                    "declared file changed during validation", code="path_stale"
-                )
-            latest = os.stat(leaf, dir_fd=descriptor, follow_symlinks=False)
-            if (latest.st_dev, latest.st_ino) != (info.st_dev, info.st_ino):
-                raise ManifestError(
-                    "declared file changed during validation", code="path_stale"
-                )
             snapshots.append(_stat_snapshot(root, relative, current))
             _verify_directory_binding(root, relative.parent, descriptor)
         finally:
-            _close_descriptor(opened)
+            _close_descriptor(file_descriptor)
         return tuple(snapshots)
     except ManifestError:
         raise
@@ -1266,20 +1497,14 @@ def _expand_directory(
     try:
         descriptor = _open_boundary(root)
         for index, component in enumerate(relative.parts):
-            info = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
-            if not stat.S_ISDIR(info.st_mode):
-                raise ManifestError(
+            with _walk_errors(
+                unsafe=(
                     "directory source must contain only safe directories and files",
-                    code="directory_boundary",
-                )
-            child = os.open(component, directory_flags(), dir_fd=descriptor)
-            opened = os.fstat(child)
-            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
-                _close_descriptor(child)
-                raise ManifestError(
-                    "directory source changed during validation",
-                    code="directory_stale",
-                )
+                    "directory_boundary",
+                ),
+                stale=("directory source changed during validation", "directory_stale"),
+            ):
+                child, opened = open_child_directory(descriptor, component)
             prefix = Path(*relative.parts[: index + 1])
             snapshots.append(_stat_snapshot(root, prefix, opened))
             _close_descriptor(descriptor)
@@ -1329,7 +1554,7 @@ def _scan_directory(
 ) -> None:
     before = os.fstat(descriptor)
     try:
-        names = sorted(os.listdir(descriptor))
+        names = list_directory(descriptor)
     except OSError:
         raise ManifestError(
             "directory entries cannot be read safely", code="directory_boundary"
@@ -1363,13 +1588,15 @@ def _scan_directory(
             ) from None
         source_entry = source_relative / relative_entry
         if stat.S_ISDIR(info.st_mode):
-            child = os.open(name, directory_flags(), dir_fd=descriptor)
+            with _walk_errors(
+                unsafe=(
+                    "directory source must contain only safe files",
+                    "directory_boundary",
+                ),
+                stale=("directory changed during expansion", "directory_stale"),
+            ):
+                child, current = open_child_directory(descriptor, name, observed=info)
             try:
-                current = os.fstat(child)
-                if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-                    raise ManifestError(
-                        "directory changed during expansion", code="directory_stale"
-                    )
                 snapshots.append(_stat_snapshot(root, source_entry, current))
                 if recursive:
                     _scan_directory(
@@ -1387,23 +1614,15 @@ def _scan_directory(
             finally:
                 _close_descriptor(child)
             continue
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ManifestError(
+        with _walk_errors(
+            unsafe=(
                 "directory source must contain only safe files",
-                code="directory_boundary",
-            )
-        file_descriptor = os.open(name, read_flags(), dir_fd=descriptor)
+                "directory_boundary",
+            ),
+            stale=("directory changed during expansion", "directory_stale"),
+        ):
+            file_descriptor, current = open_child_file(descriptor, name, observed=info)
         try:
-            current = os.fstat(file_descriptor)
-            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
-                raise ManifestError(
-                    "directory changed during expansion", code="directory_stale"
-                )
-            latest = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-            if (latest.st_dev, latest.st_ino) != (info.st_dev, info.st_ino):
-                raise ManifestError(
-                    "directory changed during expansion", code="directory_stale"
-                )
             snapshot = _stat_snapshot(root, source_entry, current)
             snapshots.append(snapshot)
             leaves.append(relative_entry)
@@ -1448,7 +1667,9 @@ def _format(value: object) -> str:
     return value
 
 
-def _leaf_path(value: object, *, code: str) -> tuple[str, ...]:
+def _leaf_path(
+    value: object, *, code: str, public: frozenset[str] = frozenset()
+) -> tuple[str, ...]:
     if not isinstance(value, list) or not value or len(value) > _MAX_PATH_SEGMENTS:
         raise ManifestError(
             "field paths must contain between 1 and 256 keys", code=code
@@ -1459,7 +1680,7 @@ def _leaf_path(value: object, *, code: str) -> tuple[str, ...]:
             not isinstance(part, str)
             or not part
             or _has_control_chars(part)
-            or is_sensitive_name(part)
+            or is_sensitive_name(part, public=public)
         ):
             raise ManifestError(
                 "field paths must contain only non-empty public keys", code=code
@@ -1631,45 +1852,51 @@ def _close_descriptor(descriptor: int) -> None:
 
 
 def _open_boundary(root: DirectoryBoundary) -> int:
-    descriptor = open_directory(root.path)
-    try:
-        info = os.fstat(descriptor)
-        if (info.st_dev, info.st_ino) != (root.device, root.inode):
-            raise ManifestError("declared root identity changed", code="root_stale")
-        return descriptor
-    except BaseException:
-        _close_descriptor(descriptor)
-        raise
+    with _walk_errors():
+        return open_boundary(root)
 
 
 def _verify_directory_binding(
     root: DirectoryBoundary, relative: Path, descriptor: int
 ) -> None:
-    current = -1
     try:
-        current = _open_boundary(root)
-        for component in relative.parts:
-            child = os.open(component, directory_flags(), dir_fd=current)
-            _close_descriptor(current)
-            current = child
-        expected_info = os.fstat(descriptor)
-        current_info = os.fstat(current)
-        if (expected_info.st_dev, expected_info.st_ino) != (
-            current_info.st_dev,
-            current_info.st_ino,
-        ):
-            raise ManifestError(
-                "declared directory identity changed", code="path_stale"
-            )
+        with _walk_errors(stale=("declared directory identity changed", "path_stale")):
+            verify_directory_binding(root, relative, descriptor)
     except ManifestError:
         raise
     except (OSError, ValueError, TypeError):
         raise ManifestError(
             "declared directory identity changed", code="path_stale"
         ) from None
-    finally:
-        if current >= 0:
-            _close_descriptor(current)
+
+
+@contextmanager
+def _walk_errors(
+    *,
+    missing: tuple[str, str] | None = None,
+    unsafe: tuple[str, str] | None = None,
+    stale: tuple[str, str] | None = None,
+) -> Generator[None]:
+    """Map typed filesystem failures to this call site's manifest error."""
+
+    try:
+        yield
+    except RootChangedError:
+        raise ManifestError(
+            "declared root identity changed", code="root_stale"
+        ) from None
+    except FileNotFoundError:
+        if missing is None:
+            raise
+        raise ManifestError(missing[0], code=missing[1]) from None
+    except UnsafeEntryError:
+        if unsafe is None:
+            raise
+        raise ManifestError(unsafe[0], code=unsafe[1]) from None
+    except FileChangedError:
+        if stale is None:
+            raise
+        raise ManifestError(stale[0], code=stale[1]) from None
 
 
 def _stat_snapshot(
@@ -1721,6 +1948,10 @@ def _manifest_signature(manifest: Manifest) -> str:
             resource.mode,
             resource.source_name,
             resource.target_name,
+            resource.templated,
+            resource.undeclared,
+            tuple(sorted(resource.public_names)),
+            resource.input_names,
         )
         for resource in manifest.resources
     )
@@ -1739,6 +1970,7 @@ def _manifest_signature(manifest: Manifest) -> str:
                 binding.reverse_to.format,
                 binding.reverse_to.optional,
             ),
+            tuple(sorted(binding.public_names)),
         )
         for name, binding in sorted(manifest.inputs.items())
     )

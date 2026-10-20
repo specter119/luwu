@@ -77,6 +77,46 @@ For example: `git show bb80335:docs/milestones/m3.md`.
 - Synthetic OpenCode, Codex, and Droid settings shapes; no application
   runtime has loaded them.
 
+## M7a and M7b: daily loop and file resources (version 8)
+
+- Resource kind is inferred from the source: `.j2` is a template, another file
+  is a plain file, and a directory expands into one resource per file. A
+  top-level `[defaults]` table sets `deploy`, `parents`, and `parent_mode`.
+  The explicit `copy` and `directory` kinds and the whole-file `scope` and
+  `owner` keys were removed from the manifest.
+- Symlink resources are the default deployment. Copy is an explicit
+  `deploy = "copy"`.
+- Whole-file text templates render a `.j2` source without fields from declared
+  inputs and reuse the copy baseline, adopt, and review mechanisms.
+- Apply advances the baseline of the resources it wrote, reports a baseline
+  failure as `committed_but_baseline_not_advanced`, and skips resources that
+  need review instead of stopping the whole profile (outcome `partial`).
+- `undeclared = "preserve"` keeps application-written keys; `public_names`
+  admits exact key names past the sensitive-name check; the adopt preview and
+  plan projection report `replaces_live_on_apply`.
+- `reverse-sync --undeclared PATH` writes the named, proven literal leaves back
+  to a template source.
+- Apply also repairs the stale baseline of a converged structured template and
+  of a copy or whole-file template whose live bytes already match the source.
+- A copy or whole-file template whose target is absent and has no baseline file
+  is created by apply, which then records its baseline; adopt stays required for
+  an existing target.
+- `adopt` accepts a repeated `--resource` and adopts the batch from one
+  observation of the profile.
+- A per-action freshness check expands only the source directories behind the
+  resources it rechecks, and a shared input layer is parsed once per distinct
+  content, so apply cost no longer grows with actions times directories.
+- Capturing a parent chain verifies it with one path walk to the deepest
+  directory instead of re-walking from the filesystem root at every level, so
+  the opens per observation grow with depth rather than with its square.
+- On Linux 5.6 and later a directory path is resolved with one `openat2` call
+  instead of one open per component, and the portable walk remains the
+  fallback.
+- A command that confirms with `--yes` takes the plan it just built as its
+  entry observation instead of observing the whole profile a second time.
+- M7a is implemented but not closed: its exit is a real trial (see the
+  [roadmap](roadmap.md#m7a-daily-loop-usability)).
+
 ## Consolidation: one manifest contract
 
 - Retired manifest versions 1 through 7. Version 8 is the only manifest the
@@ -100,21 +140,38 @@ For example: `git show bb80335:docs/milestones/m3.md`.
   and replaced by an explicit accept or adopt, instead of blocking the
   resource until the file is deleted by hand.
 
+## Consolidation: one directory walk
+
+- The manifest loader and the engine no longer carry their own no-follow
+  directory walks. They use shared descriptor primitives in
+  `luwu/filesystem.py` and map the typed failures to their existing error
+  codes. The observation read of a regular file shares the same primitive.
+- Strict JSON parsing and the public scalar boundary each have one
+  implementation in `luwu/semantic.py`; baselines, input layers, and ownership
+  call it.
+- A manifest that is a symbolic link is now reported as `manifest_path`
+  instead of `manifest_unreadable`, because the entry type is checked before
+  it is opened.
+- The ownership guard now forbids `os.open`, `os.read`, and `os.listdir`
+  outside `luwu/filesystem.py`. Fault-injection tests cover each primitive and
+  each caller's error code.
+
 ## Capability matrix by delivery
 
 Rows are capabilities and columns are deliveries. A cell says where the
 capability was introduced or widened, not whether it works now.
 
-| Capability                     | M1  | M2  | M3  | M4  | M5  | M6  | M7  |
-| ------------------------------ | --- | --- | --- | --- | --- | --- | --- |
-| Template and symbolic resource | new |     |     |     |     |     | ext |
-| Multi-resource observation     |     | new |     |     |     |     | ext |
-| Structured comparison          |     | new |     |     |     | ext | ext |
-| Ownership and baselines        |     |     | new |     |     | ext | ext |
-| Reverse sync and accept        |     |     | new |     |     | ext | ext |
-| Journal and recovery           |     |     | new | ext | ext |     |     |
-| Providers and secrets          |     |     |     | new |     |     |     |
-| Batch performance              |     |     |     |     | new |     | ext |
-| Roots and local inputs         |     |     |     |     |     | new | ext |
-| Profiles and directories       |     |     |     |     |     |     | new |
-| JSONC and nested TOML          |     |     |     |     |     | ext | new |
+| Capability                     | M1  | M2  | M3  | M4  | M5  | M6  | M7  | M7a/b |
+| ------------------------------ | --- | --- | --- | --- | --- | --- | --- | ----- |
+| Template and symbolic resource | new |     |     |     |     |     | ext | ext   |
+| Multi-resource observation     |     | new |     |     |     |     | ext |       |
+| Structured comparison          |     | new |     |     |     | ext | ext | ext   |
+| Ownership and baselines        |     |     | new |     |     | ext | ext | ext   |
+| Reverse sync and accept        |     |     | new |     |     | ext | ext | ext   |
+| Journal and recovery           |     |     | new | ext | ext |     |     |       |
+| Providers and secrets          |     |     |     | new |     |     |     |       |
+| Batch performance              |     |     |     |     | new |     | ext |       |
+| Roots and local inputs         |     |     |     |     |     | new | ext |       |
+| Profiles and directories       |     |     |     |     |     |     | new | ext   |
+| JSONC and nested TOML          |     |     |     |     |     | ext | new |       |
+| Text templates                 |     |     |     |     |     |     |     | new   |

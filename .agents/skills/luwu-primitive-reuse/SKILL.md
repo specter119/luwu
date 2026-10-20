@@ -38,7 +38,7 @@ produced copies here.
 
 - Read [design: shared primitives](../../../docs/design.md#shared-primitives)
   and use the named module. Search by behavior, not by name:
-  `rg "os\.(open|replace|fsync)|json\.loads|tomllib\.loads" src`.
+  `rg "os\.(open|read|listdir|replace|fsync)|json\.loads|tomllib\.loads" src`.
 - If the owner lacks something, extend it with a parameter or a second
   function and add one test per caller.
 - Run `python -m unittest tests.tooling.test_primitive_ownership`. It fails
@@ -59,9 +59,9 @@ produced copies here.
 ## Limits of the guard
 
 The guard sees calls to named primitives. It does not see a re-implemented
-algorithm that uses other calls, so it does not replace the steps above. The
-ceilings in `OWNERS` list known debt, for example the descriptor walks in
-`manifest.py`. Tests per copy and rising coverage are not evidence that
+algorithm that uses other calls (for example a new `os.stat` and `os.fstat`
+comparison, which are not guarded), so it does not replace the steps above. The
+ceilings in `OWNERS` list known debt, and a ceiling may only go down. Tests per copy and rising coverage are not evidence that
 nothing is duplicated.
 
 Report the primitive, every place it exists, where the copies disagree, and the

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from decimal import Decimal, DecimalException
 from typing import Any
 
@@ -18,9 +19,17 @@ class _NonFiniteNumber(ValueError):
 _MAX_JSON_NESTING = 128
 
 
-def _parse_strict_json(
+def parse_strict_json(
     data: bytes,
+    *,
+    integers: Callable[[str], Any] = Decimal,
 ) -> tuple[Any | None, str | None]:
+    """Parse public JSON or return a fixed failure reason.
+
+    ``integers`` converts integer literals: ``Decimal`` keeps comparison exact,
+    ``int`` serves the baseline envelope.
+    """
+
     try:
         text = data.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
@@ -34,7 +43,7 @@ def _parse_strict_json(
             object_pairs_hook=_object_pairs_without_duplicates,
             parse_constant=_reject_non_finite_number,
             parse_float=Decimal,
-            parse_int=Decimal,
+            parse_int=integers,
             strict=True,
         )
     except _DuplicateObjectKey:
@@ -43,13 +52,23 @@ def _parse_strict_json(
         return None, "non_finite_number"
     except DecimalException:
         return None, "json_number_out_of_range"
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError):
         return None, "invalid_json"
     except RecursionError:
         return None, "json_nesting_limit"
     if _contains_surrogate(value):
         return None, "json_surrogate"
     return value, None
+
+
+def is_public_scalar(value: object) -> bool:
+    """Whether a value is inside the public scalar boundary."""
+
+    return (
+        value is None
+        or type(value) in {str, bool, int}
+        or (isinstance(value, Decimal) and value.is_finite())
+    )
 
 
 def _exceeds_nesting_limit(text: str) -> bool:

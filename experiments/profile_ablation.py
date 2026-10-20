@@ -128,9 +128,9 @@ def _span_vs_dump_case(formats: Any) -> dict[str, object]:
 def _resource_table(
     name: str, *, kind: str, source: str, target: str, baseline: str
 ) -> str:
+    deploy_line = 'deploy = "copy"\n' if kind == "copy" else ""
     common = (
-        f'kind = "{kind}"\n'
-        f"source = {json.dumps(source)}\n"
+        f"{deploy_line}source = {json.dumps(source)}\n"
         f"target = {json.dumps(target)}\n"
         f"baseline = {json.dumps(baseline)}\n"
         'content_sensitivity = "public"\n'
@@ -138,10 +138,10 @@ def _resource_table(
         'parent_mode = "0700"\n'
     )
     if kind == "copy":
-        return f'[resources.{name}]\n{common}scope = "whole-file"\nowner = "source"\n'
+        return f"[resources.{name}]\n{common}"
     return (
         f"[resources.{name}]\n{common}"
-        'format = "json"\nscope = "fields"\n'
+        'format = "json"\n'
         f'[resources.{name}.fields.value]\npath = ["value"]\nowner = "source"\n'
     )
 
@@ -179,10 +179,9 @@ def _directory_membership_case(manifest_module: Any) -> dict[str, object]:
         (tree / "first.txt").write_text("public-one\n", encoding="utf-8")
         resource = (
             "[resources.bundle]\n"
-            'kind = "directory"\nsource = "tree"\ntarget = "tree"\n'
+            'deploy = "copy"\nsource = "tree"\ntarget = "tree"\n'
             'baseline = "baselines/tree"\ncontent_sensitivity = "public"\n'
             'parents = "require"\nparent_mode = "0700"\n'
-            'scope = "whole-file"\nowner = "source"\n'
         )
         package = '[packages.files]\ndependencies = []\nresources = ["bundle"]'
         manifest_path = root / "luwu.toml"
@@ -286,8 +285,10 @@ def _action_rows(payload: object) -> dict[str, dict[str, object]]:
         raise TypeError("production result has no schema-8 actions list")
     rows: dict[str, dict[str, object]] = {}
     for row in actions:
-        if not isinstance(row, dict) or set(row) != _ACTION_FIELDS:
+        if not isinstance(row, dict) or not _ACTION_FIELDS <= set(row):
             raise AssertionError("production action does not match schema-8 fields")
+        if row.get("kind") != "target_write":
+            continue
         resource = row.get("resource")
         if not isinstance(resource, str) or resource in rows:
             raise AssertionError("production result has an invalid or duplicate action")

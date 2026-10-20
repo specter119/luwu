@@ -30,14 +30,17 @@ export HOME="$demo_dir/home"
 uv run luwu plan --manifest "$demo_dir/luwu.toml" --profile synthetic
 ```
 
-A fresh profile first needs explicit baselines (`accept` for templates and
-`adopt` for copies) before `apply --yes` writes anything. The
+A fresh profile needs an explicit `accept` for structured templates before
+`apply --yes` writes them, and an explicit `adopt` for a copy or text
+template whose target already exists. Symlink resources, the default
+deployment, need none, a copy or text template with an absent target is
+created by apply, and a confirmed apply advances the baselines it wrote. The
 [isolated profile fixture guide](tests/fixtures/dotfiles_profile/README.md)
 walks through the complete loop, including reverse sync.
 
 Read [the current reference](docs/reference.md) for the manifest, CLI, JSON,
 and safety contract, and [implementation status](docs/status.md) for the
-verified scope and known gaps. The reference and status documents are the
+verified scope and open limits. The reference and status documents are the
 authority for current capabilities; this page intentionally stays at
 user-entry-point level. The [per-target Dotter handoff
 workflow](docs/maintenance.md#isolated-rehearsal-and-dotter-handoff) applies

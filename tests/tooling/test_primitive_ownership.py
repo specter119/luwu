@@ -14,7 +14,9 @@ SOURCE = Path(__file__).resolve().parents[2] / "src" / "luwu"
 # the ceiling stops the copy from growing. Lower it when a copy is removed.
 # A module that is not listed may not call the primitive at all.
 OWNERS: dict[str, dict[str, int | None]] = {
-    "os.open": {"filesystem.py": None, "manifest.py": 7, "engine.py": 1},
+    "os.open": {"filesystem.py": None},
+    "os.read": {"filesystem.py": None},
+    "os.listdir": {"filesystem.py": None},
     "os.replace": {"filesystem.py": None},
     "os.rename": {},
     "os.fsync": {"filesystem.py": None},
@@ -22,12 +24,13 @@ OWNERS: dict[str, dict[str, int | None]] = {
     "os.mkdir": {"filesystem.py": None},
     "os.unlink": {"filesystem.py": None},
     "os.link": {},
-    "os.symlink": {},
+    "os.symlink": {"filesystem.py": None},
+    "os.readlink": {"filesystem.py": None},
     "shutil.copyfile": {},
     "shutil.move": {},
     "tempfile.mkstemp": {},
     "tempfile.mkdtemp": {},
-    "json.loads": {"semantic.py": None, "baseline.py": 1, "formats.py": 1},
+    "json.loads": {"semantic.py": None, "formats.py": 1},
     "tomllib.loads": {"formats.py": None, "manifest.py": 1},
 }
 OWNER_HINT = {

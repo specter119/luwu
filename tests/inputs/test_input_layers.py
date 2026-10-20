@@ -6,8 +6,10 @@ import tempfile
 import traceback
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from luwu.inputs import InputError, _absolute_input_path, load_inputs
+from luwu.formats import parse_document
+from luwu.inputs import InputError, absolute_input_path, load_inputs
 from luwu.manifest import Manifest, Resource, load_manifest
 
 
@@ -63,13 +65,11 @@ layers = [
 reverse_to = {{ file = "local/model.{extension}", path = ["value"], format = "{input_format}" }}
 
 [resources.settings]
-kind = "template"
 source = "settings.json.j2"
 target = ".config/settings.json"
 format = "json"
 baseline = "baselines/settings.json"
 content_sensitivity = "public"
-scope = "fields"
 parents = "require"
 parent_mode = "0700"
 
@@ -83,6 +83,26 @@ input = "model"
 
         manifest = load_manifest(manifest_path, profile="dev")
         return manifest, manifest.resources[0]
+
+    def test_a_layer_is_parsed_once_per_content_and_again_after_it_changes(
+        self,
+    ) -> None:
+        manifest, resource = self._load_case(
+            input_format="toml",
+            global_data=b'value = "global"\n',
+            local_data=b'value = "local"\n',
+        )
+        with patch("luwu.inputs.parse_document", wraps=parse_document) as parse:
+            load_inputs(manifest, resource)
+            load_inputs(manifest, resource)
+        self.assertEqual(parse.call_count, 2)
+
+        local = manifest.roots.inputs.path / "local" / "model.toml"
+        local.write_bytes(b'value = "changed"\n')
+        with patch("luwu.inputs.parse_document", wraps=parse_document) as parse:
+            context = load_inputs(manifest, resource)
+        self.assertEqual(parse.call_count, 1)
+        self.assertEqual(context.values["model"].value, "changed")
 
     def _assert_error_chain_is_safe(self, error: BaseException, marker: str) -> None:
         self.assertIsNone(error.__context__)
@@ -142,6 +162,30 @@ input = "model"
                 self.assertEqual(raised.exception.code, "input_invalid")
                 self._assert_error_chain_is_safe(raised.exception, marker)
 
+    def test_a_sensitive_key_name_in_a_layer_is_reported_as_its_own_category(
+        self,
+    ) -> None:
+        cases = (
+            ("json", b'{"value":"global","hold_key":"VALUE_MARKER"}\n'),
+            ("toml", b'value = "global"\nhold_key = "VALUE_MARKER"\n'),
+        )
+        for input_format, global_data in cases:
+            with self.subTest(input_format=input_format):
+                manifest, resource = self._load_case(
+                    input_format=input_format,
+                    global_data=global_data,
+                    local_data=b'{"value":"local"}\n'
+                    if input_format == "json"
+                    else b'value = "local"\n',
+                )
+
+                with self.assertRaises(InputError) as raised:
+                    load_inputs(manifest, resource)
+
+                self.assertEqual(raised.exception.code, "sensitive_input")
+                self._assert_error_chain_is_safe(raised.exception, "VALUE_MARKER")
+                self._assert_error_chain_is_safe(raised.exception, "hold_key")
+
     def test_valid_json_and_toml_overlays_keep_order_and_winner(self) -> None:
         cases = (
             ("json", b'{"value":"global"}\n', b'{"value":"local"}\n'),
@@ -181,7 +225,21 @@ input = "model"
             root = Path(temporary_directory) / "inputs"
             outside = Path(temporary_directory) / "SYNTHETIC_PATH_MARKER.json"
             with self.assertRaises(InputError) as raised:
-                _absolute_input_path(root, outside)
+                absolute_input_path(root, outside)
 
         self.assertEqual(raised.exception.code, "unsafe_path")
         self._assert_error_chain_is_safe(raised.exception, "SYNTHETIC_PATH_MARKER")
+
+    def test_non_finite_toml_numbers_never_reach_resolved_inputs(self) -> None:
+        for literal in (b"value = inf\n", b"value = nan\n"):
+            with self.subTest(literal=literal):
+                manifest, resource = self._load_case(
+                    input_format="toml",
+                    global_data=literal,
+                    local_data=b'value = "local"\n',
+                )
+
+                with self.assertRaises(InputError) as raised:
+                    load_inputs(manifest, resource)
+
+                self.assertEqual(raised.exception.code, "input_invalid")

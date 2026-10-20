@@ -59,3 +59,28 @@ def render_source(
             code="template_invalid",
         )
     return rendered
+
+
+def template_syntax(template_source: str) -> tuple[tuple[str, str], ...]:
+    """Return the template's non-text tokens, in order.
+
+    Two sources with equal syntax differ only in literal text, so replacing
+    text cannot add, remove, or reshape an expression or a block.
+    """
+
+    environment = ImmutableSandboxedEnvironment(
+        autoescape=False,
+        keep_trailing_newline=True,
+        undefined=StrictUndefined,
+    )
+    try:
+        return tuple(
+            (kind, value)
+            for _, kind, value in environment.lex(template_source)
+            if kind != "data"
+        )
+    except TemplateError as exc:
+        raise _render_error(
+            f"template could not be tokenized: {type(exc).__name__}",
+            code="template_invalid",
+        ) from None

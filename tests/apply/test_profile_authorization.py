@@ -120,12 +120,10 @@ dependencies = []
 resources = ["asset_tree"]
 [inputs]
 [resources.asset_tree]
-kind = "directory"
+deploy = "copy"
 source = "assets"
 target = ".config/assets"
 baseline = "baselines/assets"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "create"
 parent_mode = "0700"
@@ -210,7 +208,7 @@ parent_mode = "0700"
         written = json.loads(target.read_text(encoding="utf-8"))
         self.assertEqual(written["settings"]["theme"], "overlay-theme-v2")
 
-    def test_review_in_any_resource_blocks_the_whole_forward_batch(self) -> None:
+    def test_review_in_one_resource_skips_it_and_applies_the_rest(self) -> None:
         review_target = self._add_review_resource()
         for resource in ("settings", "review"):
             result = accept_baseline(
@@ -237,17 +235,57 @@ parent_mode = "0700"
             any(item["undeclared_changed"] for item in plan.to_dict()["resources"])
         )
         preview = apply_plan(plan, confirm=False)
-        self.assertEqual(preview.outcome, "not_attempted")
-        self.assertEqual(preview.error_code, "review_required")
-        result = apply_plan(plan, confirm=True)
-
-        self.assertEqual(result.outcome, "not_attempted")
-        self.assertEqual(result.error_code, "review_required")
-        self.assertTrue(
-            all(action.state == "not_attempted" for action in result.actions)
+        self.assertEqual(preview.outcome, "confirmation_required")
+        self.assertIsNone(preview.error_code)
+        self.assertEqual(
+            [
+                (action.resource, action.state, action.reason)
+                for action in preview.actions
+                if action.kind == "resource_skip"
+            ],
+            [("review", "skipped", "undeclared_changed")],
         )
         self.assertEqual(self._target().read_bytes(), settings_before)
+
+        result = apply_plan(plan, confirm=True)
+
+        self.assertEqual(result.outcome, "partial")
+        self.assertEqual(result.error_code, "review_required")
+        states = {
+            (action.resource, action.kind): action.state for action in result.actions
+        }
+        self.assertEqual(states[("settings", "target_write")], "committed")
+        self.assertEqual(states[("settings", "baseline_write")], "committed")
+        self.assertEqual(states[("review", "resource_skip")], "skipped")
+        self.assertNotEqual(self._target().read_bytes(), settings_before)
+        self.assertIn("overlay-theme-v2", self._target().read_text(encoding="utf-8"))
         self.assertIn("review-unknown-sentinel", review_target.read_text())
+
+    def test_apply_with_only_skipped_resources_writes_nothing(self) -> None:
+        review_target = self._add_review_resource()
+        for resource in ("settings", "review"):
+            accept_baseline(
+                self._plan(),
+                resource=resource,
+                fields=("theme", "brand"),
+                value_from="desired",
+                confirm=True,
+            )
+        self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
+        review = json.loads(review_target.read_text(encoding="utf-8"))
+        review["unmanaged"]["source"] = "review-unknown-sentinel"
+        review_target.write_text(json.dumps(review) + "\n", encoding="utf-8")
+        before = review_target.read_bytes()
+
+        for confirm in (False, True):
+            result = apply_plan(self._plan(), confirm=confirm)
+            self.assertEqual(result.outcome, "not_attempted")
+            self.assertEqual(result.error_code, "review_required")
+            self.assertEqual(
+                [(action.kind, action.state) for action in result.actions],
+                [("resource_skip", "skipped")],
+            )
+        self.assertEqual(review_target.read_bytes(), before)
 
     def test_stale_noop_recheck_and_partial_batch_preserve_action_evidence(
         self,
@@ -282,22 +320,18 @@ dependencies = []
 resources = ["a", "b"]
 [inputs]
 [resources.a]
-kind = "copy"
+deploy = "copy"
 source = "a.txt"
 target = "a.txt"
 baseline = "baselines/a.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"
 [resources.b]
-kind = "copy"
+deploy = "copy"
 source = "b.txt"
 target = "b.txt"
 baseline = "baselines/b.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"
@@ -450,8 +484,11 @@ parent_mode = "0700"
         self.assertEqual(result.outcome, "committed_but_verification_failed")
         self.assertEqual(result.error_code, "stale_plan")
         self.assertEqual(
-            [(action.resource, action.state) for action in result.actions],
-            [("write", "committed")],
+            [(action.resource, action.kind, action.state) for action in result.actions],
+            [
+                ("write", "target_write", "committed"),
+                ("write", "baseline_write", "not_attempted"),
+            ],
         )
         self.assertEqual((self.home / "write.txt").read_text(), "source-write-v2\n")
         self.assertEqual(noop_target.read_text(), "external-noop-v3\n")

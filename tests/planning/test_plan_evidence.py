@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import tempfile
 import traceback
 import unittest
@@ -512,11 +513,9 @@ layers = [{ file = "local/values.json", path = ["alpha"], format = "json" }]
 layers = [{ file = "local/values.json", path = ["beta"], format = "json" }]
 
 [resources.settings]
-kind = "template"
 source = "templates/settings.json.j2"
 target = "config/settings.json"
 format = "json"
-scope = "fields"
 baseline = "baselines/settings.json"
 content_sensitivity = "public"
 parents = "create"
@@ -683,7 +682,11 @@ input = "beta"
             self.target.read_bytes(), b'{"alpha":"alpha-v2","beta":"beta-v1"}\n'
         )
         self.assertEqual(self.local_input.read_bytes(), before_input)
-        self.assertEqual(self.baseline.read_bytes(), before_baseline)
+        self.assertNotEqual(self.baseline.read_bytes(), before_baseline)
+        self.assertEqual(
+            json.loads(self.baseline.read_text(encoding="utf-8"))["values"],
+            {"alpha": "alpha-v2", "beta": "beta-v1"},
+        )
 
     def test_splitting_equal_shared_parser_child_is_accepted(self) -> None:
         self._split_equal_alpha_child()

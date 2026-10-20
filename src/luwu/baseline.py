@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from decimal import Decimal, DecimalException
+from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -15,12 +15,7 @@ from .errors import LuwuError, MutationError
 from .filesystem import DirectoryBoundary, FileObservation, observe_file, write_file
 from .formats import MISSING, semantic_equal
 from .manifest import InputBinding, InputLayer, Manifest, Resource
-from .semantic import (
-    _contains_surrogate,
-    _exceeds_nesting_limit,
-    _object_pairs_without_duplicates,
-    _reject_non_finite_number,
-)
+from .semantic import is_public_scalar, parse_strict_json
 
 
 def encode_public_json(value: Any) -> bytes:
@@ -103,7 +98,7 @@ def load_baseline(
     """
 
     root = manifest.roots.inputs.path
-    path = _absolute(root, resource.baseline)
+    path = _absolute(root, resource.baseline_path())
     observation = observe_file(root, path)
     if observation.data is None:
         return observation, None
@@ -147,7 +142,7 @@ def make_field_baseline(
         value = current.get(name, MISSING)
         if value is MISSING:
             values.pop(name, None)
-        elif not _is_public_scalar(value):
+        elif not is_public_scalar(value):
             raise BaselineError(
                 "baseline value is outside the public scalar boundary",
                 code="baseline_invalid",
@@ -197,7 +192,7 @@ def write_baseline(
     """Atomically replace a baseline under the declared input root."""
 
     root = manifest.roots.inputs.path
-    path = _absolute(root, resource.baseline)
+    path = _absolute(root, resource.baseline_path())
     return write_file(
         root, path, data, expected=expected, mode=0o600, check_inputs=check_inputs
     )
@@ -232,7 +227,9 @@ def baseline_identity(manifest: Manifest, resource: Resource) -> dict[str, objec
         "kind": resource.kind,
         "source": resource.source_name,
         "target": resource.target_name,
-        "baseline": _relative_name(manifest.roots.inputs.path, resource.baseline),
+        "baseline": _relative_name(
+            manifest.roots.inputs.path, resource.baseline_path()
+        ),
         "format": resource.format,
         "profile": manifest.profile,
         "roots": root_identity,
@@ -317,7 +314,7 @@ def _validate_baseline_data(
         name for name, binding in resource.fields.items() if binding.owner != "ignore"
     }
     if set(values) - allowed or any(
-        not _is_public_scalar(value) for value in values.values()
+        not is_public_scalar(value) for value in values.values()
     ):
         raise BaselineError("baseline values are invalid", code="baseline_invalid")
     return dict(values), None, None
@@ -326,28 +323,8 @@ def _validate_baseline_data(
 def _parse_schema2_json(data: bytes) -> object:
     if type(data) is not bytes:
         raise BaselineError("baseline envelope is invalid", code="baseline_invalid")
-
-    parse_failed = False
-    value: object = None
-    try:
-        text = data.decode("utf-8", errors="strict")
-        if _exceeds_nesting_limit(text):
-            parse_failed = True
-        else:
-            value = json.loads(
-                text,
-                object_pairs_hook=_object_pairs_without_duplicates,
-                parse_constant=_reject_non_finite_number,
-                parse_float=Decimal,
-                parse_int=int,
-                strict=True,
-            )
-            if _contains_surrogate(value):
-                parse_failed = True
-    except (UnicodeDecodeError, ValueError, DecimalException, RecursionError):
-        parse_failed = True
-
-    if parse_failed:
+    value, error = parse_strict_json(data, integers=int)
+    if error is not None:
         raise BaselineError("baseline envelope is invalid", code="baseline_invalid")
     return value
 
@@ -400,12 +377,4 @@ def _valid_digest(value: object) -> bool:
         isinstance(value, str)
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
-    )
-
-
-def _is_public_scalar(value: object) -> bool:
-    return (
-        value is None
-        or type(value) in {str, bool, int}
-        or (isinstance(value, Decimal) and value.is_finite())
     )

@@ -9,19 +9,30 @@ the inode observed after ``mkdir`` came exclusively from that syscall.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import stat
+import sys
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 from luwu.errors import LuwuError
 
 
 class FileChangedError(OSError):
     """A file changed between its descriptor-free and descriptor checks."""
+
+
+class RootChangedError(FileChangedError):
+    """A captured directory boundary no longer names the same directory."""
+
+
+class UnsafeEntryError(OSError):
+    """A directory entry has the wrong type or link count for its role."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,13 +46,7 @@ class DirectoryBoundary:
     def verify(self) -> None:
         """Reject a replaced root or any symlink/rebinding in its path."""
 
-        descriptor = open_directory(self.path)
-        try:
-            current = os.fstat(descriptor)
-            if current.st_dev != self.device or current.st_ino != self.inode:
-                raise FileChangedError(str(self.path))
-        finally:
-            os.close(descriptor)
+        os.close(open_boundary(self))
 
 
 def capture_directory_boundary(path: Path) -> DirectoryBoundary:
@@ -61,17 +66,10 @@ def open_parent_directory(root: Path, path: Path) -> tuple[int, str]:
     relative = path.relative_to(root)
     if not relative.parts:
         raise ValueError("path must name an entry below the root")
-    descriptor = open_directory(root)
-    try:
-        for component in relative.parts[:-1]:
-            child = os.open(component, directory_flags(), dir_fd=descriptor)
-            previous = descriptor
-            descriptor = child
-            os.close(previous)
-    except BaseException:
-        os.close(descriptor)
-        raise
-    return descriptor, relative.parts[-1]
+    return (
+        _descend(open_directory(root), relative.parts[:-1]),
+        relative.parts[-1],
+    )
 
 
 def read_descriptor(descriptor: int) -> bytes:
@@ -135,9 +133,30 @@ def open_directory(path: Path) -> int:
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError("directory path must be absolute and contain no '..'")
 
-    descriptor = os.open(path.anchor, directory_flags())
+    resolve = _openat2()
+    if resolve is not None:
+        return resolve(_AT_FDCWD, os.fsencode(path), _RESOLVE_NO_SYMLINKS)
+    return _descend(os.open(path.anchor, directory_flags()), path.parts[1:])
+
+
+def _descend(descriptor: int, parts: tuple[str, ...]) -> int:
+    """Open each component below a descriptor, consuming the descriptor."""
+
+    if any(part in {"", ".", ".."} for part in parts):
+        os.close(descriptor)
+        raise ValueError("directory components must name children")
+    resolve = _openat2()
+    if resolve is not None and parts:
+        try:
+            return resolve(
+                descriptor,
+                os.fsencode("/".join(parts)),
+                _RESOLVE_NO_SYMLINKS | _RESOLVE_BENEATH,
+            )
+        finally:
+            os.close(descriptor)
     try:
-        for component in path.parts[1:]:
+        for component in parts:
             child = os.open(component, directory_flags(), dir_fd=descriptor)
             previous = descriptor
             descriptor = child
@@ -148,9 +167,205 @@ def open_directory(path: Path) -> int:
         raise
 
 
+_AT_FDCWD = -100
+_SYS_OPENAT2 = 437
+_RESOLVE_NO_MAGICLINKS = 0x02
+_RESOLVE_NO_SYMLINKS = 0x04
+_RESOLVE_BENEATH = 0x08
+_UNPROBED: Any = object()
+_openat2_resolver: Any = _UNPROBED
+
+
+def _openat2() -> Callable[[int, bytes, int], int] | None:
+    """Return a one-syscall directory resolver, or ``None`` to walk by component.
+
+    ``openat2`` with ``RESOLVE_NO_SYMLINKS`` refuses a symlink in any position,
+    which is what the component-by-component ``O_NOFOLLOW`` walk establishes, in
+    one kernel call instead of one per component. Only Linux 5.6 and later has
+    it, and a seccomp filter may refuse it, so the first use probes the call and
+    any failure keeps the portable walk.
+    """
+
+    global _openat2_resolver
+    if _openat2_resolver is _UNPROBED:
+        _openat2_resolver = _load_openat2()
+    return _openat2_resolver
+
+
+def _load_openat2() -> Callable[[int, bytes, int], int] | None:
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import ctypes
+
+        syscall = ctypes.CDLL(None, use_errno=True).syscall
+    except (ImportError, OSError, AttributeError):
+        return None
+
+    class OpenHow(ctypes.Structure):
+        _fields_ = (
+            ("flags", ctypes.c_uint64),
+            ("mode", ctypes.c_uint64),
+            ("resolve", ctypes.c_uint64),
+        )
+
+    syscall.restype = ctypes.c_long
+
+    def resolve(dirfd: int, path: bytes, flags: int) -> int:
+        how = OpenHow(directory_flags() | os.O_CLOEXEC, 0, flags)
+        while True:
+            descriptor = syscall(
+                ctypes.c_long(_SYS_OPENAT2),
+                ctypes.c_int(dirfd),
+                ctypes.c_char_p(path),
+                ctypes.byref(how),
+                ctypes.c_size_t(ctypes.sizeof(how)),
+            )
+            if descriptor >= 0:
+                return descriptor
+            code = ctypes.get_errno()
+            if code != errno.EINTR:
+                raise OSError(code, os.strerror(code))
+
+    try:
+        os.close(resolve(_AT_FDCWD, b"/", _RESOLVE_NO_SYMLINKS))
+    except OSError:
+        return None
+    return resolve
+
+
+def open_boundary(boundary: DirectoryBoundary) -> int:
+    """Open a captured directory and require its recorded identity."""
+
+    descriptor = open_directory(boundary.path)
+    try:
+        info = os.fstat(descriptor)
+        if (info.st_dev, info.st_ino) != (boundary.device, boundary.inode):
+            raise RootChangedError(str(boundary.path))
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def verify_directory_binding(
+    boundary: DirectoryBoundary, relative: Path, descriptor: int
+) -> None:
+    """Require that ``descriptor`` is still the directory at boundary/relative."""
+
+    current = _descend(open_boundary(boundary), relative.parts)
+    try:
+        expected = os.fstat(descriptor)
+        actual = os.fstat(current)
+    finally:
+        os.close(current)
+    if _identity(expected) != _identity(actual):
+        raise FileChangedError(str(relative))
+
+
+def list_directory(descriptor: int) -> list[str]:
+    """Return the sorted entry names of an open directory."""
+
+    return sorted(os.listdir(descriptor))
+
+
+def child_is_directory(parent: int, name: str) -> bool:
+    """Tell whether a child entry is a directory, without following links."""
+
+    return stat.S_ISDIR(os.stat(name, dir_fd=parent, follow_symlinks=False).st_mode)
+
+
+def open_child_directory(
+    parent: int, name: str, *, observed: os.stat_result | None = None
+) -> tuple[int, os.stat_result]:
+    """Open a child directory without following links and bind its identity.
+
+    ``observed`` is an earlier no-follow stat of the entry; without it the
+    entry is statted here. Raises ``FileNotFoundError`` for an absent entry,
+    ``UnsafeEntryError`` for a non-directory, and ``FileChangedError`` when the
+    opened directory is not the one observed.
+    """
+
+    info = observed or os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if not stat.S_ISDIR(info.st_mode):
+        raise UnsafeEntryError(name)
+    child = os.open(name, directory_flags(), dir_fd=parent)
+    try:
+        opened = os.fstat(child)
+        if _identity(opened) != _identity(info):
+            raise FileChangedError(name)
+    except BaseException:
+        os.close(child)
+        raise
+    return child, opened
+
+
+def open_child_file(
+    parent: int, name: str, *, observed: os.stat_result | None = None
+) -> tuple[int, os.stat_result]:
+    """Open a private regular child file without following links.
+
+    Raises ``FileNotFoundError`` for an absent entry, ``UnsafeEntryError`` unless
+    the entry is a single-linked regular file, and ``FileChangedError`` when the
+    opened file is not the entry that was observed.
+    """
+
+    info = observed or os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise UnsafeEntryError(name)
+    try:
+        descriptor = os.open(name, read_flags(), dir_fd=parent)
+    except OSError as error:
+        if error.errno in _ENTRY_RACE_ERRNOS:
+            raise FileChangedError(name) from None
+        raise
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or _identity(opened) != _identity(info)
+        ):
+            raise FileChangedError(name)
+        latest = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if _identity(latest) != _identity(info):
+            raise FileChangedError(name)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor, opened
+
+
+def read_stable_file(parent: int, name: str) -> tuple[bytes, os.stat_result]:
+    """Read a private regular file and prove it did not change while read."""
+
+    descriptor, opened = open_child_file(parent, name)
+    try:
+        data = read_descriptor(descriptor)
+        after = os.fstat(descriptor)
+        latest = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or after.st_nlink != 1
+            or _identity(after) != _identity(opened)
+            or _identity(latest) != _identity(after)
+            or not stat.S_ISREG(latest.st_mode)
+            or latest.st_nlink != 1
+            or _file_signature(after) != _file_signature(opened)
+        ):
+            raise FileChangedError(name)
+        return data, after
+    finally:
+        os.close(descriptor)
+
+
 @dataclass(frozen=True, slots=True)
 class FileObservation:
-    """A stable snapshot of one regular file or an absent leaf."""
+    """A stable snapshot of one regular file, symlink, or absent leaf.
+
+    A symlink observation (``observe_link``) carries ``link_target`` and no
+    content. ``foreign`` marks an entry that is neither absent nor a symlink.
+    """
 
     data: bytes | None = field(repr=False)
     identity: tuple[int, int] | None
@@ -158,6 +373,8 @@ class FileObservation:
     mode: int | None
     existing_ancestors: tuple[tuple[Path, tuple[int, int]], ...] = ()
     missing_chain: tuple[Path, ...] = ()
+    link_target: str | None = None
+    foreign: bool = False
 
 
 class FilesystemError(LuwuError):
@@ -180,6 +397,9 @@ class FilesystemError(LuwuError):
         self.cleanup_state = cleanup_state
 
 
+# An open that fails this way means the entry was swapped or removed after the
+# no-follow stat. Other errors (permissions, descriptor limits) are not races.
+_ENTRY_RACE_ERRNOS = frozenset({errno.ELOOP, errno.ENOENT, errno.ENOTDIR, errno.EMLINK})
 _ABSENT = FileObservation(None, None, None, None)
 _NOT_REPLACED = "not_replaced"
 _UNCERTAIN = "uncertain"
@@ -194,6 +414,18 @@ _CLEANUP_FAILED = "failed"
 def observe_file(root: Path, path: Path) -> FileObservation:
     """Observe a no-follow regular file beneath ``root`` or return absent."""
 
+    return _observe_leaf(root, path, _observe_entry)
+
+
+def observe_link(root: Path, path: Path) -> FileObservation:
+    """Observe a leaf as an absent entry, a symlink, or a foreign entry."""
+
+    return _observe_leaf(root, path, _observe_link_entry)
+
+
+def _observe_leaf(
+    root: Path, path: Path, observe_entry: Callable[[int, str], FileObservation]
+) -> FileObservation:
     boundary, relative = _capture_paths(root, path)
     existing, missing = _capture_ancestry(boundary, root, relative)
     if missing:
@@ -210,7 +442,7 @@ def observe_file(root: Path, path: Path) -> FileObservation:
 
     try:
         try:
-            observation = _observe_entry(parent, name)
+            observation = observe_entry(parent, name)
         except FileNotFoundError:
             observation = _ABSENT
         _verify_root_parent(boundary, parent, path.parent)
@@ -554,6 +786,114 @@ def write_file(
     return staged_identity
 
 
+def create_link(
+    root: Path,
+    path: Path,
+    link_value: str,
+    *,
+    expected: FileObservation,
+    check_inputs: Callable[[], object] | None = None,
+) -> tuple[int, int]:
+    """Create one symlink where nothing exists and return its identity.
+
+    ``os.symlink`` fails with ``EEXIST`` instead of replacing an entry, so the
+    leaf is never overwritten even when it appears after the recheck.
+    """
+
+    boundary, relative = _capture_paths(root, path)
+    if (
+        type(link_value) is not str
+        or not link_value.startswith("/")
+        or "\x00" in link_value
+    ):
+        raise _error("filesystem content is invalid", "invalid_content")
+    if (
+        not isinstance(expected, FileObservation)
+        or expected.identity is not None
+        or expected.link_target is not None
+    ):
+        raise _error("filesystem observation is invalid", "invalid_observation")
+    try:
+        parent, name = open_parent_directory(root, path)
+    except (OSError, NotImplementedError, ValueError):
+        raise _error("filesystem parent is unsafe", "unsafe_path") from None
+
+    locked = False
+    attempted = False
+    created = False
+    failure: FilesystemError | None = None
+    identity: tuple[int, int] | None = None
+    try:
+        lock_directory(parent)
+        locked = True
+        _verify_root_parent(boundary, parent, path.parent)
+        _verify_expected_ancestry(boundary, root, relative, expected)
+        _require_missing_entry(parent, name)
+
+        _run_check_inputs(check_inputs)
+        _verify_root_parent(boundary, parent, path.parent)
+        _verify_expected_ancestry(boundary, root, relative, expected)
+
+        attempted = True
+        try:
+            os.symlink(link_value, name, dir_fd=parent)
+        except FileExistsError:
+            attempted = False
+            raise _error("filesystem inputs are stale", "stale_inputs") from None
+        created = True
+        sync_directory(parent)
+        written = _observe_link_entry(parent, name)
+        if written.link_target != link_value or written.identity is None:
+            raise _error(
+                "filesystem link result is uncertain",
+                "write_unknown",
+                state=_UNCERTAIN,
+                committed=True,
+            )
+        identity = written.identity
+        _verify_root_parent(boundary, parent, path.parent)
+        _verify_expected_ancestry(boundary, root, relative, expected)
+    except FilesystemError as exc:
+        failure = (
+            _error(str(exc), exc.code, state=_UNCERTAIN, committed=True)
+            if created
+            else exc
+        )
+    except Exception:  # noqa: BLE001 - classify unexpected failures at the symlink boundary
+        failure = _error(
+            "filesystem link outcome is uncertain"
+            if attempted
+            else "filesystem link was not created",
+            "write_unknown" if attempted else "write_failed",
+            state=_UNCERTAIN if attempted else _NOT_REPLACED,
+            committed=created,
+        )
+    finally:
+        cleanup_failed = False
+        if locked:
+            try:
+                unlock_directory(parent)
+            except (OSError, NotImplementedError):
+                cleanup_failed = True
+        try:
+            os.close(parent)
+        except (OSError, ValueError):
+            cleanup_failed = True
+        if cleanup_failed:
+            failure = _error(
+                "filesystem link cleanup could not be confirmed",
+                "write_unknown" if attempted else "cleanup_unknown",
+                state=_UNCERTAIN if attempted else _NOT_REPLACED,
+                committed=created,
+                cleanup_state=_CLEANUP_FAILED,
+            )
+
+    if failure is not None:
+        raise failure from None
+    assert identity is not None
+    return identity
+
+
 def _capture_paths(root: Path, path: Path) -> tuple[DirectoryBoundary, Path]:
     if (
         not root.is_absolute()
@@ -662,7 +1002,6 @@ def _capture_ancestry(
                     raise _error("filesystem parent is unsafe", "unsafe_path")
                 _require_trusted_directory(child_info)
                 child_identity = _identity(child_info)
-                verify_directory_identity(child, child_path)
             except BaseException:
                 os.close(child)
                 raise
@@ -674,6 +1013,9 @@ def _capture_ancestry(
             existing.append((current, child_identity))
 
         boundary.verify()
+        # One path walk to the deepest descriptor covers every ancestor: any
+        # ancestor renamed or replaced after the descent moves the path away
+        # from this descriptor. Re-walking from "/" per level is O(depth^2).
         verify_directory_identity(descriptor, current)
     except FilesystemError:
         raise
@@ -719,14 +1061,7 @@ def _with_ancestry(
     existing: tuple[tuple[Path, tuple[int, int]], ...],
     missing: tuple[Path, ...],
 ) -> FileObservation:
-    return FileObservation(
-        data=observation.data,
-        identity=observation.identity,
-        digest=observation.digest,
-        mode=observation.mode,
-        existing_ancestors=existing,
-        missing_chain=missing,
-    )
+    return replace(observation, existing_ancestors=existing, missing_chain=missing)
 
 
 def _same_file(left: FileObservation, right: FileObservation) -> bool:
@@ -740,47 +1075,37 @@ def _same_file(left: FileObservation, right: FileObservation) -> bool:
 
 def _observe_entry(parent: int, name: str) -> FileObservation:
     try:
-        before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        data, info = read_stable_file(parent, name)
     except FileNotFoundError:
         return _ABSENT
-    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-        raise _error("filesystem entry is not a private regular file", "unsafe_file")
-
-    try:
-        descriptor = os.open(name, read_flags(), dir_fd=parent)
-    except (OSError, NotImplementedError):
+    except UnsafeEntryError:
+        raise _error(
+            "filesystem entry is not a private regular file", "unsafe_file"
+        ) from None
+    except (FileChangedError, PermissionError):
         raise _error(
             "filesystem entry changed during observation", "unsafe_file"
         ) from None
+    return FileObservation(
+        data=data,
+        identity=_identity(info),
+        digest=hashlib.sha256(data).hexdigest(),
+        mode=stat.S_IMODE(info.st_mode),
+    )
+
+
+def _observe_link_entry(parent: int, name: str) -> FileObservation:
     try:
-        opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or _identity(opened) != _identity(before)
-        ):
-            raise _error("filesystem entry changed during observation", "unsafe_file")
-        data = read_descriptor(descriptor)
-        after = os.fstat(descriptor)
+        info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISLNK(info.st_mode):
+            return FileObservation(None, _identity(info), None, None, foreign=True)
+        link_target = os.readlink(name, dir_fd=parent)
         latest = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(after.st_mode)
-            or after.st_nlink != 1
-            or _identity(after) != _identity(opened)
-            or _identity(latest) != _identity(after)
-            or not stat.S_ISREG(latest.st_mode)
-            or latest.st_nlink != 1
-            or _file_signature(after) != _file_signature(opened)
-        ):
-            raise _error("filesystem entry changed during observation", "unsafe_file")
-        return FileObservation(
-            data=data,
-            identity=_identity(after),
-            digest=hashlib.sha256(data).hexdigest(),
-            mode=stat.S_IMODE(after.st_mode),
-        )
-    finally:
-        os.close(descriptor)
+    except FileNotFoundError:
+        return _ABSENT
+    if _identity(latest) != _identity(info) or not stat.S_ISLNK(latest.st_mode):
+        raise _error("filesystem entry changed during observation", "unsafe_file")
+    return FileObservation(None, _identity(info), None, None, link_target=link_target)
 
 
 def _verify_staged_entry(

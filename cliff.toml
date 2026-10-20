@@ -1,0 +1,45 @@
+# git-cliff configuration for Luwu.
+#
+# It enforces the commit-message grammar and renders pull request notes. It does
+# not own docs/changelog.md, which records what each delivery added by hand.
+# Workflow: docs/maintenance.md, "Commit messages".
+
+[changelog]
+header = ""
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}\
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}\
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}\
+{% if commit.breaking %}**breaking** {% endif %}\
+{{ commit.message | upper_first }} ({{ commit.id | truncate(length=7, end="") }})
+{% endfor %}
+{% endfor %}\
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+# A commit that is not `type(scope)?: description` fails the run instead of
+# being dropped from the notes.
+require_conventional = true
+filter_unconventional = false
+protect_breaking_commits = true
+topo_order_commits = true
+sort_commits = "oldest"
+# Merge commits are made by GitHub, not written, so they are never checked.
+commit_preprocessors = []
+commit_parsers = [
+  { message = "^Merge ", skip = true },
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+  { message = "^docs", group = "<!-- 4 -->Documentation" },
+  { message = "^test", group = "<!-- 5 -->Tests" },
+  { message = "^bench", group = "<!-- 6 -->Benchmarks" },
+  { message = "^(build|ci|chore)", group = "<!-- 7 -->Maintenance" },
+  { message = "^revert", group = "<!-- 8 -->Reverts" },
+  { message = ".*", group = "<!-- 9 -->Unrecognised type" },
+]

@@ -311,7 +311,8 @@ replacement = bytes.fromhex(control["replacement_hex"])
 report = Path(control["report"])
 counts = {"create_parent": 0, "write_file": 0}
 state = {"mutated": False}
-original_build_plan = engine.build_plan
+original_build_plan = engine.build_mutation_plan
+engine._ENTRY_WINDOW_SECONDS = -1.0
 
 def build_plan_then_change_noop(manifest):
     plan = original_build_plan(manifest)
@@ -320,7 +321,7 @@ def build_plan_then_change_noop(manifest):
         state["mutated"] = True
     return plan
 
-engine.build_plan = build_plan_then_change_noop
+engine.build_mutation_plan = build_plan_then_change_noop
 for name in tuple(counts):
     original = getattr(engine, name)
     def make_counter(label, operation):
@@ -581,6 +582,22 @@ class ProfileScenarioCase(unittest.TestCase):
     ) -> None:
         if actual != expected:
             self.fail(f"{label} changed fixture state")
+
+    def _assert_only_baselines_changed(
+        self,
+        actual: dict[str, tuple[object, ...]],
+        expected: dict[str, tuple[object, ...]],
+        label: str,
+    ) -> None:
+        changed = {
+            path
+            for path in actual.keys() | expected.keys()
+            if actual.get(path) != expected.get(path)
+        }
+        if not changed or any(
+            not path.startswith("inputs/baselines/") for path in changed
+        ):
+            self.fail(f"{label} changed more than baselines: {sorted(changed)}")
 
     def _assert_resource_set(
         self, payload: dict[str, object], case: ProfileCliCase

@@ -12,6 +12,7 @@ from typing import Any, cast
 from . import __version__, engine
 from .errors import LuwuError, MutationError
 from .manifest import load_manifest
+from .semantic import parse_strict_json
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,15 +54,36 @@ def build_parser() -> argparse.ArgumentParser:
         "adopt", help="explicitly accept a declared copy resource"
     )
     _add_common_arguments(adopt)
-    _add_resource_argument(adopt)
+    adopt.add_argument(
+        "--resource",
+        action="append",
+        required=True,
+        help="declared resource name; repeat to adopt several in one batch",
+    )
     _add_confirm_argument(adopt)
 
     reverse = commands.add_parser(
-        "reverse-sync", help="explicitly write selected live-owned fields to inputs"
+        "reverse-sync",
+        help="explicitly write selected live-owned fields to inputs, "
+        "or undeclared live changes to a literal template source",
     )
     _add_common_arguments(reverse)
     _add_resource_argument(reverse)
-    _add_field_argument(reverse)
+    reverse_scope = reverse.add_mutually_exclusive_group(required=True)
+    reverse_scope.add_argument(
+        "--field",
+        action="append",
+        help="declared field name; repeat to select several fields",
+    )
+    reverse_scope.add_argument(
+        "--undeclared",
+        action="append",
+        metavar="PATH",
+        help="a JSON array of key names naming one undeclared leaf, such as "
+        '\'["section", "key"]\'; repeat to name several. Its live value is '
+        "written into the template source when it can be proven to render "
+        "back unchanged",
+    )
     _add_confirm_argument(reverse)
     return parser
 
@@ -126,13 +148,29 @@ def _add_confirm_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _parse_leaf_path(text: str) -> tuple[str, ...]:
+    value, failure = parse_strict_json(text.encode("utf-8"))
+    if (
+        failure is not None
+        or not isinstance(value, list)
+        or not value
+        or not all(isinstance(segment, str) and segment for segment in value)
+    ):
+        raise LuwuError(
+            "an undeclared path must be a non-empty JSON array of key names",
+            code="field_invalid",
+        )
+    return tuple(value)
+
+
 def _run_command(args: argparse.Namespace, manifest: object) -> int:
     """Translate CLI input into the process-local engine API."""
 
-    plan = engine.build_plan(cast(Any, manifest))
     if args.command in {"inspect", "plan"}:
+        plan = engine.build_plan(cast(Any, manifest))
         _emit_metadata(plan, heading=args.command, command=args.command, args=args)
         return 0
+    plan = engine.build_mutation_plan(cast(Any, manifest))
 
     if args.command == "apply":
         result = engine.apply_plan(plan, confirm=args.yes)
@@ -145,7 +183,16 @@ def _run_command(args: argparse.Namespace, manifest: object) -> int:
             confirm=args.yes,
         )
     elif args.command == "adopt":
-        result = engine.adopt_resource(plan, resource=args.resource, confirm=args.yes)
+        result = engine.adopt_resources(
+            plan, resources=tuple(args.resource), confirm=args.yes
+        )
+    elif args.command == "reverse-sync" and args.undeclared:
+        result = engine.reverse_undeclared(
+            plan,
+            resource=args.resource,
+            paths=tuple(_parse_leaf_path(text) for text in args.undeclared),
+            confirm=args.yes,
+        )
     elif args.command == "reverse-sync":
         result = engine.reverse_inputs(
             plan,

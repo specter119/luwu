@@ -153,6 +153,13 @@ uv run --script experiments/profile_benchmark.py \
 
 Run timing without concurrent test suites.
 
+`experiments/profile_realistic.py` measures a dotfiles-shaped workload and
+reports operation counts next to wall time. To see where one scenario spends
+its time, `experiments/profile_flame.py <scenario> <size>` samples a single
+command with `py-spy`, writes a collapsed-stack file and a flame graph SVG, and
+prints the inclusive share of each Luwu frame. Judge an optimization by whether
+the frame it targets shrank, then rerun the budget matrix.
+
 ## Isolated rehearsal and Dotter handoff
 
 Rehearse in an isolated temporary HOME before touching a real target. The
@@ -275,6 +282,22 @@ observed behavior, evidence, risk, and smallest corrective direction. Promote
 it to the `product`, `reference`, `design`, `status`, or `roadmap` document
 only when repeated evidence makes it a stable rule. Do not create a parallel
 pattern catalog merely to avoid choosing an owner.
+
+## Commit messages
+
+Write each commit as `type(scope)?: description` in lower case, with `type`
+one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `bench`, `build`,
+`ci`, `chore`, or `revert`, and `!` before the colon for a breaking change.
+`cliff.toml` holds the grammar and the type groups. GitHub merge commits are
+not checked. `git-cliff` does not write `docs/changelog.md`, which records
+each delivery by hand.
+
+- Enable the local check once per clone with
+  `prek install --hook-type commit-msg`. It needs `git-cliff` on `PATH`.
+- `scripts/check_commits.sh origin/master..HEAD` checks every commit of a
+  branch, and CI runs it on pull requests.
+- `git cliff origin/master..HEAD` prints the branch's commits grouped by type,
+  which is the starting point for a pull request description.
 
 ## Release gates
 

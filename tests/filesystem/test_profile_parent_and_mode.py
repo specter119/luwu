@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from luwu import engine as engine_module
 from luwu.engine import (
+    EngineError,
     accept_baseline,
     adopt_resource,
     apply_plan,
@@ -142,22 +143,18 @@ dependencies = []
 resources = ["first", "second"]
 [inputs]
 [resources.first]
-kind = "copy"
+deploy = "copy"
 source = "first.txt"
 target = "nested/first.txt"
 baseline = "baselines/first.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "create"
 parent_mode = "0700"
 [resources.second]
-kind = "copy"
+deploy = "copy"
 source = "second.txt"
 target = "nested/second.txt"
 baseline = "baselines/second.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "create"
 parent_mode = "0750"
@@ -235,3 +232,25 @@ parent_mode = "0750"
 
         self.assertEqual(result.outcome, "committed")
         self.assertEqual(stat.S_IMODE(self._target().stat().st_mode), 0o666)
+
+
+class DirectoryModeObservationTests(profile_case.ProfileEngineCase):
+    def test_observation_returns_identity_and_mode_of_a_real_directory(self) -> None:
+        directory = self.home / "observed"
+        directory.mkdir(mode=0o750)
+        directory.chmod(0o750)
+
+        identity, mode = engine_module._observe_directory_mode(self.home, directory)
+
+        self.assertEqual(identity, (directory.stat().st_dev, directory.stat().st_ino))
+        self.assertEqual(mode, 0o750)
+
+    def test_observation_rejects_symlink_missing_and_file_entries(self) -> None:
+        (self.home / "real").mkdir()
+        (self.home / "link").symlink_to(self.home / "real")
+        (self.home / "file").write_bytes(b"x")
+
+        for name in ("link", "missing", "file"):
+            with self.subTest(name=name), self.assertRaises(EngineError) as raised:
+                engine_module._observe_directory_mode(self.home, self.home / name)
+            self.assertEqual(raised.exception.code, "stale_plan")

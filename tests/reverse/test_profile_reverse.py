@@ -97,8 +97,9 @@ class ProfileReverseTests(profile_case.ProfileEngineCase):
         apply_result = apply_plan(plan, confirm=True)
         self.assertEqual(apply_result.outcome, "not_attempted")
         self.assertEqual(apply_result.error_code, "review_required")
-        self.assertTrue(
-            all(action.state == "not_attempted" for action in apply_result.actions)
+        self.assertEqual(
+            [(action.kind, action.state) for action in apply_result.actions],
+            [("resource_skip", "skipped")],
         )
         self.assertEqual(self._snapshot(), before)
 
@@ -397,12 +398,10 @@ dependencies = []
 resources = ["note"]
 [inputs]
 [resources.note]
-kind = "copy"
+deploy = "copy"
 source = "note.txt"
 target = "note.txt"
 baseline = "baselines/note.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"
@@ -451,8 +450,10 @@ parent_mode = "0700"
         conflict_plan = self._plan()
         self.assertEqual(conflict_plan.to_dict()["resources"][0]["status"], "conflict")
         before = self._snapshot()
-        with self.assertRaises(EngineError):
-            apply_plan(conflict_plan, confirm=True)
+        refused = apply_plan(conflict_plan, confirm=True)
+        self.assertEqual(
+            (refused.outcome, refused.error_code), ("not_attempted", "review_required")
+        )
         self.assertEqual(self._snapshot(), before)
 
         adopt_resource(self._plan(), resource="note", confirm=True)
@@ -484,12 +485,10 @@ dependencies = []
 resources = ["asset_tree"]
 [inputs]
 [resources.asset_tree]
-kind = "directory"
+deploy = "copy"
 source = "assets"
 target = ".config/assets"
 baseline = "baselines/assets"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "create"
 parent_mode = "0700"
@@ -564,11 +563,9 @@ reverse_to = { file = "local/shared.json", path = ["values", "first"], format = 
 layers = [{ file = "local/shared.json", path = ["values", "second"], format = "json" }]
 reverse_to = { file = "local/shared.json", path = ["values", "second"], format = "json" }
 [resources.combined]
-kind = "template"
 source = "templates/shared.json.j2"
 target = "combined.json"
 format = "json"
-scope = "fields"
 baseline = "baselines/combined.json"
 content_sensitivity = "public"
 parents = "require"
@@ -815,12 +812,10 @@ dependencies = []
 resources = ["note"]
 [inputs]
 [resources.note]
-kind = "copy"
+deploy = "copy"
 source = "note.txt"
 target = "note.txt"
 baseline = "baselines/note.json"
-scope = "whole-file"
-owner = "source"
 content_sensitivity = "public"
 parents = "require"
 parent_mode = "0700"
@@ -936,11 +931,9 @@ resources = ["first", "second"]
 layers = [{ file = "local/shared.json", path = ["theme"], format = "json" }]
 reverse_to = { file = "local/shared.json", path = ["theme"], format = "json" }
 [resources.first]
-kind = "template"
 source = "templates/first.json.j2"
 target = "first.json"
 format = "json"
-scope = "fields"
 baseline = "baselines/first.json"
 content_sensitivity = "public"
 parents = "require"
@@ -950,11 +943,9 @@ path = ["theme"]
 owner = "merge"
 input = "theme"
 [resources.second]
-kind = "template"
 source = "templates/second.json.j2"
 target = "second.json"
 format = "json"
-scope = "fields"
 baseline = "baselines/second.json"
 content_sensitivity = "public"
 parents = "require"

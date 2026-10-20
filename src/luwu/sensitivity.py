@@ -33,13 +33,18 @@ _NAMES = frozenset(
 _SUFFIXES = ("_credential", "_credentials", "_key", "_password", "_secret", "_token")
 
 
-def is_sensitive_name(name: str) -> bool:
+def is_sensitive_name(name: str, *, public: frozenset[str] = frozenset()) -> bool:
     """Return whether a key or declared name must stay out of public documents.
 
     Every layer that admits public names (manifest declarations, input layers,
     and parsed documents) uses this predicate, so the layers cannot disagree
-    about what counts as a secret-bearing name.
+    about what counts as a secret-bearing name. ``public`` lists exact names
+    the manifest author has declared public, such as a key that only names an
+    environment variable.
     """
+
+    if name in public:
+        return False
 
     normalized = unicodedata.normalize("NFKC", name)
     normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", normalized)
