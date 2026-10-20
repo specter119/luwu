@@ -429,8 +429,12 @@ write time still stops the batch with `review_required`.
 
 Before staging or creating each action, Luwu revalidates the common batch
 authority by rereading and revalidating the manifest bytes, selected
-profile/package closure, all three root identities, and directory expansion.
-It also rereads every file dependency of the current action and compares
+profile/package closure, all three root identities, and the expansion of the
+source directories that produced the current action's resources. The expansion
+of every other declared directory is verified in full before the first write
+and again in the final whole-batch observation, so a change to an unrelated
+directory is found at that directory's own action or at the final check. It
+also rereads every file dependency of the current action and compares
 complete bytes and presence, along with applicable path identities and modes.
 Modification-time-only or other metadata-only freshness checks are insufficient.
 For a staged file write,

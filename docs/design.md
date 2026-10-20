@@ -184,7 +184,15 @@ into human-readable or machine-readable output.
 
 The CLI integrates these capabilities behind explicit profile and mutation
 selection. Directory enumeration is rechecked at the write boundary so a new
-or rebound leaf cannot silently enter the authorized set. The release evidence
+or rebound leaf cannot silently enter the authorized set. Each declared
+directory keeps its own expansion evidence, so a per-action check expands only
+the directories behind the resources it rechecks while the batch start and the
+final observation expand all of them; a per-action check that expanded every
+directory would make a batch cost grow with actions times directories.
+`luwu/inputs.py` parses a shared layer file once per distinct content for the
+lifetime of one manifest object, keyed on the exact bytes, format and public
+names, so a changed file always parses again and nothing outlives the
+operation. The release evidence
 for the current implementation is summarized in [status](status.md); the
 remaining closure constraint is tracked in the [roadmap](roadmap.md).
 Application-shaped configuration uses the same declared-path and ownership

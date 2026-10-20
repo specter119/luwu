@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import TypedDict
 
 from .errors import LuwuError
 from .filesystem import FileObservation, observe_file
-from .formats import MISSING, get_leaf, parse_document
+from .formats import MISSING, Document, get_leaf, parse_document
 from .manifest import Manifest, Resource
 from .semantic import is_public_scalar
 
@@ -74,6 +75,32 @@ class InputContext:
         }
 
 
+# Parsed layer documents, keyed by manifest and by the exact bytes, format and
+# public names. Every binding that names a layer file parses the whole file, so
+# one operation otherwise parses a shared file once per binding and per recheck.
+# The memo is bound to the manifest's lifetime, holds nothing the resolved
+# inputs of a plan do not already hold, and is never keyed on a file path or
+# a timestamp: changed bytes always miss.
+_LAYER_DOCUMENTS: dict[int, dict[tuple[str, frozenset[str], bytes], Document]] = {}
+
+
+def _parse_layer(
+    manifest: Manifest, data: bytes, layer_format: str, public_names: frozenset[str]
+) -> Document:
+    key = id(manifest)
+    memo = _LAYER_DOCUMENTS.get(key)
+    if memo is None:
+        memo = _LAYER_DOCUMENTS[key] = {}
+        weakref.finalize(manifest, _LAYER_DOCUMENTS.pop, key, None)
+    entry = (layer_format, public_names, data)
+    document = memo.get(entry)
+    if document is None:
+        document = memo[entry] = parse_document(
+            data, format=layer_format, public_names=public_names
+        )
+    return document
+
+
 def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
     """Load exactly the overlay bindings referenced by one resource.
 
@@ -118,10 +145,11 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
             sensitive_name = False
             value: object = MISSING
             try:
-                document = parse_document(
+                document = _parse_layer(
+                    manifest,
                     observation.data,
-                    format=layer.format,
-                    public_names=binding.public_names,
+                    layer.format,
+                    frozenset(binding.public_names),
                 )
                 value = get_leaf(document, layer.path)
             except (LuwuError, UnicodeError) as error:

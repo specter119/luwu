@@ -10,7 +10,7 @@ import stat
 import tomllib
 import unicodedata
 import weakref
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -134,6 +134,8 @@ class _DirectorySource:
     relative: Path
     exclude: tuple[str, ...]
     recursive: bool
+    freshness: tuple[tuple[object, ...], ...] = ()
+    entries: tuple[tuple[object, ...], ...] = ()
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True)
@@ -213,6 +215,8 @@ def _manifest_storage_identity(manifest: Manifest) -> tuple[object, ...]:
                 id(source),
                 id(source.exclude),
                 tuple(id(pattern) for pattern in source.exclude),
+                tuple(id(entry) for entry in source.freshness),
+                tuple(id(entry) for entry in source.entries),
             )
             for source in manifest._directory_sources
         ),
@@ -368,20 +372,22 @@ def load_manifest(path: Path, *, profile: str) -> Manifest:
             source_dir = roots.source.path / declaration.source_relative
             target_dir = roots.target.path / declaration.target_relative
             directory_scopes.append((declaration.name, source_dir, target_dir))
-            directory_sources.append(
-                _DirectorySource(
-                    name=declaration.name,
-                    relative=declaration.source_relative,
-                    exclude=declaration.exclude,
-                    recursive=declaration.recursive,
-                )
-            )
             leaves, snapshots, directory_entries = _expand_directory(
                 roots.source,
                 declaration.source_relative,
                 declaration.exclude,
                 recursive=declaration.recursive,
                 resource_name=declaration.name,
+            )
+            directory_sources.append(
+                _DirectorySource(
+                    name=declaration.name,
+                    relative=declaration.source_relative,
+                    exclude=declaration.exclude,
+                    recursive=declaration.recursive,
+                    freshness=_canonical_freshness(snapshots),
+                    entries=_canonical_entries(directory_entries),
+                )
             )
             directory_freshness.extend(snapshots)
             expansion.extend(directory_entries)
@@ -496,8 +502,33 @@ def load_manifest(path: Path, *, profile: str) -> Manifest:
     return result
 
 
-def verify_manifest(manifest: Manifest) -> None:
-    """Verify declaration bytes, roots, and declared SOURCE directory expansions."""
+def _canonical_freshness(
+    snapshots: Iterable[tuple[object, ...]],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(sorted(set(snapshots), key=repr))
+
+
+def _canonical_entries(
+    entries: Iterable[tuple[object, ...]],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(sorted(entries, key=repr))
+
+
+def _owns_resource(source_name: str, resource_name: str) -> bool:
+    return resource_name == source_name or resource_name.startswith(f"{source_name}:")
+
+
+def verify_manifest(
+    manifest: Manifest, *, resources: frozenset[str] | None = None
+) -> None:
+    """Verify declaration bytes, roots, and declared SOURCE directory expansions.
+
+    Without `resources` every declared source directory is expanded again.
+    With it only the directories that produced the named resources are, so a
+    per-resource recheck costs the size of that resource rather than of the
+    whole manifest. A complete verification still runs before and after every
+    mutating command.
+    """
 
     if (
         not isinstance(manifest, Manifest)
@@ -534,9 +565,12 @@ def verify_manifest(manifest: Manifest) -> None:
                 "manifest selection or expansion is stale", code="stale"
             )
         manifest.roots.verify()
-        directory_freshness: list[tuple[object, ...]] = []
-        expansion: list[tuple[object, ...]] = []
+        changed = False
         for source in manifest._directory_sources:
+            if resources is not None and not any(
+                _owns_resource(source.name, name) for name in resources
+            ):
+                continue
             _, snapshots, entries = _expand_directory(
                 manifest.roots.source,
                 source.relative,
@@ -544,8 +578,11 @@ def verify_manifest(manifest: Manifest) -> None:
                 recursive=source.recursive,
                 resource_name=source.name,
             )
-            directory_freshness.extend(snapshots)
-            expansion.extend(entries)
+            if (
+                _canonical_freshness(snapshots) != source.freshness
+                or _canonical_entries(entries) != source.entries
+            ):
+                changed = True
     except ManifestError:
         raise ManifestError(
             "manifest selection or expansion is stale", code="stale"
@@ -554,12 +591,7 @@ def verify_manifest(manifest: Manifest) -> None:
         raise ManifestError(
             "manifest selection or expansion is stale", code="stale"
         ) from None
-    directory_freshness_tuple = tuple(sorted(set(directory_freshness), key=repr))
-    expansion_tuple = tuple(sorted(expansion, key=repr))
-    if (
-        directory_freshness_tuple != manifest._directory_freshness
-        or expansion_tuple != manifest.expansion
-    ):
+    if changed:
         raise ManifestError("manifest selection or expansion is stale", code="stale")
 
 

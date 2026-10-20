@@ -6,7 +6,9 @@ import tempfile
 import traceback
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from luwu.formats import parse_document
 from luwu.inputs import InputError, absolute_input_path, load_inputs
 from luwu.manifest import Manifest, Resource, load_manifest
 
@@ -81,6 +83,26 @@ input = "model"
 
         manifest = load_manifest(manifest_path, profile="dev")
         return manifest, manifest.resources[0]
+
+    def test_a_layer_is_parsed_once_per_content_and_again_after_it_changes(
+        self,
+    ) -> None:
+        manifest, resource = self._load_case(
+            input_format="toml",
+            global_data=b'value = "global"\n',
+            local_data=b'value = "local"\n',
+        )
+        with patch("luwu.inputs.parse_document", wraps=parse_document) as parse:
+            load_inputs(manifest, resource)
+            load_inputs(manifest, resource)
+        self.assertEqual(parse.call_count, 2)
+
+        local = manifest.roots.inputs.path / "local" / "model.toml"
+        local.write_bytes(b'value = "changed"\n')
+        with patch("luwu.inputs.parse_document", wraps=parse_document) as parse:
+            context = load_inputs(manifest, resource)
+        self.assertEqual(parse.call_count, 1)
+        self.assertEqual(context.values["model"].value, "changed")
 
     def _assert_error_chain_is_safe(self, error: BaseException, marker: str) -> None:
         self.assertIsNone(error.__context__)

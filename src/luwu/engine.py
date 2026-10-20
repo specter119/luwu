@@ -2976,7 +2976,7 @@ def _assert_fresh(
                 _observe_resource(record.manifest, resource)
                 for resource in selected_resources
             )
-        verify_manifest(record.manifest)
+        verify_manifest(record.manifest, resources=resource_names)
     except EngineError:
         raise
     except LuwuError:
