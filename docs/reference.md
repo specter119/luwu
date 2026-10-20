@@ -305,9 +305,10 @@ documents. Accept and adopt establish a baseline. A confirmed apply also advance
 baseline of every resource it wrote, and only for what it wrote: the declared
 fields that it forwarded or that already converged for a structured template,
 or the accepted digest and mode of a copy or whole-file template. Apply also repairs a converged
-template whose baseline still records an older value, which a reverse sync or
-an interrupted apply leaves behind: with no target to write, the plan lists
-only a `baseline_write`. Apply does not create a baseline, and it never
+structured template, copy, or whole-file template whose baseline still records
+an older value, which a reverse sync, an interrupted apply, or an application
+that rewrote the file to match the source leaves behind: with no target to
+write, the plan lists only a `baseline_write`. Apply does not create a baseline, and it never
 accepts a field that is not converged after the write. The preview lists each `baseline_write` action, so the
 advance is part of what `--yes` authorizes. Planning and reverse sync never
 change a baseline.

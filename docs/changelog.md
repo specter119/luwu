@@ -96,7 +96,8 @@ For example: `git show bb80335:docs/milestones/m3.md`.
   plan projection report `replaces_live_on_apply`.
 - `reverse-sync --undeclared PATH` writes the named, proven literal leaves back
   to a template source.
-- Apply also repairs a converged template's stale baseline.
+- Apply also repairs the stale baseline of a converged structured template and
+  of a copy or whole-file template whose live bytes already match the source.
 - M7a is implemented but not closed: its exit is a real trial (see the
   [roadmap](roadmap.md#m7a-daily-loop-usability)).
 

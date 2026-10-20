@@ -148,9 +148,10 @@ modules carry the mechanism:
   so the outcome is `partial`. After a resource's target write verifies, apply
   writes that resource's baseline through the same staged-write path, from the
   freshly observed live values, and a failure there is its own outcome
-  because the target write is already committed. A converged template with a
-  stale baseline gets a baseline-only write, so an interrupted apply or a
-  reverse sync repairs itself on the next apply. `reverse_undeclared` is the
+  because the target write is already committed. A converged template, or a
+  copy whose live bytes already equal the source, with a stale baseline gets a
+  baseline-only write, so an interrupted apply or a reverse sync repairs itself
+  on the next apply. `reverse_undeclared` is the
   one path that writes the source root: it patches only the leaves the
   operator named in a literal template, checks that the template tokens are
   unchanged, renders the result in memory, and writes only when the render

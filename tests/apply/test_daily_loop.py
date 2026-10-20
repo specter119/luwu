@@ -173,6 +173,52 @@ class DailyLoopTests(ProfileEngineCase):
         (self.source / "notes.txt").write_text("three\n", encoding="utf-8")
         self.assertEqual(self._status(), ("drifted", "forward"))
 
+    def test_apply_repairs_a_whole_file_baseline_that_live_already_matches(
+        self,
+    ) -> None:
+        self._configure(_NOTE)
+        note = self.source / "notes.txt"
+        live = self.home / "notes.txt"
+        note.write_text("one\n", encoding="utf-8")
+        adopt_resource(self._plan(), resource="app", confirm=True)
+        self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
+
+        note.write_text("two\n", encoding="utf-8")
+        live.write_text("two\n", encoding="utf-8")
+        self.assertEqual(self._status(), ("in_sync", "noop"))
+        stale = self.baseline.read_bytes()
+
+        preview = apply_plan(self._plan(), confirm=False)
+        self.assertEqual(preview.outcome, "confirmation_required")
+        self.assertEqual([a.kind for a in preview.actions], ["baseline_write"])
+        self.assertEqual(self.baseline.read_bytes(), stale)
+
+        result = apply_plan(self._plan(), confirm=True)
+        self.assertEqual(result.outcome, "committed")
+        self.assertNotEqual(self.baseline.read_bytes(), stale)
+        self.assertEqual(live.read_text(encoding="utf-8"), "two\n")
+        self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "no_changes")
+
+        note.write_text("three\n", encoding="utf-8")
+        self.assertEqual(self._status(), ("drifted", "forward"))
+
+    def test_a_conflicting_whole_file_is_not_repaired(self) -> None:
+        self._configure(_NOTE)
+        note = self.source / "notes.txt"
+        note.write_text("one\n", encoding="utf-8")
+        adopt_resource(self._plan(), resource="app", confirm=True)
+        self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
+
+        note.write_text("two\n", encoding="utf-8")
+        (self.home / "notes.txt").write_text("live\n", encoding="utf-8")
+        self.assertEqual(self._status(), ("conflict", "review"))
+
+        preview = apply_plan(self._plan(), confirm=False)
+        self.assertEqual(
+            [a.kind for a in preview.actions],
+            ["resource_skip"],
+        )
+
     def test_a_failed_baseline_write_is_reported_without_undoing_the_target(
         self,
     ) -> None:

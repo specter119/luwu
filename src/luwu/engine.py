@@ -798,19 +798,28 @@ def _advances_baseline(item: _ResourcePlan) -> bool:
 
 
 def _needs_baseline_repair(item: _ResourcePlan) -> bool:
-    """Whether a converged template still records an older accepted value.
+    """Whether a converged resource still records an older accepted value.
 
     This is what a reverse sync or an interrupted apply leaves behind: live
     and desired already agree, so no target write is planned, but a later
     source change would read as a change on both sides.
     """
 
-    if (
-        item.resource.kind != "template"
-        or item.status != "converged"
-        or item.baseline is None
-        or _skip_reason(item) is not None
-    ):
+    if item.baseline is None or _skip_reason(item) is not None:
+        return False
+    if item.resource.kind == "copy":
+        target = item.target_observation
+        return (
+            item.status == "in_sync"
+            and target is not None
+            and target.data is not None
+            and (
+                item.baseline.whole_file_digest
+                != hashlib.sha256(target.data).hexdigest()
+                or item.baseline.whole_file_mode != target.mode
+            )
+        )
+    if item.resource.kind != "template" or item.status != "converged":
         return False
     fields = _baseline_fields(item)
     return bool(fields) and not _mapping_values_equal(
