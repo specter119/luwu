@@ -313,7 +313,10 @@ or the accepted digest and mode of a copy or whole-file template. Apply also rep
 structured template, copy, or whole-file template whose baseline still records
 an older value, which a reverse sync, an interrupted apply, or an application
 that rewrote the file to match the source leaves behind: with no target to
-write, the plan lists only a `baseline_write`. Apply does not create a baseline, and it never
+write, the apply preview lists only a `baseline_write`. The plan itself does
+not list that work: a structured template whose declared fields already match
+reports `status = "converged"` with `action = "noop"`, and a copy whose bytes
+match the source reports `in_sync`. Apply does not create a baseline, and it never
 accepts a field that is not converged after the write. The preview lists each `baseline_write` action, so the
 advance is part of what `--yes` authorizes. Planning and reverse sync never
 change a baseline.
