@@ -129,7 +129,10 @@ copy resource.
 **Copy resources** own the complete regular-file bytes of their source. They
 require a `baseline`. An existing copy target is not authorized by observation
 or by apply: it requires an explicit adopt operation before source
-deployment. The copy baseline uses its closed payload variant to store the
+deployment. An absent target with no baseline file is planned as `create`:
+apply writes the file only if the name is still absent, then records the
+accepted digest and mode as the baseline. An unusable baseline file never
+authorizes a create. The copy baseline uses its closed payload variant to store the
 digest algorithm and accepted public byte digest as content evidence; accepted
 file mode is represented separately. It does not persist file bytes. Explicit
 public admission does not redact secrets. Subsequent source/live disagreement
@@ -316,8 +319,9 @@ that rewrote the file to match the source leaves behind: with no target to
 write, the apply preview lists only a `baseline_write`. The plan itself does
 not list that work: a structured template whose declared fields already match
 reports `status = "converged"` with `action = "noop"`, and a copy whose bytes
-match the source reports `in_sync`. Apply does not create a baseline, and it never
-accepts a field that is not converged after the write. The preview lists each `baseline_write` action, so the
+match the source reports `in_sync`. Apply creates a baseline only for a copy or whole-file template whose absent
+target it just created; it never creates one for a structured template, and it
+never accepts a field that is not converged after the write. The preview lists each `baseline_write` action, so the
 advance is part of what `--yes` authorizes. Planning and reverse sync never
 change a baseline.
 

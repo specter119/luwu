@@ -2098,7 +2098,9 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
         if target.data is None:
             complete = _baseline_complete(resource, baseline)
             if resource.kind == "copy":
-                if baseline is None or baseline.whole_file_digest is None:
+                if (baseline is not None and baseline.whole_file_digest is None) or (
+                    baseline is None and baseline_replaced
+                ):
                     status, action, reason = (
                         "adopt_required",
                         "adopt",

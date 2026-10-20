@@ -82,10 +82,52 @@ class WholeFileTemplateTests(ProfileEngineCase):
         )
         return item["status"], item["action"]
 
-    def test_rendered_bytes_are_adopted_deployed_and_redeployed(self) -> None:
+    def test_an_absent_target_is_created_without_adoption_and_gets_a_baseline(
+        self,
+    ) -> None:
         self._configure(_GREETING)
+        self.assertEqual(self._status(), ("missing", "create"))
+        self.assertFalse((self.inputs / "baselines/greeting.json").exists())
+
+        result = apply_plan(self._plan(), confirm=True)
+        self.assertEqual(
+            (result.outcome, result.verification_status), ("committed", "verified")
+        )
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "echo v1\n")
+        self.assertTrue((self.inputs / "baselines/greeting.json").exists())
+        self.assertEqual(self._status(), ("in_sync", "noop"))
+        self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "no_changes")
+
+        self._set_theme("v2")
+        self.assertEqual(self._status(), ("drifted", "forward"))
+
+    def test_a_target_that_appears_after_the_plan_is_never_replaced(self) -> None:
+        self._configure(_GREETING)
+        plan = self._plan()
+        self.target.write_text("echo mine\n", encoding="utf-8")
+
+        result = apply_plan(plan, confirm=True)
+
+        self.assertNotEqual(result.outcome, "committed")
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "echo mine\n")
         self.assertEqual(self._status(), ("adopt_required", "adopt"))
 
+    def test_an_unusable_baseline_file_never_lets_an_absent_target_be_created(
+        self,
+    ) -> None:
+        self._configure(_GREETING)
+        baseline = self.inputs / "baselines/greeting.json"
+        baseline.write_text("{}", encoding="utf-8")
+
+        self.assertIn(self._status()[0], {"blocked", "adopt_required"})
+        result = apply_plan(self._plan(), confirm=True)
+
+        self.assertNotEqual(result.outcome, "committed")
+        self.assertFalse(self.target.exists())
+        self.assertEqual(baseline.read_text(encoding="utf-8"), "{}")
+
+    def test_rendered_bytes_are_adopted_deployed_and_redeployed(self) -> None:
+        self._configure(_GREETING)
         self.assertEqual(
             adopt_resource(self._plan(), resource="greeting", confirm=True).outcome,
             "committed",
@@ -196,10 +238,9 @@ parents = "create"
             statuses,
             {
                 "tree:plain.conf": ("missing", ".config/tree/plain.conf"),
-                "tree:rc.sh.j2": ("adopt_required", ".config/tree/rc.sh"),
+                "tree:rc.sh.j2": ("missing", ".config/tree/rc.sh"),
             },
         )
-        adopt_resource(self._plan(), resource="tree:rc.sh.j2", confirm=True)
         self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
         out = self.home / ".config/tree"
         self.assertEqual((out / "rc.sh").read_text(encoding="utf-8"), "echo v1\n")

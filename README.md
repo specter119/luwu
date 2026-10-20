@@ -30,10 +30,11 @@ export HOME="$demo_dir/home"
 uv run luwu plan --manifest "$demo_dir/luwu.toml" --profile synthetic
 ```
 
-A fresh profile first needs explicit baselines (`accept` for structured
-templates and `adopt` for copies and text templates) before `apply --yes`
-writes anything. Symlink resources, the default deployment, need none, and a
-confirmed apply advances the baselines it wrote. The
+A fresh profile needs an explicit `accept` for structured templates before
+`apply --yes` writes them, and an explicit `adopt` for a copy or text
+template whose target already exists. Symlink resources, the default
+deployment, need none, a copy or text template with an absent target is
+created by apply, and a confirmed apply advances the baselines it wrote. The
 [isolated profile fixture guide](tests/fixtures/dotfiles_profile/README.md)
 walks through the complete loop, including reverse sync.
 

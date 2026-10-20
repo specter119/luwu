@@ -18,10 +18,10 @@ for those subjects.
 | Capability                   | Status                  | Open limits                                                                                        |
 | ---------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------- |
 | Structured templates         | Implemented             | JSON, JSONC, and TOML fields only                                                                  |
-| Whole-file text templates    | Implemented             | Rendered bytes use the copy baseline; a new target needs explicit adoption                         |
+| Whole-file text templates    | Implemented             | Rendered bytes use the copy baseline; an absent target is created, an existing one needs adoption  |
 | Symlink resources            | Implemented             | Default deploy; an existing target that is not the declared link blocks the resource               |
 | Copy resources               | Implemented             | Explicit `deploy = "copy"`; an existing target needs explicit adoption                             |
-| Directory sources            | Implemented             | Expanded into per-file leaves; a new leaf needs explicit adoption if it is copied                  |
+| Directory sources            | Implemented             | Expanded into per-file leaves; a copied leaf with an existing target needs explicit adoption       |
 | Profiles and package closure | Implemented             | Selection is explicit; no platform detection                                                       |
 | Layered public inputs        | Implemented             | Public scalar values only                                                                          |
 | Observation                  | Implemented             | An unsafe live path blocks that resource; the other resources are still observed                   |
