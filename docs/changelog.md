@@ -106,6 +106,9 @@ For example: `git show bb80335:docs/milestones/m3.md`.
 - A per-action freshness check expands only the source directories behind the
   resources it rechecks, and a shared input layer is parsed once per distinct
   content, so apply cost no longer grows with actions times directories.
+- Capturing a parent chain verifies it with one path walk to the deepest
+  directory instead of re-walking from the filesystem root at every level, so
+  the opens per observation grow with depth rather than with its square.
 - M7a is implemented but not closed: its exit is a real trial (see the
   [roadmap](roadmap.md#m7a-daily-loop-usability)).
 

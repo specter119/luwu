@@ -917,7 +917,6 @@ def _capture_ancestry(
                     raise _error("filesystem parent is unsafe", "unsafe_path")
                 _require_trusted_directory(child_info)
                 child_identity = _identity(child_info)
-                verify_directory_identity(child, child_path)
             except BaseException:
                 os.close(child)
                 raise
@@ -929,6 +928,9 @@ def _capture_ancestry(
             existing.append((current, child_identity))
 
         boundary.verify()
+        # One path walk to the deepest descriptor covers every ancestor: any
+        # ancestor renamed or replaced after the descent moves the path away
+        # from this descriptor. Re-walking from "/" per level is O(depth^2).
         verify_directory_identity(descriptor, current)
     except FilesystemError:
         raise

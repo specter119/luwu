@@ -153,6 +153,13 @@ uv run --script experiments/profile_benchmark.py \
 
 Run timing without concurrent test suites.
 
+`experiments/profile_realistic.py` measures a dotfiles-shaped workload and
+reports operation counts next to wall time. To see where one scenario spends
+its time, `experiments/profile_flame.py <scenario> <size>` samples a single
+command with `py-spy`, writes a collapsed-stack file and a flame graph SVG, and
+prints the inclusive share of each Luwu frame. Judge an optimization by whether
+the frame it targets shrank, then rerun the budget matrix.
+
 ## Isolated rehearsal and Dotter handoff
 
 Rehearse in an isolated temporary HOME before touching a real target. The

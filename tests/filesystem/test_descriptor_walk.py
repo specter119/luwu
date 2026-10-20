@@ -223,6 +223,51 @@ class DescriptorWalkTests(unittest.TestCase):
         with self.assertRaises(FileChangedError):
             verify_directory_binding(boundary, Path("a"), descriptor)
 
+    def test_ancestry_capture_detects_an_intermediate_directory_swapped_mid_walk(
+        self,
+    ) -> None:
+        (self.root / "a" / "b").mkdir(parents=True)
+        boundary = capture_directory_boundary(self.root)
+        original_verify = DirectoryBoundary.verify
+
+        def swap_then_verify(instance: DirectoryBoundary) -> None:
+            (self.root / "a").rename(self.root / "moved")
+            (self.root / "a" / "b").mkdir(parents=True)
+            original_verify(instance)
+
+        with (
+            patch.object(DirectoryBoundary, "verify", swap_then_verify),
+            self.assertRaises(FilesystemError) as raised,
+        ):
+            filesystem_module._capture_ancestry(boundary, self.root, Path("a/b/file"))
+        self.assertEqual(raised.exception.code, "unsafe_path")
+
+    def test_ancestry_capture_opens_grow_linearly_with_depth(self) -> None:
+        real_open = os.open
+        opens = {"count": 0}
+
+        def counting(
+            path_name: str | Path, flags: int, *, dir_fd: int | None = None
+        ) -> int:
+            opens["count"] += 1
+            return real_open(path_name, flags, dir_fd=dir_fd)
+
+        def cost(depth: int) -> int:
+            parts = [f"d{index}" for index in range(depth)]
+            (self.root.joinpath(*parts)).mkdir(parents=True)
+            boundary = capture_directory_boundary(self.root)
+            opens["count"] = 0
+            with patch.object(filesystem_module.os, "open", counting):
+                filesystem_module._capture_ancestry(
+                    boundary, self.root, Path(*parts, "leaf")
+                )
+            return opens["count"]
+
+        shallow = cost(6)
+        (self.root / "d0").rename(self.root / "old")
+        deep = cost(12)
+        self.assertLessEqual(deep - shallow, 4 * 6)
+
     def test_directory_binding_rejects_a_symlinked_component(self) -> None:
         boundary = capture_directory_boundary(self.root)
         (self.root / "real").mkdir()
