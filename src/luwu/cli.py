@@ -54,7 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
         "adopt", help="explicitly accept a declared copy resource"
     )
     _add_common_arguments(adopt)
-    _add_resource_argument(adopt)
+    adopt.add_argument(
+        "--resource",
+        action="append",
+        required=True,
+        help="declared resource name; repeat to adopt several in one batch",
+    )
     _add_confirm_argument(adopt)
 
     reverse = commands.add_parser(
@@ -177,7 +182,9 @@ def _run_command(args: argparse.Namespace, manifest: object) -> int:
             confirm=args.yes,
         )
     elif args.command == "adopt":
-        result = engine.adopt_resource(plan, resource=args.resource, confirm=args.yes)
+        result = engine.adopt_resources(
+            plan, resources=tuple(args.resource), confirm=args.yes
+        )
     elif args.command == "reverse-sync" and args.undeclared:
         result = engine.reverse_undeclared(
             plan,

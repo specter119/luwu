@@ -1254,6 +1254,84 @@ def adopt_resource(plan: Plan, *, resource: str, confirm: bool) -> Result:
     record = _mutation_record(plan, operation="adopt")
     if record is None:
         return Result("adopt", "not_attempted", error_code="stale_plan")
+    return _adopt_item(
+        record,
+        resource,
+        confirm,
+        expected_baselines={},
+        expected_directories={},
+        committed_before=False,
+    )
+
+
+def adopt_resources(plan: Plan, *, resources: tuple[str, ...], confirm: bool) -> Result:
+    """Adopt several copy resources from one plan in the order given.
+
+    The batch observes the profile once. Each resource is then rechecked and
+    written like a single adopt; the first failure stops the batch and earlier
+    baselines stay committed (outcome ``partial``).
+    """
+
+    if len(resources) == 1:
+        return adopt_resource(plan, resource=resources[0], confirm=confirm)
+    record = _mutation_record(plan, operation="adopt")
+    if record is None:
+        return Result("adopt", "not_attempted", error_code="stale_plan")
+    if not resources or len(set(resources)) != len(resources):
+        raise EngineError("operation_invalid", operation="adopt")
+    for name in resources:
+        item = _resource_by_name(record.resources, name)
+        if item.resource.kind != "copy" or item.status == "blocked":
+            raise EngineError("operation_invalid", operation="adopt", resource=name)
+    expected_baselines: dict[Path, FileObservation] = {}
+    expected_directories: dict[Path, tuple[tuple[int, int], int]] = {}
+    actions: list[ActionResult] = []
+    directories: set[str] = set()
+    committed = False
+    for name in resources:
+        result = _adopt_item(
+            record,
+            name,
+            confirm,
+            expected_baselines=expected_baselines,
+            expected_directories=expected_directories,
+            committed_before=committed,
+        )
+        for action in result.actions:
+            # A shared parent is created, and reported, once for the batch.
+            if action.kind == "mkdir":
+                if action.path in directories:
+                    continue
+                directories.add(action.path)
+            actions.append(action)
+        if not confirm:
+            continue
+        if result.outcome != "committed":
+            outcome = result.outcome
+            if outcome == "not_attempted" and committed:
+                outcome = "partial"
+            return Result(
+                "adopt",
+                outcome,
+                tuple(actions),
+                error_code=result.error_code,
+                verification_status=result.verification_status,
+            )
+        committed = True
+    if not confirm:
+        return Result("adopt", "confirmation_required", tuple(actions))
+    return Result("adopt", "committed", tuple(actions), verification_status="verified")
+
+
+def _adopt_item(
+    record: _PlanRecord,
+    resource: str,
+    confirm: bool,
+    *,
+    expected_baselines: dict[Path, FileObservation],
+    expected_directories: dict[Path, tuple[tuple[int, int], int]],
+    committed_before: bool,
+) -> Result:
     item = _resource_by_name(record.resources, resource)
     if item.resource.kind != "copy" or item.status == "blocked":
         raise EngineError("operation_invalid", operation="adopt", resource=resource)
@@ -1326,9 +1404,7 @@ def adopt_resource(plan: Plan, *, resource: str, confirm: bool) -> Result:
         )
     if _unsafe_shared_parent_mode(record.resources, parent_paths):
         return _finish_actions("adopt", actions, "not_attempted", "parent_mode_unsafe")
-    expected_baselines: dict[Path, FileObservation] = {}
-    expected_directories: dict[Path, tuple[tuple[int, int], int]] = {}
-    committed = False
+    committed = committed_before
     resource_names = frozenset({resource})
     for parent in parent_paths:
         if parent in expected_directories:
