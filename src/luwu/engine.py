@@ -247,7 +247,7 @@ class _ResourcePlan:
 
         return (
             self.resource.kind == "copy"
-            and self.action == "adopt"
+            and self.action in {"adopt", "review"}
             and self.desired_data is not None
             and self.target_observation is not None
             and self.target_observation.data is not None

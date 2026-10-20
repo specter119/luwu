@@ -460,7 +460,8 @@ its kind (`target_write`, `link_create`, `baseline_write`, `input_write`,
 `source_write`, `resource_skip`, or a parent creation), resource, relative
 path, state, and selected field labels. A skipped action also carries its
 fixed `reason`. A copy or whole-file template resource whose plan action is
-`adopt` while the live bytes differ from the source reports
+`adopt` or `review` (a conflict that adopting would settle) while the live bytes
+differ from the source reports
 `replaces_live_on_apply = true` in its plan projection, and the adopt preview
 marks its `baseline_write` action the same way. Apply may end as
 `committed_but_baseline_not_advanced` when the targets were written but a

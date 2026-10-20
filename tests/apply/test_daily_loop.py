@@ -331,3 +331,40 @@ class DailyLoopTests(ProfileEngineCase):
         self.assertFalse(item["replaces_live_on_apply"])
         preview = adopt_resource(self._plan(), resource="app", confirm=False)
         self.assertNotIn("replaces_live_on_apply", preview.actions[0].to_dict())
+
+    def test_adopt_preview_of_a_conflict_says_apply_will_replace_the_live_bytes(
+        self,
+    ) -> None:
+        self._configure(_NOTE)
+        note = self.source / "notes.txt"
+        live = self.home / "notes.txt"
+        note.write_text("one\n", encoding="utf-8")
+        adopt_resource(self._plan(), resource="app", confirm=True)
+        self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
+
+        note.write_text("two\n", encoding="utf-8")
+        live.write_text("live\n", encoding="utf-8")
+        (item,) = self._plan().to_dict()["resources"]
+        self.assertEqual((item["status"], item["action"]), ("conflict", "review"))
+        self.assertTrue(item["replaces_live_on_apply"])
+
+        preview = adopt_resource(self._plan(), resource="app", confirm=False)
+        (action,) = preview.actions
+        self.assertTrue(action.replaces_live_on_apply)
+
+        adopt_resource(self._plan(), resource="app", confirm=True)
+        self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
+        self.assertEqual(live.read_text(encoding="utf-8"), "two\n")
+
+    def test_a_mode_only_conflict_does_not_claim_to_replace_bytes(self) -> None:
+        self._configure(_NOTE)
+        note = self.source / "notes.txt"
+        live = self.home / "notes.txt"
+        note.write_text("one\n", encoding="utf-8")
+        adopt_resource(self._plan(), resource="app", confirm=True)
+        self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
+
+        live.chmod(0o600 if live.stat().st_mode & 0o777 != 0o600 else 0o640)
+        (item,) = self._plan().to_dict()["resources"]
+        self.assertEqual((item["status"], item["action"]), ("conflict", "review"))
+        self.assertFalse(item["replaces_live_on_apply"])
