@@ -51,7 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_confirm_argument(accept)
 
     adopt = commands.add_parser(
-        "adopt", help="explicitly accept a declared copy resource"
+        "adopt",
+        help="explicitly accept a declared copy or whole-file template resource",
     )
     _add_common_arguments(adopt)
     adopt.add_argument(

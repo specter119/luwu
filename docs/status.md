@@ -3,9 +3,10 @@
 Status: the single manifest contract (version 8) is implemented and technically
 verified in isolated, synthetic environments. Manifest versions 1 through 7
 were retired and are no longer loadable. Droid workspace trust is not
-supported by decision. Real-application and real-target use is unverified. The
-daily-loop fixes and the text-template and symlink resources are implemented
-but have not yet had a real trial (below).
+supported by decision. Real-application and real-target use is verified only
+by the maintainer's accepted migration trial (see the
+[roadmap](roadmap.md#m7a-daily-loop-usability)); the application runtime has
+not loaded any synthetic fixture.
 
 This document owns the current implementation snapshot. It does not define
 product direction, public command or manifest behavior, internal mechanisms,
@@ -26,7 +27,7 @@ for those subjects.
 | Layered public inputs        | Implemented             | Public scalar values only                                                                          |
 | Observation                  | Implemented             | An unsafe live path blocks that resource; the other resources are still observed                   |
 | Ownership and baselines      | Implemented             | Undeclared content is never adopted implicitly                                                     |
-| Accept, adopt, reverse sync  | Implemented             | One resource per command; a changed declaration needs an explicit re-accept                        |
+| Accept, adopt, reverse sync  | Implemented             | Accept and reverse sync take one resource, adopt a batch; a changed declaration needs re-accept   |
 | Undeclared write-back        | Implemented             | Literal template subtrees only; every other case is refused                                        |
 | Profile-wide apply           | Implemented             | Review resources are skipped and the outcome is `partial`; batch-level blockers stop the batch     |
 | Batch performance            | Implemented             | Budgets are in [maintenance](maintenance.md#performance-acceptance); rerun them on the target host |
@@ -37,13 +38,12 @@ The exact fields, states, error codes, output projections, compatibility
 behavior, and unsupported cases are owned only by [reference](reference.md).
 The rows above are status claims, not a second contract.
 
-## Daily-loop changes awaiting a real trial
+## Daily-loop changes
 
 These changes closed the gaps that adversarial review found against the
 synthetic fixtures. They are implemented and covered by the tests and
-ablations, but the [roadmap](roadmap.md#m7a-daily-loop-usability) keeps M7a
-open until a trial on real public application files. Treat them as unproven on
-a real profile.
+ablations, and the [roadmap](roadmap.md#m7a-daily-loop-usability) records the
+trial that closed M7a. A later finding reopens the affected item.
 
 - A confirmed apply advances the baseline of the resources it wrote.
 - Apply skips a resource that needs review and writes the others.

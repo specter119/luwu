@@ -114,7 +114,7 @@ For example: `git show bb80335:docs/milestones/m3.md`.
   fallback.
 - A command that confirms with `--yes` takes the plan it just built as its
   entry observation instead of observing the whole profile a second time.
-- M7a is implemented but not closed: its exit is a real trial (see the
+- M7a was closed on the maintainer's real-migration trial (see the
   [roadmap](roadmap.md#m7a-daily-loop-usability)).
 
 ## Consolidation: one manifest contract

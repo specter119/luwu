@@ -343,11 +343,13 @@ Inspect and plan are read-only. Accept requires an explicit profile, exactly
 one resource, field selection, and --from desired|live baseline side.
 Reverse-sync requires an explicit profile, exactly one resource, and either
 selected eligible live/merge fields or `--undeclared PATH`. Field mode writes only
-the declared reverse_to destinations. Undeclared mode is described below. Adopt requires an explicit profile and exactly one copy or whole-file
-template resource. When the source bytes differ from the live target, the
-adopt preview marks its baseline action with `replaces_live_on_apply = true`:
-the next apply will replace those live bytes. These are per-resource mutations; there is no joint
-cross-resource selection for accept, adopt, or reverse-sync. Apply alone
+the declared reverse_to destinations. Undeclared mode is described below. Adopt requires an explicit profile and one
+or more copy or whole-file template resources (see Commands). When the source
+bytes differ from the live target, the adopt preview marks its baseline action
+with `replaces_live_on_apply = true`: the next apply will replace those live
+bytes. Accept and reverse-sync are per-resource mutations with no joint
+cross-resource selection, and an adopt batch only repeats the per-resource
+adopt. Apply alone
 mutates the complete selected profile as a batch. Every mutation has a
 metadata-only preview and requires explicit --yes; confirmation
 recalculates and rechecks the manifest, selected profile and package
