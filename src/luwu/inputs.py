@@ -115,6 +115,7 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
                     "required input layer is missing", code="input_missing"
                 )
             parse_failed = False
+            sensitive_name = False
             value: object = MISSING
             try:
                 document = parse_document(
@@ -123,8 +124,15 @@ def load_inputs(manifest: Manifest, resource: Resource) -> InputContext:
                     public_names=binding.public_names,
                 )
                 value = get_leaf(document, layer.path)
-            except (LuwuError, UnicodeError):
+            except (LuwuError, UnicodeError) as error:
                 parse_failed = True
+                sensitive_name = getattr(error, "code", None) == "sensitive_input"
+            if sensitive_name:
+                # Raised outside the handler so no parser context is chained.
+                raise InputError(
+                    "input layer carries a sensitive key name",
+                    code="sensitive_input",
+                )
             if parse_failed:
                 raise InputError("input layer is invalid", code="input_invalid")
             if value is MISSING:

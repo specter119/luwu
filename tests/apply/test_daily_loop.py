@@ -313,6 +313,17 @@ class DailyLoopTests(ProfileEngineCase):
         self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
         self.assertEqual(self._status(), ("in_sync", "noop"))
 
+    def test_a_sensitive_key_in_a_shared_input_file_names_its_category(self) -> None:
+        self._configure()
+        self.shared.write_text(
+            json.dumps({"theme": "v1", "hold_key": "RAlt"}) + "\n", encoding="utf-8"
+        )
+
+        (item,) = self._plan().to_dict()["resources"]
+        self.assertEqual(item["status"], "blocked")
+        self.assertEqual(item["error_code"], "sensitive_input")
+        self.assertNotIn("hold_key", json.dumps(item))
+
     def test_adopt_preview_says_when_apply_will_replace_the_live_bytes(self) -> None:
         self._configure(_NOTE)
         (self.source / "notes.txt").write_text("source\n", encoding="utf-8")

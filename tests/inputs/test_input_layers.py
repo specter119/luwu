@@ -140,6 +140,30 @@ input = "model"
                 self.assertEqual(raised.exception.code, "input_invalid")
                 self._assert_error_chain_is_safe(raised.exception, marker)
 
+    def test_a_sensitive_key_name_in_a_layer_is_reported_as_its_own_category(
+        self,
+    ) -> None:
+        cases = (
+            ("json", b'{"value":"global","hold_key":"VALUE_MARKER"}\n'),
+            ("toml", b'value = "global"\nhold_key = "VALUE_MARKER"\n'),
+        )
+        for input_format, global_data in cases:
+            with self.subTest(input_format=input_format):
+                manifest, resource = self._load_case(
+                    input_format=input_format,
+                    global_data=global_data,
+                    local_data=b'{"value":"local"}\n'
+                    if input_format == "json"
+                    else b'value = "local"\n',
+                )
+
+                with self.assertRaises(InputError) as raised:
+                    load_inputs(manifest, resource)
+
+                self.assertEqual(raised.exception.code, "sensitive_input")
+                self._assert_error_chain_is_safe(raised.exception, "VALUE_MARKER")
+                self._assert_error_chain_is_safe(raised.exception, "hold_key")
+
     def test_valid_json_and_toml_overlays_keep_order_and_winner(self) -> None:
         cases = (
             ("json", b'{"value":"global"}\n', b'{"value":"local"}\n'),

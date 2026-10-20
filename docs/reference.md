@@ -80,6 +80,11 @@ verifies every consumer and preserved unselected content after writing.
 Source-owned fields may omit an input binding. Live- and merge-owned fields
 require one; ignored fields do not create a write destination. Version 8
 inputs are public scalar data and have no provider or secret-value path.
+Each binding parses the whole layer file, so a sensitive-looking key name
+anywhere in a shared file blocks every binding that does not list that name in
+its `public_names`. The consumers are blocked with the fixed error code
+`sensitive_input`; any other unreadable layer uses `input_invalid`. Neither
+code names the key, the value, or the file.
 
 For a shared input, if resources A and B consume the same leaf `x = 1` and
 both have live value `2`, reversing either one alone is blocked because
