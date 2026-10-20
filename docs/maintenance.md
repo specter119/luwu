@@ -283,6 +283,22 @@ it to the `product`, `reference`, `design`, `status`, or `roadmap` document
 only when repeated evidence makes it a stable rule. Do not create a parallel
 pattern catalog merely to avoid choosing an owner.
 
+## Commit messages
+
+Write each commit as `type(scope)?: description` in lower case, with `type`
+one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `bench`, `build`,
+`ci`, `chore`, or `revert`, and `!` before the colon for a breaking change.
+`cliff.toml` holds the grammar and the type groups. GitHub merge commits are
+not checked. `git-cliff` does not write `docs/changelog.md`, which records
+each delivery by hand.
+
+- Enable the local check once per clone with
+  `prek install --hook-type commit-msg`. It needs `git-cliff` on `PATH`.
+- `scripts/check_commits.sh origin/master..HEAD` checks every commit of a
+  branch, and CI runs it on pull requests.
+- `git cliff origin/master..HEAD` prints the branch's commits grouped by type,
+  which is the starting point for a pull request description.
+
 ## Release gates
 
 Before release, test a wheel and an sdist in fresh virtual environments. Each

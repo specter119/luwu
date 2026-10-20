@@ -42,3 +42,19 @@ jobs:
       - run: uv pip install --python .venv-sdist/bin/python dist/*.tar.gz
       - run: .venv-sdist/bin/luwu --version
       - run: .venv-sdist/bin/python -B -m unittest discover -s tests -t .
+
+  commits:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: latest
+      - run: uv tool install git-cliff==2.14.2
+      - run: scripts/check_commits.sh "origin/$BASE_REF..$HEAD_SHA"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
