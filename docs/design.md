@@ -283,6 +283,9 @@ owner decision and evidence, not a convenience argument.
   of the template engine and give it one legitimate value, so forwarding it is
   not a force rule. A format that is not structured, such as `.netrc`, waits
   for a format parser or a separate secret-text resource.
+- Writing a value back to a provider. Provider fields are read-only inputs;
+  a value that changes often and is not secret belongs in a local input and
+  reaches the source through ordinary reverse sync.
 - A provider cache, a provider registry, and a provider-diagnostic command. The
   earlier cache never took part in a decision and carried a second copy of the
   atomic write.
