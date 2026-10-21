@@ -351,7 +351,7 @@ def read_stable_file(parent: int, name: str) -> tuple[bytes, os.stat_result]:
             or _identity(latest) != _identity(after)
             or not stat.S_ISREG(latest.st_mode)
             or latest.st_nlink != 1
-            or _file_signature(after) != _file_signature(opened)
+            or file_signature(after) != file_signature(opened)
         ):
             raise FileChangedError(name)
         return data, after
@@ -640,8 +640,16 @@ def write_file(
     expected: FileObservation,
     mode: int | None = None,
     check_inputs: Callable[[], object] | None = None,
+    anonymous: bool = False,
 ) -> tuple[int, int]:
-    """Atomically replace one regular file after rechecking its observation."""
+    """Atomically replace one regular file after rechecking its observation.
+
+    With ``anonymous`` the payload is staged on an unnamed ``O_TMPFILE``
+    inode, so an interrupted write leaves no directory entry; the inode
+    receives a temporary name only at the publication boundary. Platforms
+    without ``O_TMPFILE`` refuse the write instead of falling back to a
+    named temporary file.
+    """
 
     boundary, relative = _capture_paths(root, path)
     if type(data) is not bytes:
@@ -658,6 +666,7 @@ def write_file(
 
     temporary: str | None = None
     staged_identity: tuple[int, int] | None = None
+    stage_descriptor = -1
     locked = False
     replace_attempted = False
     replaced = False
@@ -673,15 +682,25 @@ def write_file(
 
         final_mode = _write_mode(expected, mode)
         _validate_mode(final_mode)
-        descriptor, temporary = _create_temporary_file(parent)
+        if anonymous:
+            stage_descriptor = _create_anonymous_stage(parent)
+        else:
+            stage_descriptor, temporary = _create_temporary_file(parent)
         try:
-            staged_identity = _identity(os.fstat(descriptor))
-            os.fchmod(descriptor, 0o600)
-            _write_all(descriptor, data)
-            os.fchmod(descriptor, final_mode)
-            os.fsync(descriptor)
+            staged_identity = _identity(os.fstat(stage_descriptor))
+            os.fchmod(stage_descriptor, 0o600)
+            _write_all(stage_descriptor, data)
+            os.fchmod(stage_descriptor, final_mode)
+            os.fsync(stage_descriptor)
         finally:
-            os.close(descriptor)
+            # An anonymous stage stays open: its descriptor is the only
+            # handle for the verification and the linkat publication below.
+            # Clear the slot before closing so the outer cleanup cannot
+            # double-close a recycled descriptor number.
+            if temporary is not None:
+                closing = stage_descriptor
+                stage_descriptor = -1
+                os.close(closing)
 
         _run_check_inputs(check_inputs)
 
@@ -690,9 +709,16 @@ def write_file(
         current = _observe_entry(parent, name)
         if not _same_file(current, expected):
             raise _error("filesystem inputs are stale", "stale_inputs")
-        _verify_staged_entry(
-            parent, path.parent, temporary, staged_identity, final_mode, data
-        )
+        if temporary is None:
+            _verify_anonymous_stage(stage_descriptor, final_mode, data)
+            temporary = _publish_anonymous_stage(parent, stage_descriptor)
+            closing = stage_descriptor
+            stage_descriptor = -1
+            os.close(closing)
+        else:
+            _verify_staged_entry(
+                parent, path.parent, temporary, staged_identity, final_mode, data
+            )
 
         replace_attempted = True
         os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
@@ -748,11 +774,18 @@ def write_file(
         )
         cleanup_failed = False
         cleanup_state = _CLEANUP_NOT_NEEDED
+        if stage_descriptor >= 0:
+            try:
+                os.close(stage_descriptor)
+            except (OSError, ValueError):
+                cleanup_failed = True
+                if cleanup_state == _CLEANUP_NOT_NEEDED:
+                    cleanup_state = _CLEANUP_FAILED
         if temporary is not None:
             cleanup_state = _cleanup_stage_entry(
                 parent, temporary, staged_identity, directory=False
             )
-            cleanup_failed = cleanup_state not in {
+            cleanup_failed = cleanup_failed or cleanup_state not in {
                 _CLEANUP_REMOVED,
                 _CLEANUP_MISSING,
             }
@@ -1193,15 +1226,105 @@ def _write_mode(expected: FileObservation, mode: int | None) -> int:
     return 0o644
 
 
-def _create_temporary_file(parent: int) -> tuple[int, str]:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _nofollow_flag()
+def _temporary_name(create: Callable[[str], None]) -> str:
+    """Claim a fresh staging name; ``create`` must fail with FileExistsError."""
+
     for _ in range(100):
         name = f".luwu-tmp-{uuid.uuid4().hex}"
         try:
-            return os.open(name, flags, 0o600, dir_fd=parent), name
+            create(name)
         except FileExistsError:
             continue
+        return name
     raise _error("temporary filesystem entry could not be created", "write_failed")
+
+
+def _create_temporary_file(parent: int) -> tuple[int, str]:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _nofollow_flag()
+    descriptor = -1
+
+    def open_candidate(name: str) -> None:
+        nonlocal descriptor
+        descriptor = os.open(name, flags, 0o600, dir_fd=parent)
+
+    name = _temporary_name(open_candidate)
+    assert descriptor >= 0
+    return descriptor, name
+
+
+_ANONYMOUS_UNSUPPORTED_ERRNOS = frozenset(
+    {errno.EOPNOTSUPP, errno.EISDIR, errno.EINVAL}
+)
+
+
+def _anonymous_staging_unsupported() -> FilesystemError:
+    return _error(
+        "anonymous filesystem staging is unsupported",
+        "anonymous_staging_unsupported",
+    )
+
+
+def _create_anonymous_stage(parent: int) -> int:
+    """Create an unnamed temporary inode in the parent's filesystem.
+
+    Nothing in the directory names the staged bytes until publication, so an
+    interrupted write leaves no entry at all. There is no named fallback.
+    """
+
+    try:
+        flags = os.O_RDWR | os.O_TMPFILE
+    except AttributeError:
+        raise _anonymous_staging_unsupported() from None
+    try:
+        descriptor = os.open(".", flags, 0o600, dir_fd=parent)
+    except OSError as exc:
+        if exc.errno in _ANONYMOUS_UNSUPPORTED_ERRNOS:
+            raise _anonymous_staging_unsupported() from None
+        raise
+    try:
+        # Publication links the inode through /proc/self/fd; refuse before any
+        # byte is written when that path is unavailable.
+        os.stat(f"/proc/self/fd/{descriptor}")
+    except OSError:
+        os.close(descriptor)
+        raise _anonymous_staging_unsupported() from None
+    return descriptor
+
+
+def _verify_anonymous_stage(descriptor: int, mode: int, data: bytes) -> None:
+    """Recheck the staged bytes; the unnamed inode cannot have been swapped."""
+
+    info = os.fstat(descriptor)
+    if info.st_size != len(data) or stat.S_IMODE(info.st_mode) != mode:
+        raise _error("staged filesystem entry changed", "unsafe_stage")
+    offset = 0
+    while offset < len(data):
+        chunk = os.pread(descriptor, min(1024 * 1024, len(data) - offset), offset)
+        if not chunk or data[offset : offset + len(chunk)] != chunk:
+            raise _error("staged filesystem entry changed", "unsafe_stage")
+        offset += len(chunk)
+
+
+def _publish_anonymous_stage(parent: int, descriptor: int) -> str:
+    """Name the staged inode for the atomic rename and return that name.
+
+    The named window between this link and the rename is the one residue a
+    SIGKILL can leave: a single entry at the final mode, already holding the
+    final bytes.
+    """
+
+    def link_candidate(name: str) -> None:
+        try:
+            os.link(
+                f"/proc/self/fd/{descriptor}",
+                name,
+                dst_dir_fd=parent,
+                follow_symlinks=True,
+            )
+        except FileNotFoundError:
+            raise _anonymous_staging_unsupported() from None
+
+    return _temporary_name(link_candidate)
 
 
 def _write_all(descriptor: int, data: bytes) -> None:
@@ -1239,8 +1362,24 @@ def _validate_mode(mode: int) -> None:
         raise _error("filesystem mode is invalid", "invalid_mode")
 
 
+def directory_is_trusted(info: os.stat_result) -> bool:
+    """Whether a directory's owner and mode let Luwu trust its contents."""
+
+    return info.st_uid in {0, os.getuid()} and not stat.S_IMODE(info.st_mode) & 0o022
+
+
+def sticky_root_boundary(info: os.stat_result) -> bool:
+    """Whether a root-owned sticky directory ends an upward trust walk.
+
+    Entries below such a directory cannot be renamed away by non-owners, so
+    a caller walking ancestors towards "/" may stop there.
+    """
+
+    return info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+
+
 def _require_trusted_directory(info: os.stat_result) -> None:
-    if info.st_uid not in {0, os.getuid()} or stat.S_IMODE(info.st_mode) & 0o022:
+    if not directory_is_trusted(info):
         raise _error("filesystem directory is not trusted", "unsafe_path")
 
 
@@ -1248,8 +1387,12 @@ def _identity(info: os.stat_result) -> tuple[int, int]:
     return info.st_dev, info.st_ino
 
 
-def _file_signature(info: os.stat_result) -> tuple[int, int, int, int, int]:
+def file_signature(info: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    """The comparable stat signature of one entry: identity, then content fields."""
+
     return (
+        info.st_dev,
+        info.st_ino,
         info.st_size,
         info.st_mode,
         info.st_mtime_ns,

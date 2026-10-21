@@ -14,7 +14,9 @@ from types import MappingProxyType
 from typing import ClassVar
 
 from .baseline import (
+    NON_PERSISTED_OWNERS,
     Baseline,
+    baseline_field_names,
     encode_public_json,
     load_baseline,
     make_copy_baseline,
@@ -69,51 +71,63 @@ from .plan_evidence import (
     _matches_plan_evidence,
     _PlanEvidence,
 )
+from .providers import (
+    PROVIDER_ERROR_CODES,
+    ProviderAuthority,
+    ProviderResolution,
+    resolve_providers,
+)
 from .rendering import render_source, template_syntax
 
 _SCHEMA_VERSION = 8
 _PATH_TYPE = type(Path())
 _PLAN_PROVENANCE = object()
-_SAFE_ERROR_CODES = frozenset(
-    {
-        "adopt_invalid",
-        "baseline_invalid",
-        "baseline_stale",
-        "cleanup_unknown",
-        "encoding",
-        "field_invalid",
-        "format",
-        "input_invalid",
-        "input_missing",
-        "invalid_content",
-        "invalid_mode",
-        "invalid_observation",
-        "observe_failed",
-        "operation_invalid",
-        "parent_create_failed",
-        "parent_create_unknown",
-        "parent_mode_conflict",
-        "parent_mode_unsafe",
-        "parent_required",
-        "patch",
-        "path",
-        "plan_invalid",
-        "platform_unsupported",
-        "resource_blocked",
-        "reverse_delete",
-        "reverse_destination",
-        "reverse_consumer_change",
-        "review_required",
-        "sensitive_input",
-        "stale_inputs",
-        "stale_plan",
-        "unsafe_file",
-        "unsafe_path",
-        "undeclared_unsafe",
-        "unsafe_stage",
-        "write_failed",
-        "write_unknown",
-    }
+_SAFE_ERROR_CODES = (
+    frozenset(
+        {
+            "adopt_invalid",
+            "anonymous_staging_unsupported",
+            "baseline_invalid",
+            "baseline_stale",
+            "cleanup_unknown",
+            "encoding",
+            "field_invalid",
+            "format",
+            "input_invalid",
+            "input_missing",
+            "invalid_content",
+            "invalid_mode",
+            "invalid_observation",
+            "observe_failed",
+            "operation_invalid",
+            "parent_create_failed",
+            "parent_create_unknown",
+            "parent_mode_conflict",
+            "parent_mode_unsafe",
+            "parent_required",
+            "patch",
+            "path",
+            "plan_invalid",
+            "platform_unsupported",
+            "provider_field_refused",
+            "provider_inject_failed",
+            "resource_blocked",
+            "reverse_delete",
+            "reverse_destination",
+            "reverse_consumer_change",
+            "review_required",
+            "sensitive_input",
+            "stale_inputs",
+            "stale_plan",
+            "unsafe_file",
+            "unsafe_path",
+            "undeclared_unsafe",
+            "unsafe_stage",
+            "write_failed",
+            "write_unknown",
+        }
+    )
+    | PROVIDER_ERROR_CODES
 )
 
 
@@ -133,6 +147,7 @@ class EngineError(MutationError):
         "reverse_destination": "reverse destination cannot accept the selected value",
         "reverse_consumer_change": "reverse sync would change another declared consumer",
         "undeclared_unsafe": "undeclared changes cannot be written to the source safely",
+        "provider_field_refused": "provider-owned fields cannot be selected for this operation",
         "write_failed": "write was not committed",
         "write_unknown": "write outcome is uncertain",
     }
@@ -237,6 +252,11 @@ class _ResourcePlan:
     input_missing_parents: Mapping[Path, tuple[Path, ...]] = field(repr=False)
     parent_states: Mapping[Path, tuple[int, int] | None] = field(repr=False)
     link_value: str | None = field(default=None, repr=False)
+    # Per-provider fixed state for the projection: ok, an error code, or
+    # not_fetched when the command observed without contacting the provider.
+    provider_states: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({}), repr=False
+    )
 
     @property
     def undeclared_blocks(self) -> bool:
@@ -349,6 +369,21 @@ class _ResourcePlan:
             "error_code": self.error_code,
             "forward_fields": list(self.forward_fields),
             "reverse_fields": list(self.reverse_fields),
+            "providers": [
+                {
+                    "provider": name,
+                    "item": manifest.providers[name].item,
+                    "field": manifest.providers[name].field,
+                    "state": self.provider_states.get(name, "not_fetched"),
+                }
+                for name in sorted(
+                    {
+                        binding.provider
+                        for binding in self.resource.fields.values()
+                        if binding.provider is not None
+                    }
+                )
+            ],
             "ownership": ownership,
             "input_provenance": input_provenance,
             "undeclared_changed": self.undeclared_changed,
@@ -399,6 +434,10 @@ class _PlanRecord:
     resources: tuple[_ResourcePlan, ...] = field(repr=False)
     evidence: _PlanEvidence = field(repr=False)
     entered_at: float | None = field(default=None, repr=False)
+    # In-process only; the sealed provider values are never serialized. None
+    # means the plan observed without contacting providers and must never
+    # drive a target write.
+    provider_state: ProviderResolution | None = field(default=None, repr=False)
 
 
 # A plan built for a mutation counts as the mutation-entry observation only when
@@ -431,26 +470,83 @@ class _ReverseGroup:
     fields: list[str] = field(default_factory=list)
 
 
-def build_plan(manifest: Manifest) -> Plan:
+def build_plan(
+    manifest: Manifest,
+    *,
+    provider_authority: ProviderAuthority | None = None,
+) -> Plan:
     """Observe every selected resource and return a sealed in-memory plan."""
 
-    return _build_plan(manifest, entering_mutation=False)
+    return _build_plan(
+        manifest,
+        entering_mutation=False,
+        provider_authority=provider_authority,
+        fetch_providers=True,
+    )
 
 
-def build_mutation_plan(manifest: Manifest) -> Plan:
+def build_mutation_plan(
+    manifest: Manifest,
+    *,
+    provider_authority: ProviderAuthority | None = None,
+    fetch_providers: bool = False,
+) -> Plan:
     """Build the plan a command applies in the same call.
 
     The first mutation that uses it within a moment takes this observation as
     its entry observation instead of observing the whole profile again. A plan
     that waits longer, or is used twice, is observed again like any other.
+
+    With the default ``fetch_providers=False`` no provider is contacted:
+    provider-owned fields classify from the live value instead, and the
+    resulting plan can drive baseline, input, and source writes but never a
+    target write. Only apply fetches.
     """
 
-    return _build_plan(manifest, entering_mutation=True)
+    return _build_plan(
+        manifest,
+        entering_mutation=True,
+        provider_authority=provider_authority,
+        fetch_providers=fetch_providers,
+    )
 
 
-def _build_plan(manifest: Manifest, *, entering_mutation: bool) -> Plan:
+def _resolve_provider_state(
+    manifest: Manifest, provider_authority: ProviderAuthority | None
+) -> ProviderResolution:
+    """Fetch every selected provider value once, failing closed by code."""
+
+    names = tuple(
+        sorted(
+            {
+                binding.provider
+                for resource in manifest.resources
+                for binding in resource.fields.values()
+                if binding.provider is not None
+            }
+        )
+    )
+    return resolve_providers(
+        [manifest.providers[name] for name in names], provider_authority
+    )
+
+
+def _build_plan(
+    manifest: Manifest,
+    *,
+    entering_mutation: bool,
+    provider_authority: ProviderAuthority | None = None,
+    fetch_providers: bool = True,
+) -> Plan:
+    # Fetching mode always yields a resolution, empty when no provider is
+    # consumed; only a non-fetching build leaves provider_state None.
+    provider_state = (
+        _resolve_provider_state(manifest, provider_authority)
+        if fetch_providers
+        else None
+    )
     try:
-        resources = _observe_all(manifest)
+        resources = _observe_all(manifest, provider_state)
         verify_manifest(manifest)
     except LuwuError:
         raise EngineError("stale_plan") from None
@@ -467,6 +563,7 @@ def _build_plan(manifest: Manifest, *, entering_mutation: bool) -> Plan:
         resources,
         evidence,
         time.monotonic() if entering_mutation else None,
+        provider_state,
     )
     return plan
 
@@ -474,7 +571,7 @@ def _build_plan(manifest: Manifest, *, entering_mutation: bool) -> Plan:
 def apply_plan(plan: Plan, *, confirm: bool) -> Result:
     """Apply the complete confirmed forward batch after a full live recheck."""
 
-    record = _mutation_record(plan, operation="apply")
+    record = _mutation_record(plan, operation="apply", fetched=True)
     if record is None:
         return Result("apply", "not_attempted", error_code="stale_plan")
     target_root = record.manifest.roots.target.path
@@ -532,7 +629,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
         return preview("not_attempted", "parent_required")
     if not specs and not baseline_specs:
         if skipped:
-            return preview("not_attempted", "review_required")
+            return preview("not_attempted", _skip_error_code(skipped))
         if not confirm:
             return preview("confirmation_required")
         try:
@@ -692,6 +789,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                     expected=expected,
                     mode=fresh_spec.mode,
                     check_inputs=recheck,
+                    anonymous=bool(fresh_spec.resource.provider_fields),
                 )
         except FilesystemError as exc:
             return _write_failure_result(
@@ -784,7 +882,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
         "apply",
         actions,
         "partial" if skipped else "committed",
-        "review_required" if skipped else None,
+        _skip_error_code(skipped) if skipped else None,
         verification_status="verified",
     )
 
@@ -803,12 +901,10 @@ def _baseline_fields(item: _ResourcePlan) -> tuple[str, ...]:
             if field_item.status == "converged"
         }
     )
+    persistable = set(baseline_field_names(item.resource))
     return tuple(
         sorted(
-            name
-            for name in set(item.forward_fields) | converged
-            if name in item.resource.fields
-            and item.resource.fields[name].owner != "ignore"
+            name for name in set(item.forward_fields) | converged if name in persistable
         )
     )
 
@@ -1049,7 +1145,7 @@ def accept_baseline(
 ) -> Result:
     """Accept selected declared template fields from desired or live state."""
 
-    record = _mutation_record(plan, operation="accept")
+    record = _mutation_record(plan, operation="accept", fetched=False)
     if record is None:
         return Result("accept", "not_attempted", error_code="stale_plan")
     item = _resource_by_name(record.resources, resource)
@@ -1273,7 +1369,7 @@ def accept_baseline(
 def adopt_resource(plan: Plan, *, resource: str, confirm: bool) -> Result:
     """Accept one copy resource's current whole-file state as its baseline."""
 
-    record = _mutation_record(plan, operation="adopt")
+    record = _mutation_record(plan, operation="adopt", fetched=False)
     if record is None:
         return Result("adopt", "not_attempted", error_code="stale_plan")
     return _adopt_item(
@@ -1296,7 +1392,7 @@ def adopt_resources(plan: Plan, *, resources: tuple[str, ...], confirm: bool) ->
 
     if len(resources) == 1:
         return adopt_resource(plan, resource=resources[0], confirm=confirm)
-    record = _mutation_record(plan, operation="adopt")
+    record = _mutation_record(plan, operation="adopt", fetched=False)
     if record is None:
         return Result("adopt", "not_attempted", error_code="stale_plan")
     if not resources or len(set(resources)) != len(resources):
@@ -1571,7 +1667,7 @@ def reverse_inputs(
 ) -> Result:
     """Patch explicit live-owned fields to grouped declared input documents."""
 
-    record = _mutation_record(plan, operation="reverse-sync")
+    record = _mutation_record(plan, operation="reverse-sync", fetched=False)
     if record is None:
         return Result("reverse-sync", "not_attempted", error_code="stale_plan")
     item = _resource_by_name(record.resources, resource)
@@ -1889,7 +1985,7 @@ def reverse_undeclared(
     side is the one to keep.
     """
 
-    record = _mutation_record(plan, operation="reverse-sync")
+    record = _mutation_record(plan, operation="reverse-sync", fetched=False)
     if record is None:
         return Result("reverse-sync", "not_attempted", error_code="stale_plan")
     item = _resource_by_name(record.resources, resource)
@@ -2013,6 +2109,13 @@ def _undeclared_source_update(
 
     if resource.kind != "template":
         raise refuse("operation_invalid")
+    provider_paths = resource.provider_paths
+    if any(
+        named[: len(declared)] == declared
+        for named in paths
+        for declared in provider_paths
+    ):
+        raise refuse()
     if (
         item.status in {"blocked", "conflict", "unbased", "adopt_required"}
         or item.desired_document is None
@@ -2032,13 +2135,9 @@ def _undeclared_source_update(
         raise refuse()
     wanted = {path: changes[path] for path in dict.fromkeys(paths)}
     remaining = {path: value for path, value in changes.items() if path not in wanted}
-    public = resource.public_names
-    fmt = resource.format or ""
     try:
         source_text = item.source_observation.data.decode("utf-8")
-        template = parse_document(
-            item.source_observation.data, format=fmt, public_names=public
-        )
+        template = _parse_resource_document(resource, item.source_observation.data)
     except (UnicodeDecodeError, LuwuError):
         raise refuse() from None
     if "{%" in source_text or "{#" in source_text:
@@ -2061,15 +2160,20 @@ def _undeclared_source_update(
             dict(item.inputs.template_variables()),
             resource_name=name,
         ).encode("utf-8")
-        reparsed = parse_document(rendered, format=fmt, public_names=public)
+        reparsed = _parse_resource_document(resource, rendered)
     except (UnicodeDecodeError, LuwuError):
         raise refuse() from None
     if not _same_changes(
         unselected_scalar_changes(reparsed, item.target_document, selected), remaining
     ):
         raise refuse()
+    compared = tuple(
+        field_name
+        for field_name in resource.fields
+        if resource.fields[field_name].owner != "provider"
+    )
     if not _mapping_values_equal(
-        _project(reparsed, resource.fields), item.desired_values, tuple(resource.fields)
+        _project(reparsed, resource.fields), item.desired_values, compared
     ):
         raise refuse()
     return patched, remaining
@@ -2108,13 +2212,66 @@ def _tree_value(root: object, path: LeafPath) -> object:
     return current
 
 
-def _observe_all(manifest: Manifest) -> tuple[_ResourcePlan, ...]:
-    return tuple(
-        _observe_resource(manifest, resource) for resource in manifest.resources
+def _parse_resource_document(
+    resource: Resource, data: bytes, *, format: str | None = None
+) -> Document:
+    """Parse resource bytes with its public names and provider exemptions."""
+
+    return parse_document(
+        data,
+        format=(resource.format if format is None else format) or "",
+        public_names=resource.public_names,
+        sensitive_exempt_paths=resource.provider_paths,
     )
 
 
-def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
+def _observe_all(
+    manifest: Manifest,
+    provider_state: ProviderResolution | None = None,
+) -> tuple[_ResourcePlan, ...]:
+    return tuple(
+        _observe_resource(manifest, resource, provider_state)
+        for resource in manifest.resources
+    )
+
+
+def _observe_resource(
+    manifest: Manifest,
+    resource: Resource,
+    provider_state: ProviderResolution | None = None,
+) -> _ResourcePlan:
+    provider_aliases = resource.provider_fields
+    provider_names = tuple(
+        sorted(
+            {
+                provider_name
+                for alias in provider_aliases
+                if (provider_name := resource.fields[alias].provider) is not None
+            }
+        )
+    )
+    provider_states: dict[str, str] = {}
+    provider_values: dict[str, str] = {}
+    provider_blocked: str | None = None
+    if provider_aliases and provider_state is not None:
+        # resolve_providers guarantees every consumed provider has a value or
+        # a failure, and ProviderValue wraps text by construction.
+        for provider_name in provider_names:
+            failure = provider_state.failures.get(provider_name)
+            provider_states[provider_name] = "ok" if failure is None else failure
+        provider_blocked = next(
+            (code for code in provider_states.values() if code != "ok"),
+            None,
+        )
+        if provider_blocked is None:
+            for alias in provider_aliases:
+                provider_name = resource.fields[alias].provider
+                assert provider_name is not None
+                provider_values[alias] = provider_state.values[provider_name].reveal()
+    # When provider_state is None the observation never contacted a provider
+    # (accept, adopt, reverse-sync): nothing is injected and, below, each
+    # provider field takes the live value as its desired value so it
+    # classifies as unchanged. The projection reports it as not_fetched.
     empty = _ResourcePlan(
         resource=resource,
         status="blocked",
@@ -2140,10 +2297,13 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
         baseline_missing_parents=(),
         input_missing_parents=MappingProxyType({}),
         parent_states=MappingProxyType({}),
+        provider_states=MappingProxyType(provider_states),
     )
     try:
         if resource.kind == "symlink":
             return _observe_link_resource(manifest, resource)
+        if provider_blocked is not None:
+            return _replace_blocked(empty, code=provider_blocked)
         roots = manifest.roots
         source = observe_file(roots.source.path, resource.source)
         if source.data is None:
@@ -2177,11 +2337,31 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
             raise EngineError("operation_invalid")
         if resource.kind == "template":
             assert resource.format is not None
-            desired_document = parse_document(
-                desired_data,
-                format=resource.format,
-                public_names=resource.public_names,
-            )
+            desired_document = _parse_resource_document(resource, desired_data)
+            if provider_values:
+                # The provider value enters the rendered document only here,
+                # after Jinja, through the format layer's exact-path patch.
+                try:
+                    for alias in provider_aliases:
+                        # Replacing a non-string placeholder would let the
+                        # injected value change the leaf's JSON type.
+                        existing = get_leaf(
+                            desired_document, resource.fields[alias].path
+                        )
+                        if existing is not MISSING and type(existing) is not str:
+                            return _replace_blocked(
+                                empty, code="provider_inject_failed"
+                            )
+                    desired_data = patch_document(
+                        desired_document,
+                        {
+                            resource.fields[alias].path: provider_values[alias]
+                            for alias in provider_aliases
+                        },
+                    )
+                except LuwuError:
+                    return _replace_blocked(empty, code="provider_inject_failed")
+                desired_document = _parse_resource_document(resource, desired_data)
             desired_values = MappingProxyType(
                 _project(desired_document, resource.fields)
             )
@@ -2212,7 +2392,7 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
                     )
                     write_data = desired_data
                     forward_fields = ("whole_file",)
-            elif baseline is None or not complete:
+            elif (baseline is None and not resource.provider_fields) or not complete:
                 status, action, reason = (
                     "unbased",
                     "accept_baseline",
@@ -2292,12 +2472,18 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
                 )
         else:
             assert desired_document is not None
-            target_document = parse_document(
-                target.data,
-                format=resource.format or "",
-                public_names=resource.public_names,
-            )
+            target_document = _parse_resource_document(resource, target.data)
             live_values = MappingProxyType(_project(target_document, resource.fields))
+            if provider_aliases and provider_state is None:
+                # Classify provider fields from the live side so a plan built
+                # without fetching never invents a provider-side change.
+                merged = dict(desired_values)
+                for alias in provider_aliases:
+                    if alias in live_values:
+                        merged[alias] = live_values[alias]
+                    else:
+                        merged.pop(alias, None)
+                desired_values = MappingProxyType(merged)
             synthetic_baseline = _ownership_baseline(resource, baseline)
             ownership = classify_fields(
                 encode_public_json(dict(desired_values)),
@@ -2314,7 +2500,8 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
                 accepted = set(baseline.values)
                 classified = tuple(
                     field_item
-                    if field_item.owner == "ignore" or field_item.name in accepted
+                    if field_item.owner in NON_PERSISTED_OWNERS
+                    or field_item.name in accepted
                     else OwnershipField(
                         field_item.name,
                         field_item.owner,
@@ -2402,6 +2589,24 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
                     "accept_baseline",
                     "declared fields are not based",
                 )
+            if (
+                provider_aliases
+                and action == "noop"
+                and resource.mode is not None
+                and target.mode is not None
+                and target.mode != resource.mode
+            ):
+                # A provider value in sync never rewrites the target, so a
+                # wide live mode would otherwise persist forever. Plan a
+                # mode-only write of the existing bytes: desired_data would
+                # overwrite undeclared content.
+                status, action, reason = (
+                    "drifted",
+                    "forward",
+                    "live mode differs from the declared provider mode",
+                )
+                write_data = target.data
+                forward_fields = ("mode",)
 
         parent_states: dict[Path, tuple[int, int] | None] = {}
         target_missing = missing_parents(roots.target.path, resource.target)
@@ -2463,6 +2668,7 @@ def _observe_resource(manifest: Manifest, resource: Resource) -> _ResourcePlan:
             baseline_missing_parents=baseline_missing,
             input_missing_parents=MappingProxyType(input_missing),
             parent_states=MappingProxyType(parent_states),
+            provider_states=MappingProxyType(provider_states),
         )
     except EngineError:
         return _replace_blocked(empty, code="resource_blocked")
@@ -2561,6 +2767,7 @@ def _replace_blocked(item: _ResourcePlan, *, code: str) -> _ResourcePlan:
         input_missing_parents=item.input_missing_parents,
         parent_states=item.parent_states,
         link_value=item.link_value,
+        provider_states=item.provider_states,
     )
 
 
@@ -2593,11 +2800,9 @@ def _ownership_baseline(resource: Resource, baseline: Baseline | None) -> bytes 
 
 
 def _baseline_complete(resource: Resource, baseline: Baseline | None) -> bool:
+    required = set(baseline_field_names(resource))
     if baseline is None:
-        return False
-    required = {
-        name for name, binding in resource.fields.items() if binding.owner != "ignore"
-    }
+        return not required
     return required.issubset(baseline.values)
 
 
@@ -2735,10 +2940,8 @@ def _preflight_reverse_consumers(
                 dict(simulated_inputs.template_variables()),
                 resource_name=consumer.resource.name,
             )
-            simulated_document = parse_document(
-                rendered.encode("utf-8"),
-                format=consumer.resource.format,
-                public_names=consumer.resource.public_names,
+            simulated_document = _parse_resource_document(
+                consumer.resource, rendered.encode("utf-8")
             )
             simulated_values = _project(simulated_document, consumer.resource.fields)
         except (LuwuError, UnicodeError, ValueError, TypeError):
@@ -3046,6 +3249,18 @@ def _skip_reason(item: _ResourcePlan) -> str | None:
     return None
 
 
+_PROVIDER_BLOCK_CODES = PROVIDER_ERROR_CODES | {"provider_inject_failed"}
+
+
+def _skip_error_code(skipped: tuple[tuple[_ResourcePlan, str], ...]) -> str:
+    """Surface a provider failure code when one blocked part of the batch."""
+
+    for item, _reason in skipped:
+        if item.error_code in _PROVIDER_BLOCK_CODES:
+            return item.error_code
+    return "review_required"
+
+
 def _assert_fresh(
     record: _PlanRecord,
     *,
@@ -3063,7 +3278,7 @@ def _assert_fresh(
     expected_directories = {} if expected_directories is None else expected_directories
     try:
         if resource_names is None:
-            fresh = _observe_all(record.manifest)
+            fresh = _observe_all(record.manifest, record.provider_state)
         else:
             selected_resources = tuple(
                 resource
@@ -3073,7 +3288,7 @@ def _assert_fresh(
             if len(selected_resources) != len(resource_names):
                 raise EngineError("stale_plan")
             fresh = tuple(
-                _observe_resource(record.manifest, resource)
+                _observe_resource(record.manifest, resource, record.provider_state)
                 for resource in selected_resources
             )
         verify_manifest(record.manifest, resources=resource_names)
@@ -3453,6 +3668,8 @@ def _plan_projection(plan: Plan) -> list[object]:
             "undeclared_changed": item.undeclared_changed,
             "forward": list(item.forward_fields),
             "reverse": list(item.reverse_fields),
+            # Evidence binds the full observed state in process memory,
+            # provider-bearing values included, like every other resource.
             "desired_values": dict(item.desired_values),
             "live_values": dict(item.live_values),
             "source_observation": _observation_value(item.source_observation)
@@ -3650,11 +3867,16 @@ def _require_plan(plan: Plan, *, operation: str) -> _PlanRecord:
     if record.entered_at is not None:
         _PLAN_REGISTRY[plan] = replace(record, entered_at=None)
         if time.monotonic() - record.entered_at <= _ENTRY_WINDOW_SECONDS:
-            return _PlanRecord(record.manifest, record.resources, record.evidence)
+            return _PlanRecord(
+                record.manifest,
+                record.resources,
+                record.evidence,
+                provider_state=record.provider_state,
+            )
     try:
         verify_manifest(record.manifest)
         manifest = record.manifest
-        resources = _observe_all(manifest)
+        resources = _observe_all(manifest, record.provider_state)
         verify_manifest(manifest)
         authorized_plan = Plan(manifest, resources, _PLAN_PROVENANCE)
         authorized_matches = _matches_plan_evidence(
@@ -3669,16 +3891,41 @@ def _require_plan(plan: Plan, *, operation: str) -> _PlanRecord:
         raise EngineError("stale_plan", operation=operation) from None
     if not authorized_matches:
         raise EngineError("stale_plan", operation=operation)
-    return _PlanRecord(manifest, resources, record.evidence)
+    return _PlanRecord(
+        manifest,
+        resources,
+        record.evidence,
+        provider_state=record.provider_state,
+    )
 
 
-def _mutation_record(plan: Plan, *, operation: str) -> _PlanRecord | None:
+def _mutation_record(
+    plan: Plan, *, operation: str, fetched: bool
+) -> _PlanRecord | None:
+    """Resolve the plan's mutation record and enforce its provider provenance.
+
+    ``fetched=True`` (apply) requires a plan that resolved provider values,
+    because only it may drive a target write. ``fetched=False`` (accept,
+    adopt, reverse-sync) refuses a plan that contacted a provider, so those
+    operations can never build on provider-fetched state; an empty resolution
+    means no provider was contacted and is allowed either way. Checking here,
+    before the caller touches anything else, keeps every mutation entry on
+    the same rule.
+    """
+
     try:
-        return _require_plan(plan, operation=operation)
+        record = _require_plan(plan, operation=operation)
     except EngineError as exc:
         if exc.code == "stale_plan":
             return None
         raise
+    state = record.provider_state
+    if fetched:
+        if state is None:
+            raise EngineError("plan_invalid", operation=operation)
+    elif state is not None and (state.values or state.failures):
+        raise EngineError("plan_invalid", operation=operation)
+    return record
 
 
 def _validate_selection(
@@ -3704,6 +3951,13 @@ def _validate_selection(
     if any(item.resource.fields[name].owner == "ignore" for name in fields):
         raise EngineError(
             "field_invalid",
+            operation=operation,
+            resource=item.resource.name,
+            fields=fields,
+        )
+    if any(item.resource.fields[name].owner == "provider" for name in fields):
+        raise EngineError(
+            "provider_field_refused",
             operation=operation,
             resource=item.resource.name,
             fields=fields,

@@ -12,6 +12,7 @@ from typing import Any, cast
 from . import __version__, engine
 from .errors import LuwuError, MutationError
 from .manifest import load_manifest
+from .providers import ProviderAuthority
 from .semantic import parse_strict_json
 
 
@@ -27,12 +28,15 @@ def build_parser() -> argparse.ArgumentParser:
         ("inspect", "observe declared resources without writing"),
         ("plan", "show the actions an explicit apply could take"),
     ):
-        _add_common_arguments(commands.add_parser(name, help=help_text))
+        observe = commands.add_parser(name, help=help_text)
+        _add_common_arguments(observe)
+        _add_provider_argument(observe)
 
     apply = commands.add_parser(
         "apply", help="apply a plan after explicit confirmation"
     )
     _add_common_arguments(apply)
+    _add_provider_argument(apply)
     _add_confirm_argument(apply)
 
     accept = commands.add_parser(
@@ -51,7 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_confirm_argument(accept)
 
     adopt = commands.add_parser(
-        "adopt", help="explicitly accept a declared copy resource"
+        "adopt",
+        help="explicitly accept a declared copy or whole-file template resource",
     )
     _add_common_arguments(adopt)
     adopt.add_argument(
@@ -126,6 +131,28 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _provider_authority(text: str) -> ProviderAuthority:
+    """Parse the only supported provider key: rbw=<absolute path>."""
+
+    if not text.startswith("rbw="):
+        raise argparse.ArgumentTypeError("only rbw=<absolute path> is supported")
+    executable = Path(text[len("rbw=") :])
+    if not executable.is_absolute():
+        raise argparse.ArgumentTypeError("the rbw path must be absolute")
+    return ProviderAuthority(rbw_executable=executable)
+
+
+def _add_provider_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--provider-executable",
+        type=_provider_authority,
+        default=None,
+        metavar="rbw=PATH",
+        help="authorize this rbw executable to resolve provider-owned fields; "
+        "without it provider-owned resources are reported blocked",
+    )
+
+
 def _add_resource_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--resource", required=True, help="declared resource name")
 
@@ -166,11 +193,16 @@ def _parse_leaf_path(text: str) -> tuple[str, ...]:
 def _run_command(args: argparse.Namespace, manifest: object) -> int:
     """Translate CLI input into the process-local engine API."""
 
+    authority = getattr(args, "provider_executable", None)
     if args.command in {"inspect", "plan"}:
-        plan = engine.build_plan(cast(Any, manifest))
+        plan = engine.build_plan(cast(Any, manifest), provider_authority=authority)
         _emit_metadata(plan, heading=args.command, command=args.command, args=args)
         return 0
-    plan = engine.build_mutation_plan(cast(Any, manifest))
+    plan = engine.build_mutation_plan(
+        cast(Any, manifest),
+        provider_authority=authority,
+        fetch_providers=args.command == "apply",
+    )
 
     if args.command == "apply":
         result = engine.apply_plan(plan, confirm=args.yes)

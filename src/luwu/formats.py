@@ -119,6 +119,9 @@ class Document:
     _public_names: frozenset[str] = field(
         default=frozenset(), repr=False, compare=False
     )
+    _sensitive_exempt_paths: frozenset[LeafPath] = field(
+        default=frozenset(), repr=False, compare=False
+    )
 
 
 _JSON_NUMBER = re.compile(rb"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
@@ -128,12 +131,19 @@ _MAX_NUMBER_LITERAL_LENGTH = 4096
 
 
 def parse_document(
-    data: bytes, *, format: str, public_names: frozenset[str] = frozenset()
+    data: bytes,
+    *,
+    format: str,
+    public_names: frozenset[str] = frozenset(),
+    sensitive_exempt_paths: Collection[LeafPath] = (),
 ) -> Document:
     """Parse a complete JSON, JSONC, or TOML object without exposing content.
 
     ``public_names`` are exact keys the manifest declares public; every other
-    secret-looking key is rejected.
+    secret-looking key is rejected. ``sensitive_exempt_paths`` instead exempts
+    only the single key at one exact literal path (used for provider-owned
+    fields, whose declared paths may carry a sensitive-looking leaf); the same
+    name anywhere else in the document still blocks.
     """
 
     if not isinstance(data, bytes):
@@ -141,6 +151,9 @@ def parse_document(
     normalized_format = format.lower().lstrip(".") if isinstance(format, str) else ""
     if normalized_format not in {"json", "jsonc", "toml"}:
         raise FormatError(code="format")
+    exempt = frozenset(sensitive_exempt_paths)
+    for exempt_path in exempt:
+        _validate_path(exempt_path)
 
     try:
         text = data.decode("utf-8")
@@ -152,6 +165,7 @@ def parse_document(
             data,
             allow_comments=normalized_format == "jsonc",
             public_names=public_names,
+            exempt_paths=exempt,
         )
         try:
             root = parser.parse()
@@ -161,11 +175,16 @@ def parse_document(
             raise FormatError(code="format")
         value = root.value
         try:
-            _validate_tree(value, public_names)
+            _validate_tree(value, public_names, exempt)
         except RecursionError:
             raise FormatError(code="format") from None
         return Document(
-            data, value, normalized_format, root, _public_names=public_names
+            data,
+            value,
+            normalized_format,
+            root,
+            _public_names=public_names,
+            _sensitive_exempt_paths=exempt,
         )
 
     try:
@@ -181,7 +200,7 @@ def parse_document(
     if not isinstance(parsed, dict):
         raise FormatError(code="format")
     try:
-        _validate_tree(parsed, public_names)
+        _validate_tree(parsed, public_names, exempt)
     except RecursionError:
         raise FormatError(code="format") from None
     offsets = _char_to_byte_offsets(text)
@@ -204,6 +223,7 @@ def parse_document(
         tuple(headers),
         inline_tables,
         public_names,
+        exempt,
     )
 
 
@@ -228,8 +248,9 @@ def patch_document(document: Document, edits: Mapping[LeafPath, object]) -> byte
     for path, value in edits.items():
         _validate_path(path)
         if any(
-            is_sensitive_name(segment, public=document._public_names)
-            for segment in path
+            path[: index + 1] not in document._sensitive_exempt_paths
+            and is_sensitive_name(segment, public=document._public_names)
+            for index, segment in enumerate(path)
         ):
             raise FormatError(code="sensitive_input")
         if value is not MISSING:
@@ -249,8 +270,12 @@ def patch_document(document: Document, edits: Mapping[LeafPath, object]) -> byte
         current = _patch_toml_existing(document, normalized, original_nodes)
 
     public = document._public_names
+    exempt = document._sensitive_exempt_paths
     current_document = parse_document(
-        current, format=document._format, public_names=public
+        current,
+        format=document._format,
+        public_names=public,
+        sensitive_exempt_paths=exempt,
     )
     missing_updates = {
         path: value
@@ -263,12 +288,14 @@ def patch_document(document: Document, edits: Mapping[LeafPath, object]) -> byte
                 _insert_json_path(current_document, path, missing_updates[path]),
                 format=document._format,
                 public_names=public,
+                sensitive_exempt_paths=exempt,
             )
         else:
             current_document = parse_document(
                 _insert_toml_path(current_document, path, missing_updates[path]),
                 format=document._format,
                 public_names=public,
+                sensitive_exempt_paths=exempt,
             )
 
     for path, expected in normalized.items():
@@ -439,13 +466,22 @@ def _unselected_projections(
 
 class _JsonParser:
     def __init__(
-        self, data: bytes, *, allow_comments: bool, public_names: frozenset[str]
+        self,
+        data: bytes,
+        *,
+        allow_comments: bool,
+        public_names: frozenset[str],
+        exempt_paths: frozenset[LeafPath] = frozenset(),
     ) -> None:
         self.public_names = public_names
+        self.exempt_paths = exempt_paths
         self.data = data
         self.length = len(data)
         self.index = 0
         self.allow_comments = allow_comments
+        # Path of keys above the value being parsed; array members poison it
+        # with None so an exemption can never match below an array.
+        self._path: list[object] = []
 
     def parse(self) -> _Node:
         self._skip_trivia()
@@ -507,14 +543,20 @@ class _JsonParser:
             key_start, key_end, key = self._string()
             if key in children:
                 raise FormatError(code="format")
-            if is_sensitive_name(key, public=self.public_names):
+            if tuple(self._path + [key]) not in self.exempt_paths and (
+                is_sensitive_name(key, public=self.public_names)
+            ):
                 raise FormatError(code="sensitive_input")
             self._skip_trivia()
             colon = self.index
             if not self._take(ord(":")):
                 raise FormatError(code="format")
             self._skip_trivia()
-            value = self._value()
+            self._path.append(key)
+            try:
+                value = self._value()
+            finally:
+                self._path.pop()
             self._skip_trivia()
             comma: int | None = None
             if self._take(ord(",")):
@@ -555,7 +597,11 @@ class _JsonParser:
         if self._take(ord("]")):
             return _Node([], start, self.index, children)
         while True:
-            children.append(self._value())
+            self._path.append(None)
+            try:
+                children.append(self._value())
+            finally:
+                self._path.pop()
             self._skip_trivia()
             if self._take(ord("]")):
                 break
@@ -726,7 +772,12 @@ def _insert_json_path(document: Document, path: LeafPath, value: object) -> byte
                 raise FormatError(code="patch")
             if current.open_end is None or current.close_start is None:
                 raise FormatError(code="patch")
-            literal = _encode_json_value(nested, document._public_names)
+            literal = _encode_json_value(
+                nested,
+                document._public_names,
+                document._sensitive_exempt_paths,
+                path[: index + 1],
+            )
             key_literal = _encode_json_string(segment)
             if not current.members:
                 insertion_at = current.open_end
@@ -834,7 +885,12 @@ def _insert_toml_path(document: Document, path: LeafPath, value: object) -> byte
             for segment in reversed(relative_path[1:]):
                 nested = {segment: nested}
             key = _encode_toml_key(relative_path[0])
-            literal = _encode_toml_inline_value(nested, document._public_names)
+            literal = _encode_toml_inline_value(
+                nested,
+                document._public_names,
+                document._sensitive_exempt_paths,
+                (*inline_path, relative_path[0]),
+            )
         if table.members:
             last = table.members[-1]
             insertion_at = last.value_end
@@ -1368,19 +1424,33 @@ def _lookup_node(root: _Node, path: LeafPath) -> _Node | None:
     return current
 
 
-def _validate_tree(value: object, public: frozenset[str]) -> None:
+def _validate_tree(
+    value: object,
+    public: frozenset[str],
+    exempt: frozenset[LeafPath] = frozenset(),
+    prefix: LeafPath | None = (),
+) -> None:
+    """Reject sensitive names, except a key at one exact exempt path.
+
+    ``prefix`` is None below an array: array members have no literal path, so
+    an exemption must never reach through one.
+    """
+
     if isinstance(value, dict):
         for key, child in value.items():
             if not isinstance(key, str):
                 raise FormatError(code="format")
             _ensure_utf8(key)
-            if is_sensitive_name(key, public=public):
+            full = None if prefix is None else (*prefix, key)
+            if (full is None or full not in exempt) and is_sensitive_name(
+                key, public=public
+            ):
                 raise FormatError(code="sensitive_input")
-            _validate_tree(child, public)
+            _validate_tree(child, public, exempt, full)
         return
     if isinstance(value, list):
         for child in value:
-            _validate_tree(child, public)
+            _validate_tree(child, public, exempt, None)
         return
     if value is None or isinstance(value, (str, bool)):
         if isinstance(value, str):
@@ -1468,16 +1538,26 @@ def _encode_scalar(value: object, format: str) -> bytes:
     raise FormatError(code="patch")
 
 
-def _encode_json_value(value: object, public: frozenset[str]) -> bytes:
+def _encode_json_value(
+    value: object,
+    public: frozenset[str],
+    exempt: frozenset[LeafPath] = frozenset(),
+    prefix: LeafPath = (),
+) -> bytes:
     if value is None or isinstance(value, (str, bool, int, Decimal)):
         return _encode_scalar(value, "json")
     if isinstance(value, dict):
         parts = []
         for key, child in value.items():
-            if not isinstance(key, str) or is_sensitive_name(key, public=public):
+            full = (*prefix, key)
+            if not isinstance(key, str) or (
+                full not in exempt and is_sensitive_name(key, public=public)
+            ):
                 raise FormatError(code="sensitive_input")
             parts.append(
-                _encode_json_string(key) + b":" + _encode_json_value(child, public)
+                _encode_json_string(key)
+                + b":"
+                + _encode_json_value(child, public, exempt, full)
             )
         return b"{" + b",".join(parts) + b"}"
     raise FormatError(code="patch")
@@ -1499,18 +1579,26 @@ def _encode_toml_key(value: str) -> str:
     return _encode_json_string(value).decode("utf-8")
 
 
-def _encode_toml_inline_value(value: object, public: frozenset[str]) -> bytes:
+def _encode_toml_inline_value(
+    value: object,
+    public: frozenset[str],
+    exempt: frozenset[LeafPath] = frozenset(),
+    prefix: LeafPath = (),
+) -> bytes:
     if isinstance(value, dict):
         if not value:
             return b"{}"
         pairs: list[bytes] = []
         for key, child in value.items():
-            if not isinstance(key, str) or is_sensitive_name(key, public=public):
+            full = (*prefix, key)
+            if not isinstance(key, str) or (
+                full not in exempt and is_sensitive_name(key, public=public)
+            ):
                 raise FormatError(code="sensitive_input")
             pairs.append(
                 _encode_toml_key(key).encode("utf-8")
                 + b" = "
-                + _encode_toml_inline_value(child, public)
+                + _encode_toml_inline_value(child, public, exempt, full)
             )
         return b"{ " + b", ".join(pairs) + b" }"
     return _encode_scalar(value, "toml")

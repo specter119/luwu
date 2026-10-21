@@ -43,7 +43,7 @@ input_path = Path(sys.argv.pop(1))
 ABLATEME
 original_write_file = engine.write_file
 triggered = False
-def race_write_file(root, path, data, *, expected, mode=None, check_inputs=None):
+def race_write_file(root, path, data, *, expected, mode=None, check_inputs=None, anonymous=False):
     global triggered
     if not triggered and Path(path).name == "settings.jsonc":
         contents = input_path.read_bytes()
@@ -53,7 +53,7 @@ def race_write_file(root, path, data, *, expected, mode=None, check_inputs=None)
         input_path.write_bytes(contents.replace(marker, b"Global later", 1))
         triggered = True
     return original_write_file(
-        root, path, data, expected=expected, mode=mode, check_inputs=check_inputs
+        root, path, data, expected=expected, mode=mode, check_inputs=check_inputs, anonymous=anonymous
     )
 engine.write_file = race_write_file
 raise SystemExit(main())
@@ -85,11 +85,11 @@ from luwu.filesystem import FilesystemError
 from luwu.cli import main
 failed_name = sys.argv.pop(1)
 original_write_file = engine.write_file
-def fail_one_write(root, path, data, *, expected, mode=None, check_inputs=None):
+def fail_one_write(root, path, data, *, expected, mode=None, check_inputs=None, anonymous=False):
     if Path(path).name == failed_name:
         raise FilesystemError("synthetic target failure", code="write_failed")
     return original_write_file(
-        root, path, data, expected=expected, mode=mode, check_inputs=check_inputs
+        root, path, data, expected=expected, mode=mode, check_inputs=check_inputs, anonymous=anonymous
     )
 engine.write_file = fail_one_write
 raise SystemExit(main())
@@ -244,9 +244,9 @@ completed_targets = set()
 state = {"mutated": False}
 original_write_file = engine.write_file
 
-def write_then_change_future_source(root, path, data, *, expected, mode=None, check_inputs=None):
+def write_then_change_future_source(root, path, data, *, expected, mode=None, check_inputs=None, anonymous=False):
     identity = original_write_file(
-        root, path, data, expected=expected, mode=mode, check_inputs=check_inputs
+        root, path, data, expected=expected, mode=mode, check_inputs=check_inputs, anonymous=anonymous
     )
     candidate = os.path.normpath(os.fspath(path))
     if candidate in trigger_targets:
@@ -282,9 +282,9 @@ report = Path(control["report"])
 state = {"mutated": False}
 original_write_file = engine.write_file
 
-def write_then_change_noop_target(root, path, data, *, expected, mode=None, check_inputs=None):
+def write_then_change_noop_target(root, path, data, *, expected, mode=None, check_inputs=None, anonymous=False):
     identity = original_write_file(
-        root, path, data, expected=expected, mode=mode, check_inputs=check_inputs
+        root, path, data, expected=expected, mode=mode, check_inputs=check_inputs, anonymous=anonymous
     )
     if not state["mutated"] and os.path.normpath(os.fspath(path)) == trigger_target:
         noop_target.write_bytes(replacement)
@@ -314,8 +314,8 @@ state = {"mutated": False}
 original_build_plan = engine.build_mutation_plan
 engine._ENTRY_WINDOW_SECONDS = -1.0
 
-def build_plan_then_change_noop(manifest):
-    plan = original_build_plan(manifest)
+def build_plan_then_change_noop(manifest, **kwargs):
+    plan = original_build_plan(manifest, **kwargs)
     if not state["mutated"]:
         noop_target.write_bytes(replacement)
         state["mutated"] = True

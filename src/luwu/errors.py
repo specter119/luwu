@@ -23,6 +23,12 @@ class RenderError(LuwuError):
     default_code = "template_error"
 
 
+class ProviderError(LuwuError):
+    """A provider value could not be obtained safely; the message never names it."""
+
+    default_code = "provider_command_failed"
+
+
 class MutationError(LuwuError):
     """An explicit mutation could not safely complete."""
 
