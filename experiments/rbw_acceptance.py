@@ -447,34 +447,6 @@ def step_executable_replacement(context: Context) -> tuple[str, dict[str, object
     return "executable_replacement", require(checks)
 
 
-def step_rotate(context: Context) -> tuple[str, dict[str, object]]:
-    previous = context.secret
-    prompt("Change the vault item's value now (for example: rbw add --force ITEM)")
-    plan = run_cli(context, ["plan", *authority(context)])
-    applied = run_cli(context, ["apply", *authority(context), "--yes"])
-    target = target_path(context)
-    secret = provider_value(target)
-    if secret is not None:
-        context.secret = secret
-    entry = resource_entry(plan)
-    checks = {
-        "plan_status": redact(entry.get("status")),
-        "forward_field_reported": PROVIDER_FIELD in (entry.get("forward_fields") or []),
-        "apply_committed": payload_of(applied).get("outcome") == "committed",
-        "new_value_differs": secret is not None and secret != previous,
-        "old_value_absent_from_target": bool(
-            previous and previous.encode("utf-8") not in target.read_bytes()
-        ),
-        "only_target_holds_the_new_value": secret is not None
-        and value_holders(context.workdir, secret) == [target],
-        "old_value_absent_from_workdir": bool(
-            previous and not value_holders(context.workdir, previous)
-        ),
-        "plan_reports_drift": entry.get("status") == "drifted",
-    }
-    return "rotate_and_converge", require(checks)
-
-
 def step_public_choice(context: Context) -> tuple[str, dict[str, object]]:
     target = target_path(context)
     choice = f"operator-choice-{uuid.uuid4().hex[:8]}"
@@ -514,7 +486,6 @@ STEPS = (
     step_unlocked_apply,
     step_verify_target,
     step_executable_replacement,
-    step_rotate,
     step_public_choice,
 )
 

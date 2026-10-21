@@ -233,7 +233,7 @@ The script builds an isolated synthetic profile, asks the operator to lock the
 vault and stop the agent where a step needs it, and walks the checks: no
 authority, locked vault, stopped agent (and that no agent was started),
 unlocked apply, target mode and secret confinement to the one declared target,
-a changed executable, rotation, and a public choice that survives reverse sync
+a changed executable, and a public choice that survives reverse sync
 and a re-apply. It learns the secret only by reading the target file and
 records redacted metadata only (commands, exit codes, fixed codes, booleans) to
 a report in the working directory. Do not commit that report. It also prints
