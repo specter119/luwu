@@ -271,8 +271,8 @@ TOML documents. Whole-file text resources, copy resources, and directory leaves
 cannot declare one.
 
 **Declaration.** A top-level `[providers.NAME]` table has `type` (must be
-`rbw`), `item`, and optional `field` and `profile`. `item`, `field`, and
-`profile` are each one safe argument: non-empty, not starting with `-`, at most
+`rbw`), `item`, and optional `field`. `item` and `field` are each one safe
+argument: non-empty, not starting with `-`, at most
 256 UTF-8 bytes, and without control characters. A field declares `owner = "provider"` and `provider = NAME` naming a declared provider, and no `input`.
 A resource with a provider field must declare `mode`, and the mode must grant
 nothing to group or others (`mode & 0o077 == 0`). A provider declared but not
@@ -286,18 +286,24 @@ the declared path after rendering, by the same selected-span patch as other
 writes, and never passes through the template engine. A provider field is
 forward-only and independent of any baseline: a live value equal to the
 provider value is `unchanged`; a different or missing live value is
-`source_changed` with a forward decision. It is never a reverse candidate,
+`source_changed` with a forward decision; for a provider field that status
+means only that the live value differs from the provider value, so a hand edit
+of the live file and a rotation at the provider look the same and neither is a
+conflict. It is never a reverse candidate,
 conflict, or `unbased`, and a resource whose only fields are provider fields
 needs no baseline. A baseline lists a provider field among its owners and never
-among its values; a baseline that holds a value for one is invalid. An
-existing target whose mode differs from the declared mode plans as `drifted`
-with a mode-only write even when the value is in sync, so a wide mode does not
-survive.
+among its values; a baseline that holds a value for one is invalid. When
+every declared field is otherwise unchanged, an existing target whose mode
+differs from the declared mode plans as `drifted` with a mode-only write, so a
+wide mode does not survive. While another field of the resource is a reverse
+candidate or in conflict the mode is not repaired; the plan shows the effective
+mode, and the repair follows once those fields settle.
 
 **Operations.** `accept` and `reverse-sync --field` refuse a provider field
 (`provider_field_refused`), and `reverse-sync --undeclared PATH` refuses a path
-equal to or below a provider path (`undeclared_unsafe`). Reverse-sync consumer
-simulation ignores provider paths and never contacts a provider.
+equal to or below a provider path (`undeclared_unsafe`). `reverse-sync` never
+contacts a provider, so its consumer simulation needs no special case for
+provider paths.
 
 **Authority and fetching.** Only `inspect`, `plan`, and `apply` contact a
 provider, and only when given `--provider-executable rbw=/absolute/path`. Any
@@ -308,22 +314,25 @@ resource that consumes a provider is `blocked` with
 the option; for them a provider field is treated as unchanged, so the public
 fields of the same resource stay usable. A plan built that way cannot be
 applied. Values are fetched once per command, while the plan is built, and are
-reused by every later check of that plan, so a value rotated after planning is
-not seen: build a new plan.
+reused by every later check of that plan. Each CLI invocation builds its own
+plan, so `apply` fetches the value itself and a value rotated between a `plan`
+command and an `apply` command is written as the newer value.
 
 The executable must be an absolute path to a regular file that is not a
 symlink, owned by root or the current user, and executable by its owner. Neither
-the file nor any ancestor directory may be writable by group or others; the walk
-stops at a root-owned sticky directory such as `/tmp`. Its identity (device,
-inode, mode, size, modification time) is checked before the first call and again
-after the last, and a change fails the batch with `provider_executable_changed`.
+the file nor any ancestor directory may be writable by group or others, and
+every ancestor must be owned by root or the current user; the walk stops at a
+root-owned sticky directory such as `/tmp`, and the directory just below it is
+checked for owner as well. Its signature (device, inode, size, mode,
+modification and change times, link count) is checked before the first call and
+again after the last, and a change fails the batch with
+`provider_executable_changed`.
 
-For each `profile` value, Luwu does this, in order:
+Luwu does this, in order:
 
-1. Check by `lstat` that the agent socket
-   `$XDG_RUNTIME_DIR/rbw[-PROFILE]/socket` (or `$TMPDIR` or `/tmp`, then
-   `rbw[-PROFILE]-UID/socket` when `XDG_RUNTIME_DIR` is unset or relative)
-   is a socket owned by the current user. Otherwise the result is
+1. Check by `lstat` that the agent socket `$XDG_RUNTIME_DIR/rbw/socket` (or
+   `$TMPDIR` or `/tmp`, then `rbw-UID/socket` when `XDG_RUNTIME_DIR` is unset or
+   relative) is a socket owned by the current user. Otherwise the result is
    `provider_agent_unavailable`. Luwu never connects to it.
 1. Run `rbw unlocked`. A nonzero exit whose stderr contains `agent is locked`
    is `provider_locked`; any other nonzero exit is `provider_command_failed`.
@@ -337,8 +346,7 @@ child runs without a shell, with standard input closed, in `/`, in its own
 session, with a 5 second timeout and 1 MiB per output stream, and is killed as a
 process group on timeout or oversize output. Its environment holds only `HOME`,
 `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
-`TMPDIR` when set, `PATH=/bin:/usr/bin`, `RBW_PROFILE` when declared, and
-`RBW_AGENT=/bin/false`. Before the first call Luwu sets `RLIMIT_CORE` to 0 and
+`TMPDIR` when set, `PATH=/bin:/usr/bin`, and `RBW_AGENT=/bin/false`. Before the first call Luwu sets `RLIMIT_CORE` to 0 and
 clears the process dumpable flag, and fails every provider if it cannot.
 The child's standard error is discarded.
 
@@ -347,7 +355,8 @@ consume it, with one fixed code: `provider_authority_required`,
 `provider_executable_invalid`, `provider_executable_changed`,
 `provider_agent_unavailable`, `provider_locked`, `provider_timeout`,
 `provider_output_invalid`, or `provider_command_failed`. A value that cannot be
-written at its path blocks the resource with `provider_inject_failed`. Apply
+written at its path, including a path whose rendered leaf is not a string,
+blocks the resource with `provider_inject_failed`. Apply
 skips a blocked resource like any other (`resource_skip`, outcome `partial`);
 when the skips come from a provider, the outcome's error code is that
 provider's code. A resource that consumes providers carries a `providers` list
@@ -357,14 +366,17 @@ in its plan projection, sorted by provider name, with `provider`, `item`,
 without provider fields keep an empty list.
 
 **Limits.** The target file holds the secret by design; Luwu does not protect
-it after the write beyond the declared mode. A SIGKILL between staging and
-replacement leaves a private `.luwu-tmp-*` file with the secret beside the
-target, and Luwu does not sweep it; delete it by hand. `rbw get --raw` reads the
-whole vault item into Luwu's memory. Luwu names a provider's item in plan
-output because the manifest already does. The rbw behaviors that the reference
-relies on (the `--` separator, the raw JSON keys, the `agent is locked` phrase,
-the socket path, and `RBW_AGENT`) are not verified against a real vault; see
-[status](status.md).
+it after the write beyond the declared mode. A write to a resource with a
+provider field stages its bytes in an unnamed file (`O_TMPFILE`) in the target's
+directory and names it through `/proc/self/fd`, so a kill during writing leaves
+no entry; where the filesystem or a missing `/proc` does not support it the
+write fails with `anonymous_staging_unsupported` and the target is unchanged. The unnamed file is given a name only for the moment before
+it replaces the target, and a SIGKILL inside that window can leave a private
+`.luwu-tmp-*` file with the secret; Luwu does not sweep it, so delete it by
+hand. `rbw get --raw` reads the whole vault item into Luwu's memory. Luwu names
+a provider's item in plan output because the manifest already does. Which rbw
+behaviors the contract relies on without a recorded real run is a status fact;
+see [status](status.md#provider-fields-awaiting-real-rbw-acceptance).
 
 ### Fixed-version application-shaped mapping targets
 

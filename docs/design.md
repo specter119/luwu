@@ -203,9 +203,14 @@ cannot write a target. Observation then renders the template without the
 secret, patches each provider value into the rendered document at its declared
 path with `patch_document`, and classifies the field with `provider` ownership.
 Because the patched document is the desired document, a first creation, a
-rotation, and a mode-only repair all use the ordinary staged write. The plan
+rotation, and a mode-only repair all use the ordinary write path, with one
+difference: a resource with a provider field stages through an unnamed
+`O_TMPFILE` file and publishes it with `linkat` through `/proc/self/fd` and an
+immediate rename, so a
+kill while the bytes are written leaves no entry, and a filesystem without
+`O_TMPFILE` refuses the write instead of falling back to a named file. The plan
 evidence binds the provider-bearing bytes in memory like any other resource's;
-it is never serialized, and every record that holds a value keeps it out of
+it is never serialized, and the sealed value and the resolution keep it out of
 `repr`. `luwu/baseline.py` names the owners whose values are never persisted
 once (`NON_PERSISTED_OWNERS`) and derives the baseline field list from it.
 
@@ -286,6 +291,13 @@ owner decision and evidence, not a convenience argument.
 - Writing a value back to a provider. Provider fields are read-only inputs;
   a value that changes often and is not secret belongs in a local input and
   reaches the source through ordinary reverse sync.
+- A multi-vault `profile` option for rbw. Nothing in the accepted behavior
+  needs a second vault, and it multiplied the socket path, the environment,
+  and the call grouping. Reopening it needs a real two-vault user.
+- A named staging file in a cache or runtime directory to keep a SIGKILL
+  residue out of the target tree. A rename across filesystems is not atomic,
+  so the staging file has to sit beside the target; an unnamed file gives the
+  same absence of residue without that cost.
 - A provider cache, a provider registry, and a provider-diagnostic command. The
   earlier cache never took part in a decision and carried a second copy of the
   atomic write.

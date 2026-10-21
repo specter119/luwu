@@ -78,20 +78,32 @@ assumptions, which the implementation takes from the rbw source and not from
 a run:
 
 - `rbw get --raw -- ITEM` accepts `--`, and the raw JSON carries
-  `data.password`, `data.username`, `notes`, and `fields[].name/value`.
+  `data.password`, `data.username`, `notes`, and `fields[].name/value`. The
+  script confirms the key it selects; the other keys stay a source-reading
+  assumption.
 - A locked agent makes `rbw unlocked` exit nonzero with `agent is locked` on
   standard error.
-- The agent socket is `<runtime>/rbw[-profile]/socket`.
-- `RBW_AGENT=/bin/false` stops `rbw get` from starting an agent.
-- `RLIMIT_CORE=0` and a cleared dumpable flag keep a core dump from being
-  written when `core_pattern` is a pipe.
+- The agent socket is `<XDG_RUNTIME_DIR>/rbw/socket`, otherwise `$TMPDIR`
+  (default `/tmp`)`/rbw-<uid>/socket`.
+- `RBW_AGENT=/bin/false` stops rbw from starting an agent when the socket is
+  stale.
 
-Known limits: a SIGKILL between staging and replacement leaves a private
-`.luwu-tmp-*` file with the secret that nothing sweeps; the plan holds the
-provider value for its whole life, so a rotation after planning needs a new
-plan; `rbw get --raw` reads the whole item; and an executable under a
-group-writable ancestor such as `~/.local/bin` on a 002 umask is refused. The
-contract is in [reference](reference.md#provider-owned-fields).
+The walk does not confirm two further assumptions. Whether `rbw get` on a
+locked agent starts an unlock or a pinentry by itself matters only if the agent
+locks between Luwu's `rbw unlocked` and `rbw get`, and the walk never reaches
+`get` while locked. The walk records the kernel's `core_pattern` and
+`suid_dumpable` but does not show that the core-dump hardening holds under a
+pipe `core_pattern`; that rests on the in-process hardening test.
+
+Known limits: a SIGKILL in the instant between naming the unnamed staging file
+and replacing the target leaves a private `.luwu-tmp-*` file with the secret
+that nothing sweeps; the mode-only repair of a wide existing mode runs only
+when the declared fields are otherwise unchanged, so a secret file keeps a wide
+mode while the resource is a reverse candidate, a conflict, unbased, awaiting
+adoption, or blocked by a provider failure, and the plan's effective mode shows
+it; `rbw get --raw` reads the whole item; and an executable under a
+group-writable ancestor such as `~/.local/bin` on a 002 umask is refused. The contract is in
+[reference](reference.md#provider-owned-fields).
 
 ## Verified scope and limits
 

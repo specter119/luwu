@@ -125,11 +125,14 @@ a provider registry, and a provider cache are rejected; see the
 [reference](reference.md#provider-owned-fields) and the current state in
 [status](status.md#provider-fields-awaiting-real-rbw-acceptance).
 
-Exit: isolated fake-provider fault tests and a separately authorized real-rbw
-acceptance exercise cover locked or unavailable vaults, executable and
-environment changes, permissions, output confidentiality, and current-state
-recovery. Public local choices survive a provider-backed redeploy. The fake-provider
-tests, confidentiality scans, and the manual script
+Exit: two parts with separate evidence. Isolated fake-rbw tests prove Luwu's
+own behavior: locked or unavailable vaults, executable and environment
+changes, permissions, output confidentiality, current-state recovery, and
+public local choices that survive a provider-backed redeploy. A separately
+authorized real-rbw run proves only what a fake cannot: that the installed rbw
+accepts the argument form, returns the JSON keys, reports a locked agent, and
+lays out its socket as the contract assumes, and that a dead agent is not
+restarted. The fake-rbw tests, confidentiality scans, and the manual script
 `experiments/rbw_acceptance.py` exist; the real run is the open gate. If real
 integration is blocked, retain partial status; mock success cannot close this
 milestone. User-service reloads and other provisioning remain explicit external

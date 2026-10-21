@@ -114,8 +114,8 @@ For example: `git show bb80335:docs/milestones/m3.md`.
   fallback.
 - A command that confirms with `--yes` takes the plan it just built as its
   entry observation instead of observing the whole profile a second time.
-- M7a was closed on the maintainer's real-migration trial (see the
-  [roadmap](roadmap.md#m7a-daily-loop-usability)).
+- M7a was delivered without a recorded real trial; its later closure is a
+  roadmap fact (see the [roadmap](roadmap.md#m7a-daily-loop-usability)).
 
 ## M8: Provider fields (version 8)
 
@@ -131,8 +131,9 @@ For example: `git show bb80335:docs/milestones/m3.md`.
   field is refused as an accept or reverse-sync selection.
 - Plan projections list each consuming resource's provider, item, field, and
   state.
-- `experiments/rbw_acceptance.py` is the manual real-rbw exercise. M8 is not
-  closed until it has been run (see the [roadmap](roadmap.md)).
+- A write to a resource with a provider field stages its bytes in an unnamed
+  `O_TMPFILE` file and refuses the write where that is unsupported.
+- `experiments/rbw_acceptance.py` is the manual real-rbw exercise.
 
 ## Consolidation: one manifest contract
 
