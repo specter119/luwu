@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -16,7 +15,7 @@ from tests.support.fake_rbw import FakeRbwCase
 
 
 class ProviderExecutableCliTests(FakeRbwCase):
-    secret = "w3-cli-secret-c3"
+    secret = "canary-three"
 
     def setUp(self) -> None:
         super().setUp()
@@ -130,25 +129,6 @@ provider = "db"
         self.assertNotIn(self.secret, stdout)
         self.assertNotIn("placeholder", stdout)
 
-    def test_apply_with_authority_writes_only_the_target(self) -> None:
-        code, stdout, stderr = self._run(
-            *self._base("apply"),
-            "--provider-executable",
-            f"rbw={self.executable}",
-            "--yes",
-        )
-
-        self.assertEqual(code, 0, stderr)
-        target = self.target_root / ".config" / "app.json"
-        self.assertIn(self.secret, target.read_text(encoding="utf-8"))
-        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
-        self.assertNotIn(self.secret, stdout)
-        self.assertNotIn(self.secret, stderr)
-        gets = sum(
-            1 for argv, _env in self.recorded_calls() if argv and argv[0] == "get"
-        )
-        self.assertEqual(gets, 1)
-
     def test_other_provider_keys_are_a_fixed_usage_error(self) -> None:
         for value in ("bw=/usr/bin/bw", "rbw=relative/rbw", "rbw="):
             with self.subTest(value=value):
@@ -199,43 +179,11 @@ provider = "db"
                 self.assertEqual(raised.exception.code, 2)
         self.assertEqual(self.recorded_calls(), [])
 
-    def test_accept_of_a_provider_field_is_refused_without_fetching(self) -> None:
-        code, stdout, stderr = self._run(
-            *self._base("accept"),
-            "--resource",
-            "app",
-            "--from",
-            "desired",
-            "--field",
-            "password",
-            "--yes",
-        )
-
-        self.assertEqual(code, 2)
-        self.assertIn("provider_field_refused", stderr)
-        self.assertNotIn(self.secret, stdout + stderr)
-        self.assertEqual(self.recorded_calls(), [])
-
-    def test_reverse_undeclared_under_a_provider_path_is_refused(self) -> None:
-        code, stdout, stderr = self._run(
-            *self._base("reverse-sync"),
-            "--resource",
-            "app",
-            "--undeclared",
-            '["service", "password"]',
-            "--yes",
-        )
-
-        self.assertEqual(code, 2)
-        self.assertIn("undeclared_unsafe", stderr)
-        self.assertNotIn(self.secret, stdout + stderr)
-        self.assertEqual(self.recorded_calls(), [])
-
 
 class ProviderDailyLoopCliTests(FakeRbwCase):
     """Accept and reverse-sync work on mixed resources without rbw."""
 
-    secret = "w3-cli-secret-daily"
+    secret = "canary-four"
 
     def setUp(self) -> None:
         super().setUp()

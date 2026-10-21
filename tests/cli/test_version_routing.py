@@ -281,7 +281,7 @@ class ProfileCliV8Tests(unittest.TestCase):
             "profile",
         )
 
-    def test_v8_rejects_provider_manifest_fields_and_hides_parse_details(self) -> None:
+    def test_v8_accepts_an_empty_providers_table_and_hides_parse_details(self) -> None:
         case = self._v8_case()
         case.manifest.write_text(
             V8_MANIFEST.replace("version = 8", "version = 8\nproviders = {}"),

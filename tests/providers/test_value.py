@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
+from luwu import providers
 from luwu.errors import ProviderError
 from luwu.providers import (
     PROVIDER_ERROR_CODES,
@@ -61,18 +63,17 @@ class ResolutionHygieneTests(FakeRbwCase):
         executable = self.install_rbw()
         marker = "leak-marker-9e0b"
 
-        class LeakyRunner:
-            def run(self, argv, *, env, timeout, max_output_bytes):
-                if argv[1] == "get":
-                    raise ProviderError(f"secret context {marker}")
-                return ProviderProcessResult(0, b"")
+        def leaky_run(_self, argv, *, env, timeout, max_output_bytes):
+            if argv[1] == "get":
+                raise ProviderError(f"secret context {marker}")
+            return ProviderProcessResult(0, b"")
 
-        resolution = resolve_providers(
-            [ProviderReference(name="one", item="item-one")],
-            ProviderAuthority(rbw_executable=executable),
-            environ=self.environ(),
-            runner=LeakyRunner(),
-        )
+        with patch.object(providers.SubprocessRunner, "run", leaky_run):
+            resolution = resolve_providers(
+                [ProviderReference(name="one", item="item-one")],
+                ProviderAuthority(rbw_executable=executable),
+                environ=self.environ(),
+            )
 
         self.assertEqual(resolution.failures, {"one": "provider_command_failed"})
         self.assertNotIn(marker, repr(resolution))

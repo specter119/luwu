@@ -86,6 +86,7 @@ _SAFE_ERROR_CODES = (
     frozenset(
         {
             "adopt_invalid",
+            "anonymous_staging_unsupported",
             "baseline_invalid",
             "baseline_stale",
             "cleanup_unknown",
@@ -473,20 +474,14 @@ def build_plan(
     manifest: Manifest,
     *,
     provider_authority: ProviderAuthority | None = None,
-    fetch_providers: bool = True,
 ) -> Plan:
-    """Observe every selected resource and return a sealed in-memory plan.
-
-    With ``fetch_providers=False`` no provider is contacted: provider-owned
-    fields classify from the live value instead, and the resulting plan can
-    drive baseline, input, and source writes but never a target write.
-    """
+    """Observe every selected resource and return a sealed in-memory plan."""
 
     return _build_plan(
         manifest,
         entering_mutation=False,
         provider_authority=provider_authority,
-        fetch_providers=fetch_providers,
+        fetch_providers=True,
     )
 
 
@@ -494,13 +489,18 @@ def build_mutation_plan(
     manifest: Manifest,
     *,
     provider_authority: ProviderAuthority | None = None,
-    fetch_providers: bool = True,
+    fetch_providers: bool = False,
 ) -> Plan:
     """Build the plan a command applies in the same call.
 
     The first mutation that uses it within a moment takes this observation as
     its entry observation instead of observing the whole profile again. A plan
     that waits longer, or is used twice, is observed again like any other.
+
+    With the default ``fetch_providers=False`` no provider is contacted:
+    provider-owned fields classify from the live value instead, and the
+    resulting plan can drive baseline, input, and source writes but never a
+    target write. Only apply fetches.
     """
 
     return _build_plan(
@@ -526,17 +526,9 @@ def _resolve_provider_state(
             }
         )
     )
-    try:
-        return resolve_providers(
-            [manifest.providers[name] for name in names], provider_authority
-        )
-    except Exception:  # noqa: BLE001 - providers fail closed, by code
-        return ProviderResolution(
-            values=MappingProxyType({}),
-            failures=MappingProxyType(
-                {name: "provider_command_failed" for name in names}
-            ),
-        )
+    return resolve_providers(
+        [manifest.providers[name] for name in names], provider_authority
+    )
 
 
 def _build_plan(
@@ -579,13 +571,9 @@ def _build_plan(
 def apply_plan(plan: Plan, *, confirm: bool) -> Result:
     """Apply the complete confirmed forward batch after a full live recheck."""
 
-    record = _mutation_record(plan, operation="apply")
+    record = _mutation_record(plan, operation="apply", fetched=True)
     if record is None:
         return Result("apply", "not_attempted", error_code="stale_plan")
-    if record.provider_state is None:
-        # A plan built without fetching providers has no provider values, so
-        # it must never drive a target write.
-        raise EngineError("plan_invalid", operation="apply")
     target_root = record.manifest.roots.target.path
     skipped = tuple(
         (item, reason)
@@ -801,6 +789,7 @@ def apply_plan(plan: Plan, *, confirm: bool) -> Result:
                     expected=expected,
                     mode=fresh_spec.mode,
                     check_inputs=recheck,
+                    anonymous=bool(fresh_spec.resource.provider_fields),
                 )
         except FilesystemError as exc:
             return _write_failure_result(
@@ -1156,7 +1145,7 @@ def accept_baseline(
 ) -> Result:
     """Accept selected declared template fields from desired or live state."""
 
-    record = _mutation_record(plan, operation="accept")
+    record = _mutation_record(plan, operation="accept", fetched=False)
     if record is None:
         return Result("accept", "not_attempted", error_code="stale_plan")
     item = _resource_by_name(record.resources, resource)
@@ -1380,7 +1369,7 @@ def accept_baseline(
 def adopt_resource(plan: Plan, *, resource: str, confirm: bool) -> Result:
     """Accept one copy resource's current whole-file state as its baseline."""
 
-    record = _mutation_record(plan, operation="adopt")
+    record = _mutation_record(plan, operation="adopt", fetched=False)
     if record is None:
         return Result("adopt", "not_attempted", error_code="stale_plan")
     return _adopt_item(
@@ -1403,7 +1392,7 @@ def adopt_resources(plan: Plan, *, resources: tuple[str, ...], confirm: bool) ->
 
     if len(resources) == 1:
         return adopt_resource(plan, resource=resources[0], confirm=confirm)
-    record = _mutation_record(plan, operation="adopt")
+    record = _mutation_record(plan, operation="adopt", fetched=False)
     if record is None:
         return Result("adopt", "not_attempted", error_code="stale_plan")
     if not resources or len(set(resources)) != len(resources):
@@ -1678,7 +1667,7 @@ def reverse_inputs(
 ) -> Result:
     """Patch explicit live-owned fields to grouped declared input documents."""
 
-    record = _mutation_record(plan, operation="reverse-sync")
+    record = _mutation_record(plan, operation="reverse-sync", fetched=False)
     if record is None:
         return Result("reverse-sync", "not_attempted", error_code="stale_plan")
     item = _resource_by_name(record.resources, resource)
@@ -1996,7 +1985,7 @@ def reverse_undeclared(
     side is the one to keep.
     """
 
-    record = _mutation_record(plan, operation="reverse-sync")
+    record = _mutation_record(plan, operation="reverse-sync", fetched=False)
     if record is None:
         return Result("reverse-sync", "not_attempted", error_code="stale_plan")
     item = _resource_by_name(record.resources, resource)
@@ -2269,9 +2258,7 @@ def _observe_resource(
         # a failure, and ProviderValue wraps text by construction.
         for provider_name in provider_names:
             failure = provider_state.failures.get(provider_name)
-            provider_states[provider_name] = (
-                "ok" if failure is None else _safe_code(failure)
-            )
+            provider_states[provider_name] = "ok" if failure is None else failure
         provider_blocked = next(
             (code for code in provider_states.values() if code != "ok"),
             None,
@@ -2355,6 +2342,16 @@ def _observe_resource(
                 # The provider value enters the rendered document only here,
                 # after Jinja, through the format layer's exact-path patch.
                 try:
+                    for alias in provider_aliases:
+                        # Replacing a non-string placeholder would let the
+                        # injected value change the leaf's JSON type.
+                        existing = get_leaf(
+                            desired_document, resource.fields[alias].path
+                        )
+                        if existing is not MISSING and type(existing) is not str:
+                            return _replace_blocked(
+                                empty, code="provider_inject_failed"
+                            )
                     desired_data = patch_document(
                         desired_document,
                         {
@@ -2954,15 +2951,10 @@ def _preflight_reverse_consumers(
                 resource=consumer.resource.name,
                 fields=affected,
             ) from None
-        # Provider paths differ between the injected desired document and a
-        # plain re-render by design; they are not a consumer change.
         allowed_paths = (
             tuple(item.resource.fields[name].path for name in fields)
             if consumer.resource.name == item.resource.name
             else ()
-        ) + tuple(
-            consumer.resource.fields[alias].path
-            for alias in consumer.resource.provider_fields
         )
         if not unselected_equal(
             consumer.desired_document, simulated_document, allowed_paths
@@ -3907,13 +3899,33 @@ def _require_plan(plan: Plan, *, operation: str) -> _PlanRecord:
     )
 
 
-def _mutation_record(plan: Plan, *, operation: str) -> _PlanRecord | None:
+def _mutation_record(
+    plan: Plan, *, operation: str, fetched: bool
+) -> _PlanRecord | None:
+    """Resolve the plan's mutation record and enforce its provider provenance.
+
+    ``fetched=True`` (apply) requires a plan that resolved provider values,
+    because only it may drive a target write. ``fetched=False`` (accept,
+    adopt, reverse-sync) refuses a plan that contacted a provider, so those
+    operations can never build on provider-fetched state; an empty resolution
+    means no provider was contacted and is allowed either way. Checking here,
+    before the caller touches anything else, keeps every mutation entry on
+    the same rule.
+    """
+
     try:
-        return _require_plan(plan, operation=operation)
+        record = _require_plan(plan, operation=operation)
     except EngineError as exc:
         if exc.code == "stale_plan":
             return None
         raise
+    state = record.provider_state
+    if fetched:
+        if state is None:
+            raise EngineError("plan_invalid", operation=operation)
+    elif state is not None and (state.values or state.failures):
+        raise EngineError("plan_invalid", operation=operation)
+    return record
 
 
 def _validate_selection(

@@ -13,6 +13,9 @@ import tempfile
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
+from unittest.mock import patch
+
+from luwu import providers
 
 CANARY_ALPHA = "canary-alpha-7f3a91"
 SENTINEL_USERNAME = "user-sentinel-2d05e1"
@@ -91,6 +94,11 @@ def _sh_quote(path: Path) -> str:
 class FakeRbwCase(unittest.TestCase):
     """Base case with a private tree, a fake rbw, and an agent socket."""
 
+    # resolve_providers applies process-wide core-dump hardening; cases stub
+    # it out so the test runner keeps its own limits. Subprocess-based
+    # hardening tests opt back into the real syscall.
+    real_hardening = False
+
     def setUp(self) -> None:
         super().setUp()
         self.temporary = tempfile.TemporaryDirectory(prefix="luwu-test-providers-")
@@ -102,11 +110,16 @@ class FakeRbwCase(unittest.TestCase):
         for directory in (self.bin_dir, self.payload_dir, self.runtime_root):
             directory.mkdir(mode=0o700)
         self.record = self.root / "record.log"
+        if not self.real_hardening:
+            hardening = patch.object(providers, "harden_process", lambda: None)
+            hardening.start()
+            self.addCleanup(hardening.stop)
 
-    def bind_socket(self, profile: str | None = None) -> Path:
-        name = "rbw" if profile is None else f"rbw-{profile}"
-        directory = self.runtime_root / name
-        directory.mkdir(mode=0o700, exist_ok=True)
+    def bind_socket(self, directory: Path | None = None) -> Path:
+        """Bind a fake agent socket; defaults to the XDG-style rbw directory."""
+
+        directory = directory if directory is not None else self.runtime_root / "rbw"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = directory / "socket"
         agent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.addCleanup(agent.close)

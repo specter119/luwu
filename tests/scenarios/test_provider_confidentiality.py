@@ -22,12 +22,14 @@ from typing import Any
 from unittest.mock import patch
 
 from luwu.cli import main
+from luwu.providers import MAX_STREAM_BYTES
 from tests.support.fake_rbw import (
     CANARY_ALPHA,
     CANARY_BETA,
     SENTINEL_NOTES,
     SENTINEL_USERNAME,
     FakeRbwCase,
+    default_stdout,
 )
 
 # The provider field selects this canary; the other values below are decoys
@@ -142,6 +144,13 @@ target = "notes.txt"
             "--provider-executable",
             f"rbw={self.executable}",
             "--json",
+        )
+
+    def _authorized_text(self, command: str) -> tuple[str, ...]:
+        return (
+            *self._base(command),
+            "--provider-executable",
+            f"rbw={self.executable}",
         )
 
     def _resource(self, payload: dict[str, object], name: str) -> dict[str, Any]:
@@ -274,6 +283,64 @@ target = "notes.txt"
         self.assertEqual(self._get_calls(), 3)
         self._assert_output_clean(stdout, stderr)
         self._assert_value_confined(target=target)
+
+    def test_failed_fetch_output_is_confined_in_both_output_modes(self) -> None:
+        cases = (
+            (
+                "canary-on-both-streams",
+                'cat "$payload/get.stdout"\ncat "$payload/get.stdout" >&2',
+                1,
+                None,
+                "provider_command_failed",
+            ),
+            ("non-json-output", None, 0, b"not json\n", "provider_output_invalid"),
+            (
+                "oversized-output",
+                None,
+                0,
+                default_stdout() + b"x" * MAX_STREAM_BYTES,
+                "provider_output_invalid",
+            ),
+        )
+        for name, get_command, get_exit, get_stdout, error_code in cases:
+            with self.subTest(failure=name):
+                self.install_rbw(
+                    document=self.document,
+                    get_command=get_command,
+                    get_exit=get_exit,
+                    get_stdout=get_stdout,
+                )
+                for arguments in (
+                    self._authorized("plan"),
+                    self._authorized_text("plan"),
+                ):
+                    with self.subTest(mode="json" if "--json" in arguments else "text"):
+                        code, stdout, stderr = self._run(*arguments)
+                        self.assertEqual(code, 0)
+                        self.assertEqual(stderr, "")
+                        self._assert_output_clean(stdout, stderr)
+                        if "--json" in arguments:
+                            app = self._resource(json.loads(stdout), "app")
+                            self.assertEqual(app["status"], "blocked")
+                            self.assertEqual(app["error_code"], error_code)
+                self._assert_value_confined(target=None)
+
+    def test_internal_error_output_is_confined_in_both_output_modes(self) -> None:
+        for arguments in (self._authorized("plan"), self._authorized_text("plan")):
+            with self.subTest(mode="json" if "--json" in arguments else "text"):
+                with patch(
+                    "luwu.engine.resolve_providers",
+                    side_effect=RuntimeError(PROVIDER_FIELD_VALUE),
+                ):
+                    code, stdout, stderr = self._run(*arguments)
+                self.assertEqual(code, 2)
+                self._assert_output_clean(stdout, stderr)
+                if "--json" in arguments:
+                    payload = json.loads(stdout)
+                    self.assertEqual(payload["error"]["code"], "internal_error")
+                else:
+                    self.assertIn("internal_error", stderr)
+        self._assert_value_confined(target=None)
 
     def test_locked_vault_blocks_only_the_provider_resource(self) -> None:
         self.install_rbw(

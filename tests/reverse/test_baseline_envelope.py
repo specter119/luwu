@@ -511,10 +511,10 @@ path = ["settings", "key"]
                 "path": ["settings", "key"],
                 "owner": "provider",
                 "input": None,
-                "provider": "openai",
             },
         )
         self.assertNotIn("provider", mapping["brand"])
+        self.assertNotIn("provider", mapping["key"])
 
         self.baseline_path.write_bytes(data)
         _, baseline = load_baseline(manifest, resource)
@@ -560,7 +560,7 @@ path = ["settings", "key"]
         self.assertNotIn(self.SENTINEL, repr(error))
         self.assertNotIn(self.SENTINEL, rendered)
 
-    def test_identity_binds_owner_and_provider_name(self) -> None:
+    def test_identity_binds_owner_but_not_the_provider_binding_name(self) -> None:
         self.manifest_path.write_text(
             self._manifest_text('owner = "source"\ninput = "brand"\n'),
             encoding="utf-8",
@@ -580,6 +580,17 @@ path = ["settings", "key"]
             load_baseline(provider_manifest, provider_manifest.resources[0])
         self.assertEqual(raised.exception.code, "baseline_stale")
 
+        provider_data = make_field_baseline(
+            provider_manifest,
+            provider_manifest.resources[0],
+            current={"brand": "brand-value"},
+            selected_fields=("brand",),
+            existing=None,
+        )
+        self.baseline_path.write_bytes(provider_data)
+
+        # Renaming the provider declaration keeps the same ownership identity,
+        # so the baseline stays valid.
         self.manifest_path.write_text(
             self._manifest_text(
                 'owner = "provider"\nprovider = "other"\n',
@@ -588,6 +599,7 @@ path = ["settings", "key"]
             encoding="utf-8",
         )
         renamed = load_manifest(self.manifest_path, profile="work")
-        with self.assertRaises(BaselineError) as raised:
-            load_baseline(renamed, renamed.resources[0])
-        self.assertEqual(raised.exception.code, "baseline_stale")
+        _, baseline = load_baseline(renamed, renamed.resources[0])
+        self.assertIsNotNone(baseline)
+        assert baseline is not None
+        self.assertEqual(dict(baseline.values), {"brand": "brand-value"})

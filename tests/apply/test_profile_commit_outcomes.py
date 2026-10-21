@@ -34,6 +34,7 @@ class ProfileCommitOutcomeTests(profile_case.ProfileEngineCase):
             expected: FileObservation,
             mode: int | None = None,
             check_inputs: _CheckInputs = None,
+            anonymous: bool = False,
         ) -> tuple[int, int]:
             nonlocal write_returned
             identity = original_write(
@@ -43,6 +44,7 @@ class ProfileCommitOutcomeTests(profile_case.ProfileEngineCase):
                 expected=expected,
                 mode=mode,
                 check_inputs=check_inputs,
+                anonymous=anonymous,
             )
             if path == target:
                 write_returned = True
@@ -100,6 +102,7 @@ class ProfileCommitOutcomeTests(profile_case.ProfileEngineCase):
             expected: FileObservation,
             mode: int | None = None,
             check_inputs: _CheckInputs = None,
+            anonymous: bool = False,
         ) -> tuple[int, int]:
             identity = original_write(
                 root,
@@ -108,6 +111,7 @@ class ProfileCommitOutcomeTests(profile_case.ProfileEngineCase):
                 expected=expected,
                 mode=mode,
                 check_inputs=check_inputs,
+                anonymous=anonymous,
             )
             if path == target:
                 raise engine_module.FilesystemError(
@@ -188,6 +192,7 @@ parent_mode = "0700"
             expected: FileObservation,
             mode: int | None = None,
             check_inputs: _CheckInputs = None,
+            anonymous: bool = False,
         ) -> tuple[int, int]:
             if path == second_target:
                 raise engine_module.FilesystemError(
@@ -203,6 +208,7 @@ parent_mode = "0700"
                 expected=expected,
                 mode=mode,
                 check_inputs=check_inputs,
+                anonymous=anonymous,
             )
 
         with patch("luwu.engine.write_file", side_effect=fail_second_write):

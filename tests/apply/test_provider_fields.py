@@ -6,29 +6,34 @@ import hashlib
 import json
 import os
 import stat
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from luwu import engine as engine_module
 from luwu.engine import (
     EngineError,
     accept_baseline,
+    adopt_resource,
+    adopt_resources,
     apply_plan,
     build_mutation_plan,
     build_plan,
     reverse_inputs,
     reverse_undeclared,
 )
+from luwu.filesystem import FileObservation, FilesystemError
 from luwu.manifest import load_manifest
-from luwu.providers import ProviderAuthority, ProviderResolution
+from luwu.providers import ProviderAuthority
 from tests.support.fake_rbw import FakeRbwCase
 
 
 class ProviderFieldCase(FakeRbwCase):
     """One profile whose ``app`` template takes a password from rbw."""
 
-    secret = "w3-provider-secret-a1"
-    rotated = "w3-provider-secret-b2"
+    secret = "canary-one"
+    rotated = "canary-two"
 
     def setUp(self) -> None:
         super().setUp()
@@ -174,7 +179,9 @@ mode = "0600"
 
     def _deploy(self) -> None:
         result = apply_plan(
-            build_mutation_plan(self._load(), provider_authority=self.authority),
+            build_mutation_plan(
+                self._load(), provider_authority=self.authority, fetch_providers=True
+            ),
             confirm=True,
         )
         self.assertEqual(result.outcome, "committed")
@@ -191,6 +198,116 @@ mode = "0600"
             else:
                 cursor[parts[-1]] = value
         self._target().write_text(json.dumps(document) + "\n", encoding="utf-8")
+
+    def _b_target(self) -> Path:
+        return self.target_root / ".config" / "b.json"
+
+    def _rewrite_b_target(self, theme: str) -> None:
+        self._b_target().write_text(
+            json.dumps({"theme": theme}) + "\n", encoding="utf-8"
+        )
+
+    def _theme_input(self) -> dict[str, object]:
+        return json.loads(
+            (self.inputs / "local" / "theme.json").read_text(encoding="utf-8")
+        )
+
+    def _write_shared_theme_manifest(self, *, app_declares_theme: bool) -> None:
+        """Resources app and b render the same theme input; b always declares it."""
+        (self.inputs / "local" / "theme.json").write_text(
+            '{"theme":"t1"}\n', encoding="utf-8"
+        )
+        theme_render = (
+            ',"theme":{{ inputs.theme | tojson }}' if app_declares_theme else ""
+        )
+        (self.source / "templates" / "app.json.j2").write_text(
+            '{"service":{"password":"placeholder","user":"app-user"}'
+            + theme_render
+            + "}\n",
+            encoding="utf-8",
+        )
+        (self.source / "templates" / "b.json.j2").write_text(
+            '{"theme":{{ inputs.theme | tojson }}}\n', encoding="utf-8"
+        )
+        app_theme_field = (
+            """
+[resources.app.fields.theme]
+path = ["theme"]
+owner = "merge"
+input = "theme"
+"""
+            if app_declares_theme
+            else ""
+        )
+        self.manifest_path.write_text(
+            f"""
+version = 8
+
+[roots]
+source = "source"
+inputs = "inputs"
+target = "target"
+
+[profiles.work]
+packages = ["app"]
+exclude = []
+
+[packages.app]
+dependencies = []
+resources = ["app", "b"]
+
+[inputs.theme]
+layers = [
+  {{ file = "local/theme.json", path = ["theme"], format = "json" }},
+]
+reverse_to = {{ file = "local/theme.json", path = ["theme"], format = "json" }}
+
+[providers.db]
+type = "rbw"
+item = "fixture-item"
+
+[resources.app]
+source = "templates/app.json.j2"
+target = ".config/app.json"
+format = "json"
+baseline = "baselines/app.json"
+parents = "create"
+parent_mode = "0700"
+mode = "0600"
+
+[resources.app.fields.password]
+path = ["service", "password"]
+owner = "provider"
+provider = "db"
+{app_theme_field}
+[resources.b]
+source = "templates/b.json.j2"
+target = ".config/b.json"
+format = "json"
+baseline = "baselines/b.json"
+parents = "create"
+
+[resources.b.fields.theme]
+path = ["theme"]
+owner = "merge"
+input = "theme"
+""",
+            encoding="utf-8",
+        )
+
+    def _prepare_shared_theme(self, *, app_declares_theme: bool) -> None:
+        self._write_shared_theme_manifest(app_declares_theme=app_declares_theme)
+        names = ("app", "b") if app_declares_theme else ("b",)
+        for name in names:
+            accepted = accept_baseline(
+                build_mutation_plan(self._load()),
+                resource=name,
+                fields=("theme",),
+                value_from="desired",
+                confirm=True,
+            )
+            self.assertEqual(accepted.outcome, "committed")
+        self._deploy()
 
 
 class ProviderPlanTests(ProviderFieldCase):
@@ -251,7 +368,7 @@ class ProviderPlanTests(ProviderFieldCase):
     def test_rotation_forwards_only_the_provider_field(self) -> None:
         self._write_manifest(user_field=True)
         self._write_template()
-        plan = build_plan(self._load(), provider_authority=self.authority)
+        plan = build_mutation_plan(self._load())
         accepted = accept_baseline(
             plan, resource="app", fields=("user",), value_from="desired", confirm=True
         )
@@ -273,7 +390,7 @@ class ProviderPlanTests(ProviderFieldCase):
     def test_baseline_bytes_hold_no_secret_or_digest(self) -> None:
         self._write_manifest(user_field=True)
         self._write_template()
-        plan = build_plan(self._load(), provider_authority=self.authority)
+        plan = build_mutation_plan(self._load())
         accepted = accept_baseline(
             plan, resource="app", fields=("user",), value_from="desired", confirm=True
         )
@@ -297,7 +414,9 @@ class ProviderPlanTests(ProviderFieldCase):
         self._write_template()
         self._deploy()
 
-        plan = build_mutation_plan(self._load(), provider_authority=self.authority)
+        plan = build_mutation_plan(
+            self._load(), provider_authority=self.authority, fetch_providers=True
+        )
         # Changing the live bytes of a provider resource stales the plan.
         self._rewrite_target(**{"service.password": "tampered"})
         result = apply_plan(plan, confirm=True)
@@ -337,7 +456,9 @@ class ProviderPlanTests(ProviderFieldCase):
         self.assertEqual(resource["forward_fields"], ["mode"])
 
         result = apply_plan(
-            build_mutation_plan(self._load(), provider_authority=self.authority),
+            build_mutation_plan(
+                self._load(), provider_authority=self.authority, fetch_providers=True
+            ),
             confirm=True,
         )
 
@@ -373,7 +494,9 @@ class ProviderPlanTests(ProviderFieldCase):
         plan = build_plan(self._load(), provider_authority=self.authority)
         self.assertEqual(self._resource(plan)["forward_fields"], ["password"])
         result = apply_plan(
-            build_mutation_plan(self._load(), provider_authority=self.authority),
+            build_mutation_plan(
+                self._load(), provider_authority=self.authority, fetch_providers=True
+            ),
             confirm=True,
         )
 
@@ -435,7 +558,9 @@ owner = "source"
             confirm=True,
         )
         self.assertEqual(accepted.outcome, "committed")
-        result = apply_plan(build_mutation_plan(self._load()), confirm=True)
+        result = apply_plan(
+            build_mutation_plan(self._load(), fetch_providers=True), confirm=True
+        )
         self.assertEqual(result.outcome, "committed")
         target = self.target_root / ".config" / "plain.json"
         target.chmod(0o644)
@@ -485,7 +610,9 @@ owner = "source"
         self.assertEqual(notes["providers"], [])
 
         result = apply_plan(
-            build_mutation_plan(self._load(), provider_authority=self.authority),
+            build_mutation_plan(
+                self._load(), provider_authority=self.authority, fetch_providers=True
+            ),
             confirm=True,
         )
 
@@ -525,16 +652,20 @@ owner = "source"
         self.assertEqual(self._get_calls(), 0)
         self.assertFalse(self._target().exists())
 
-    def test_an_unknown_provider_failure_code_is_normalized(self) -> None:
+    def test_an_unexpected_provider_failure_uses_the_fixed_code(self) -> None:
         self._write_manifest()
         self._write_template()
-        resolution = ProviderResolution(values={}, failures={"db": "rbw said nope"})
-        with patch("luwu.engine.resolve_providers", return_value=resolution):
+
+        def broken_run(*args: object, **kwargs: object) -> object:
+            raise OSError("rbw said nope")
+
+        with patch("luwu.providers.SubprocessRunner.run", broken_run):
             plan = build_plan(self._load(), provider_authority=self.authority)
 
         resource = self._resource(plan)
         self.assertEqual(resource["status"], "blocked")
-        self.assertEqual(resource["error_code"], "resource_blocked")
+        self.assertEqual(resource["error_code"], "provider_command_failed")
+        self.assertEqual(resource["providers"][0]["state"], "provider_command_failed")
 
     def test_an_uninjectable_provider_value_blocks_the_resource(self) -> None:
         self._write_manifest()
@@ -552,47 +683,296 @@ owner = "source"
         # The provider itself resolved; the format layer refused the value.
         self.assertEqual(resource["providers"][0]["state"], "ok")
 
+    def test_a_non_string_placeholder_refuses_injection(self) -> None:
+        self._write_manifest()
+        (self.source / "templates" / "app.json.j2").write_text(
+            '{"service":{"password":0}}\n', encoding="utf-8"
+        )
+
+        plan = build_plan(self._load(), provider_authority=self.authority)
+
+        resource = self._resource(plan)
+        self.assertEqual(resource["status"], "blocked")
+        self.assertEqual(resource["error_code"], "provider_inject_failed")
+        self.assertEqual(resource["providers"][0]["state"], "ok")
+        self.assertFalse(self._target().exists())
+
+    def test_apply_stages_a_provider_target_write_anonymously(self) -> None:
+        self._write_manifest()
+        self._write_template()
+        calls: list[tuple[str, bool]] = []
+        original = engine_module.write_file
+
+        def recording_write_file(
+            root: Path,
+            path: Path,
+            data: bytes,
+            *,
+            expected: FileObservation,
+            mode: int | None = None,
+            check_inputs: Callable[[], object] | None = None,
+            anonymous: bool = False,
+        ) -> tuple[int, int]:
+            calls.append((Path(path).name, anonymous))
+            return original(
+                root,
+                path,
+                data,
+                expected=expected,
+                mode=mode,
+                check_inputs=check_inputs,
+                anonymous=anonymous,
+            )
+
+        with patch("luwu.engine.write_file", recording_write_file):
+            self._deploy()
+
+        self.assertEqual(calls, [("app.json", True)])
+
+    def test_an_unsupported_anonymous_stage_maps_to_a_blocked_result(self) -> None:
+        self._write_manifest()
+        self._write_template()
+        self._deploy()
+        before = self._target().read_bytes()
+        self._rotate(self.rotated)
+
+        plan = build_mutation_plan(
+            self._load(), provider_authority=self.authority, fetch_providers=True
+        )
+        with patch(
+            "luwu.engine.write_file",
+            side_effect=FilesystemError(
+                "anonymous filesystem staging is unsupported",
+                code="anonymous_staging_unsupported",
+            ),
+        ):
+            result = apply_plan(plan, confirm=True)
+
+        self.assertEqual(result.outcome, "not_replaced")
+        self.assertEqual(result.error_code, "anonymous_staging_unsupported")
+        states = {
+            action.resource: action.state
+            for action in result.actions
+            if action.kind == "target_write"
+        }
+        self.assertEqual(states, {"app": "not_replaced"})
+        self.assertEqual(self._target().read_bytes(), before)
+        self.assertEqual(
+            [p for p in self.target_root.rglob("*") if ".luwu-tmp-" in p.name], []
+        )
+
+    def test_a_live_provider_edit_is_rewritten_and_keeps_reversed_choices(
+        self,
+    ) -> None:
+        self._write_manifest(theme_field=True)
+        self._write_template(theme=True)
+        accepted = accept_baseline(
+            build_mutation_plan(self._load()),
+            resource="app",
+            fields=("theme",),
+            value_from="desired",
+            confirm=True,
+        )
+        self.assertEqual(accepted.outcome, "committed")
+        self._deploy()
+        # A live local choice is reverse-synced into the declared input.
+        self._rewrite_target(theme="t2")
+        reversed_ = reverse_inputs(
+            build_mutation_plan(self._load()),
+            resource="app",
+            fields=("theme",),
+            confirm=True,
+        )
+        self.assertEqual(reversed_.outcome, "committed")
+        # A manual live edit of the provider field is drift to overwrite.
+        self._rewrite_target(**{"service.password": "manual-edit"})
+
+        plan = build_plan(self._load(), provider_authority=self.authority)
+        resource = self._resource(plan)
+        self.assertEqual(resource["status"], "drifted")
+        self.assertEqual(resource["forward_fields"], ["password"])
+
+        result = apply_plan(
+            build_mutation_plan(
+                self._load(), provider_authority=self.authority, fetch_providers=True
+            ),
+            confirm=True,
+        )
+
+        self.assertEqual(result.outcome, "committed")
+        content = self._target().read_bytes()
+        self.assertIn(self.secret.encode(), content)
+        self.assertNotIn(b"manual-edit", content)
+        self.assertEqual(
+            json.loads(content),
+            {"service": {"password": self.secret, "user": "app-user"}, "theme": "t2"},
+        )
+
+    def test_a_reverse_candidate_keeps_a_wide_mode_until_fields_settle(self) -> None:
+        self._write_manifest(theme_field=True)
+        self._write_template(theme=True)
+        accepted = accept_baseline(
+            build_mutation_plan(self._load()),
+            resource="app",
+            fields=("theme",),
+            value_from="desired",
+            confirm=True,
+        )
+        self.assertEqual(accepted.outcome, "committed")
+        self._deploy()
+        self._rewrite_target(theme="t2")
+        self._target().chmod(0o644)
+
+        plan = build_plan(self._load(), provider_authority=self.authority)
+
+        resource = self._resource(plan)
+        self.assertEqual(resource["status"], "reverse_candidate")
+        self.assertEqual(resource["forward_fields"], [])
+        self.assertEqual(resource["reverse_fields"], ["theme"])
+
+        result = apply_plan(
+            build_mutation_plan(
+                self._load(), provider_authority=self.authority, fetch_providers=True
+            ),
+            confirm=True,
+        )
+
+        self.assertEqual(result.outcome, "no_changes")
+        self.assertEqual(stat.S_IMODE(self._target().stat().st_mode), 0o644)
+
+    def test_reverse_from_a_shared_input_names_the_real_consumer_conflict(
+        self,
+    ) -> None:
+        # app carries a provider field and declares theme from the shared
+        # input; b declares the same field. Reversing theme from b would
+        # change app's unselected theme, so the block names app's theme: the
+        # provider path renders the same placeholder on both sides of the
+        # consumer comparison and takes no part in the conflict.
+        self._prepare_shared_theme(app_declares_theme=True)
+        self._rewrite_target(theme="t2")
+        self._rewrite_b_target("t2")
+        fetches = self._get_calls()
+
+        with self.assertRaises(EngineError) as caught:
+            reverse_inputs(
+                build_mutation_plan(self._load()),
+                resource="b",
+                fields=("theme",),
+                confirm=True,
+            )
+
+        self.assertEqual(caught.exception.code, "reverse_consumer_change")
+        self.assertEqual(caught.exception.resource, "app")
+        self.assertEqual(caught.exception.fields, ("theme",))
+        self.assertEqual(self._get_calls(), fetches)
+        self.assertEqual(self._theme_input(), {"theme": "t1"})
+
+    def test_reverse_succeeds_when_the_provider_resource_does_not_share_the_field(
+        self,
+    ) -> None:
+        # Same profile, but app does not declare theme: reversing theme from
+        # b updates the shared input and app is not a consumer of the change.
+        self._prepare_shared_theme(app_declares_theme=False)
+        self._rewrite_b_target("t2")
+        fetches = self._get_calls()
+
+        result = reverse_inputs(
+            build_mutation_plan(self._load()),
+            resource="b",
+            fields=("theme",),
+            confirm=True,
+        )
+
+        self.assertEqual(result.outcome, "committed")
+        self.assertEqual(self._theme_input(), {"theme": "t2"})
+        self.assertEqual(self._get_calls(), fetches)
+        self.assertEqual(
+            json.loads(self._target().read_text(encoding="utf-8"))["service"][
+                "password"
+            ],
+            self.secret,
+        )
+
 
 class ProviderRefusalTests(ProviderFieldCase):
     def test_accept_and_reverse_refuse_provider_fields_without_fetching(self) -> None:
         self._write_manifest()
         self._write_template()
+        plan = build_mutation_plan(self._load())
 
-        for plan in (
-            build_plan(self._load()),
-            build_plan(self._load(), provider_authority=self.authority),
-        ):
-            with self.subTest(authorized=bool(self.recorded_calls())):
-                with self.assertRaises(EngineError) as accepted:
-                    accept_baseline(
-                        plan,
-                        resource="app",
-                        fields=("password",),
-                        value_from="desired",
-                        confirm=True,
-                    )
-                self.assertEqual(accepted.exception.code, "provider_field_refused")
-                with self.assertRaises(EngineError) as reversed_:
-                    reverse_inputs(
-                        plan, resource="app", fields=("password",), confirm=True
-                    )
-                self.assertEqual(reversed_.exception.code, "provider_field_refused")
-                with self.assertRaises(EngineError) as undeclared:
-                    reverse_undeclared(
-                        plan,
-                        resource="app",
-                        paths=(("service", "password"),),
-                        confirm=True,
-                    )
-                self.assertEqual(undeclared.exception.code, "undeclared_unsafe")
+        with self.assertRaises(EngineError) as accepted:
+            accept_baseline(
+                plan,
+                resource="app",
+                fields=("password",),
+                value_from="desired",
+                confirm=True,
+            )
+        self.assertEqual(accepted.exception.code, "provider_field_refused")
+        with self.assertRaises(EngineError) as reversed_:
+            reverse_inputs(plan, resource="app", fields=("password",), confirm=True)
+        self.assertEqual(reversed_.exception.code, "provider_field_refused")
+        with self.assertRaises(EngineError) as undeclared:
+            reverse_undeclared(
+                plan,
+                resource="app",
+                paths=(("service", "password"),),
+                confirm=True,
+            )
+        self.assertEqual(undeclared.exception.code, "undeclared_unsafe")
 
-        # Only the authority-carrying plan fetched, exactly once at build time.
-        self.assertEqual(self._get_calls(), 1)
+        # The refusals are local checks; nothing contacted a provider.
+        self.assertEqual(self.recorded_calls(), [])
+
+    def test_mutations_refuse_a_plan_that_contacted_providers(self) -> None:
+        self._write_manifest(user_field=True, theme_field=True, notes=True)
+        self._write_template(theme=True)
+        plan = build_mutation_plan(
+            self._load(), provider_authority=self.authority, fetch_providers=True
+        )
+        fetches = self._get_calls()
+        template_before = (self.source / "templates" / "app.json.j2").read_bytes()
+
+        with self.assertRaises(EngineError) as accepted:
+            accept_baseline(
+                plan,
+                resource="app",
+                fields=("user",),
+                value_from="desired",
+                confirm=True,
+            )
+        self.assertEqual(accepted.exception.code, "plan_invalid")
+        with self.assertRaises(EngineError) as reversed_:
+            reverse_inputs(plan, resource="app", fields=("theme",), confirm=True)
+        self.assertEqual(reversed_.exception.code, "plan_invalid")
+        with self.assertRaises(EngineError) as undeclared:
+            reverse_undeclared(
+                plan,
+                resource="app",
+                paths=(("service", "user"),),
+                confirm=True,
+            )
+        self.assertEqual(undeclared.exception.code, "plan_invalid")
+        with self.assertRaises(EngineError) as adopted:
+            adopt_resource(plan, resource="app", confirm=True)
+        self.assertEqual(adopted.exception.code, "plan_invalid")
+        with self.assertRaises(EngineError) as adopted_batch:
+            adopt_resources(plan, resources=("notes", "app"), confirm=True)
+        self.assertEqual(adopted_batch.exception.code, "plan_invalid")
+
+        # Every entry refused before doing any work: no new fetch, no write.
+        self.assertEqual(self._get_calls(), fetches)
+        self.assertFalse((self.inputs / "baselines" / "app.json").exists())
+        self.assertFalse((self.inputs / "baselines" / "notes.json").exists())
+        self.assertEqual(
+            (self.source / "templates" / "app.json.j2").read_bytes(), template_before
+        )
+        self.assertEqual(self._theme_input(), {"theme": "t1"})
 
     def test_reverse_sync_of_a_sibling_field_needs_no_fetch(self) -> None:
         self._write_manifest(theme_field=True)
         self._write_template(theme=True)
-        plan = build_plan(self._load(), provider_authority=self.authority)
+        plan = build_mutation_plan(self._load())
         accepted = accept_baseline(
             plan, resource="app", fields=("theme",), value_from="desired", confirm=True
         )
@@ -600,7 +980,7 @@ class ProviderRefusalTests(ProviderFieldCase):
         self._deploy()
         self._rewrite_target(theme="t2")
 
-        plan = build_mutation_plan(self._load(), provider_authority=self.authority)
+        plan = build_mutation_plan(self._load())
         self.assertEqual(self._resource(plan)["status"], "reverse_candidate")
         fetches = self._get_calls()
         result = reverse_inputs(plan, resource="app", fields=("theme",), confirm=True)
@@ -639,7 +1019,9 @@ class ProviderRefusalTests(ProviderFieldCase):
         self._rewrite_target(extra="keep-me")
         self._rotate(self.rotated)
 
-        plan = build_mutation_plan(self._load(), provider_authority=self.authority)
+        plan = build_mutation_plan(
+            self._load(), provider_authority=self.authority, fetch_providers=True
+        )
         resource = self._resource(plan)
         self.assertEqual(resource["status"], "review")
         self.assertTrue(resource["undeclared_changed"])
@@ -663,7 +1045,7 @@ class NonFetchingPlanTests(ProviderFieldCase):
         self._write_manifest(user_field=True)
         self._write_template()
 
-        plan = build_plan(self._load(), fetch_providers=False)
+        plan = build_mutation_plan(self._load())
 
         resource = self._resource(plan)
         # Unbased like any fielded template without a baseline, not blocked.
@@ -680,7 +1062,7 @@ class NonFetchingPlanTests(ProviderFieldCase):
         self._deploy()
         fetches = self._get_calls()
 
-        plan = build_plan(self._load(), fetch_providers=False)
+        plan = build_mutation_plan(self._load())
 
         resource = self._resource(plan)
         self.assertEqual(resource["status"], "in_sync")
@@ -703,7 +1085,7 @@ class NonFetchingPlanTests(ProviderFieldCase):
     def test_accept_of_a_public_field_needs_no_provider(self) -> None:
         self._write_manifest(user_field=True)
         self._write_template()
-        plan = build_plan(self._load(), fetch_providers=False)
+        plan = build_mutation_plan(self._load())
 
         result = accept_baseline(
             plan, resource="app", fields=("user",), value_from="desired", confirm=True
@@ -726,7 +1108,7 @@ class NonFetchingPlanTests(ProviderFieldCase):
     def test_reverse_sync_of_a_public_field_needs_no_provider(self) -> None:
         self._write_manifest(theme_field=True)
         self._write_template(theme=True)
-        plan = build_plan(self._load(), provider_authority=self.authority)
+        plan = build_mutation_plan(self._load())
         accepted = accept_baseline(
             plan, resource="app", fields=("theme",), value_from="desired", confirm=True
         )

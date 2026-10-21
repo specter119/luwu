@@ -34,13 +34,13 @@ from .filesystem import (
     read_stable_file,
     verify_directory_binding,
 )
+from .ownership import FIELD_OWNERS, NON_PERSISTED_OWNERS
 from .providers import ProviderReference, valid_argv_text
 from .sensitivity import is_sensitive_name
 
 _VERSION = 8
 _FORMATS = frozenset({"json", "jsonc", "toml"})
 _MAX_PATH_SEGMENTS = 256
-_FIELD_OWNERS = frozenset({"source", "live", "merge", "ignore", "provider"})
 _PROVIDER_TYPES = frozenset({"rbw"})
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
@@ -944,34 +944,27 @@ def _parse_providers(raw: object) -> Mapping[str, ProviderReference]:
         _require_exact_keys(
             provider_table,
             required={"type", "item"},
-            allowed={"type", "item", "field", "profile"},
+            allowed={"type", "item", "field"},
             code="providers",
         )
         if provider_table["type"] not in _PROVIDER_TYPES:
-            raise ManifestError("provider type must be rbw", code="provider_type")
-        item = provider_table["item"]
+            raise ManifestError("provider type must be rbw", code="providers")
         field_name = provider_table.get("field")
-        profile_name = provider_table.get("profile")
-        if not isinstance(item, str) or not valid_argv_text(item):
-            raise ManifestError(
-                "provider item, field, and profile must be safe argument text",
-                code="provider_value",
-            )
-        for argument in (field_name, profile_name):
-            if argument is not None and (
-                not isinstance(argument, str) or not valid_argv_text(argument)
-            ):
-                raise ManifestError(
-                    "provider item, field, and profile must be safe argument text",
-                    code="provider_value",
-                )
         providers[name] = ProviderReference(
             name=name,
-            item=item,
-            field=field_name if isinstance(field_name, str) else None,
-            profile=profile_name if isinstance(profile_name, str) else None,
+            item=_provider_argument(provider_table["item"]),
+            field=None if field_name is None else _provider_argument(field_name),
         )
     return MappingProxyType(providers)
+
+
+def _provider_argument(value: object) -> str:
+    if not isinstance(value, str) or not valid_argv_text(value):
+        raise ManifestError(
+            "provider item and field must be safe argument text",
+            code="provider_value",
+        )
+    return value
 
 
 def _parse_resources(
@@ -1108,7 +1101,7 @@ def _parse_field_bindings(
             code="fields",
         )
         owner = field_table["owner"]
-        if not isinstance(owner, str) or owner not in _FIELD_OWNERS:
+        if not isinstance(owner, str) or owner not in FIELD_OWNERS:
             raise ManifestError("field owner is unsupported", code="field_owner")
         path = _leaf_path(
             field_table["path"],
@@ -1127,7 +1120,7 @@ def _parse_field_bindings(
             raise ManifestError(
                 "live and merge fields require an input binding", code="field_input"
             )
-        if owner in {"ignore", "provider"} and input_name is not None:
+        if owner in NON_PERSISTED_OWNERS and input_name is not None:
             raise ManifestError(
                 "ignored and provider fields cannot use input bindings",
                 code="field_input",
@@ -2085,8 +2078,8 @@ def _manifest_signature(manifest: Manifest) -> str:
         for source in manifest._directory_sources
     )
     providers = tuple(
-        (name, provider.item, provider.field, provider.profile)
-        for name, provider in sorted(manifest.providers.items())
+        (provider.item, provider.field)
+        for _name, provider in sorted(manifest.providers.items())
     )
     payload = (
         str(manifest.path),

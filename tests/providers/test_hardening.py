@@ -30,6 +30,7 @@ if hard == resource.RLIM_INFINITY or hard > 1:
     resource.setrlimit(resource.RLIMIT_CORE, (1, hard))
 
 case = FakeRbwCase("setUp")
+case.real_hardening = True
 case.setUp()
 case.bind_socket()
 executable = case.install_rbw()
@@ -64,6 +65,7 @@ def _failing_setrlimit(which, limits):
 resource.setrlimit = _failing_setrlimit
 
 case = FakeRbwCase("setUp")
+case.real_hardening = True
 case.setUp()
 case.bind_socket()
 executable = case.install_rbw()

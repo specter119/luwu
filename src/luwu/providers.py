@@ -19,9 +19,9 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
 
 from .errors import ProviderError
+from .filesystem import directory_is_trusted, file_signature, sticky_root_boundary
 from .semantic import parse_strict_json
 
 PROVIDER_ERROR_CODES = frozenset(
@@ -62,7 +62,6 @@ class ProviderReference:
     name: str
     item: str
     field: str | None = None
-    profile: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +80,7 @@ class ProviderValue:
     default identity semantics, so content is never compared or exposed.
     """
 
-    _value: str = field(repr=False)
+    _value: str
 
     def __init__(self, value: object) -> None:
         if not isinstance(value, str) or not value or "\x00" in value:
@@ -103,8 +102,8 @@ class ProviderValue:
 class ProviderResolution:
     """The metadata-only outcome of one resolve_providers call."""
 
-    values: Mapping[str, ProviderValue] = field(repr=False)
-    failures: Mapping[str, str] = field(repr=False)
+    values: Mapping[str, ProviderValue]
+    failures: Mapping[str, str]
 
     def __repr__(self) -> str:
         resolved = ", ".join(sorted(self.values))
@@ -121,30 +120,6 @@ class ProviderProcessResult:
     returncode: int
     stdout: bytes = field(repr=False)
     stderr: bytes = field(default=b"", repr=False)
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutableIdentity:
-    """Non-content identity captured around one executable invocation."""
-
-    device: int
-    inode: int
-    mode: int
-    size: int
-    mtime_ns: int
-
-
-class ProviderRunner(Protocol):
-    """Injection seam for tests; production uses :class:`SubprocessRunner`."""
-
-    def run(
-        self,
-        argv: Sequence[str],
-        *,
-        env: Mapping[str, str],
-        timeout: float,
-        max_output_bytes: int,
-    ) -> ProviderProcessResult: ...
 
 
 class SubprocessRunner:
@@ -181,22 +156,15 @@ class SubprocessRunner:
                 timeout=timeout,
                 max_output_bytes=max_output_bytes,
             )
-        except ProviderError:
+        except BaseException:
+            # The group is killed before any failure, including an interrupt,
+            # is allowed to propagate.
             if not _terminate_process_group(process):
                 raise ProviderError(
                     "the provider process did not end",
                     code="provider_command_failed",
                 ) from None
             raise
-        except (OSError, ValueError):
-            if not _terminate_process_group(process):
-                raise ProviderError(
-                    "the provider process did not end",
-                    code="provider_command_failed",
-                ) from None
-            raise ProviderError(
-                "the provider command failed", code="provider_command_failed"
-            ) from None
 
 
 def valid_argv_text(value: object) -> bool:
@@ -249,13 +217,12 @@ def resolve_providers(
     authority: ProviderAuthority | None,
     *,
     environ: Mapping[str, str] | None = None,
-    runner: ProviderRunner | None = None,
 ) -> ProviderResolution:
     """Resolve each reference and report per-provider failures by fixed code.
 
-    One provider's failure never stops the others. Authority, executable, and
-    process-hardening failures are batch-wide; socket, lock, and agent failures
-    apply to every reference that shares the failed profile.
+    One provider's failure never stops the others. Authority, executable,
+    process-hardening, socket, lock, and agent failures are batch-wide; a
+    field failure applies only to its own reference.
     """
 
     references = list(refs)
@@ -268,11 +235,10 @@ def resolve_providers(
         return ProviderResolution(values=values, failures=failures)
 
     source_environ = os.environ if environ is None else environ
-    active_runner = runner if runner is not None else SubprocessRunner()
 
     pending: list[ProviderReference] = []
     for ref in references:
-        words = (ref.item, ref.field, ref.profile)
+        words = (ref.item, ref.field)
         if any(word is not None and not valid_argv_text(word) for word in words):
             failures[ref.name] = "provider_command_failed"
         else:
@@ -282,36 +248,28 @@ def resolve_providers(
 
     executable = authority.rbw_executable
     try:
-        identity = _inspect_executable(executable)
+        signature = _inspect_executable(executable)
         harden_process()
-        _verify_executable_identity(executable, identity)
     except ProviderError as error:
         for ref in pending:
             failures[ref.name] = _failure_code(error)
         return ProviderResolution(values=values, failures=failures)
 
-    groups: dict[str | None, list[ProviderReference]] = {}
-    for ref in pending:
-        groups.setdefault(ref.profile, []).append(ref)
-
-    for profile, group in groups.items():
-        code = _check_agent_socket(profile, source_environ)
-        if code is None:
-            code = _check_unlocked(active_runner, executable, profile, source_environ)
-        if code is not None:
-            for ref in group:
-                failures[ref.name] = code
-            continue
-        for ref in group:
+    code = _check_agent_socket(source_environ)
+    if code is None:
+        code = _check_unlocked(executable, source_environ)
+    if code is not None:
+        for ref in pending:
+            failures[ref.name] = code
+    else:
+        for ref in pending:
             try:
-                values[ref.name] = _fetch_value(
-                    active_runner, executable, profile, source_environ, ref
-                )
+                values[ref.name] = _fetch_value(executable, source_environ, ref)
             except ProviderError as error:
                 failures[ref.name] = _failure_code(error)
 
     try:
-        _verify_executable_identity(executable, identity)
+        _verify_executable_signature(executable, signature)
     except ProviderError:
         for ref in pending:
             values.pop(ref.name, None)
@@ -326,7 +284,7 @@ def _failure_code(error: ProviderError) -> str:
     )
 
 
-def _inspect_executable(path: Path) -> ExecutableIdentity:
+def _inspect_executable(path: Path) -> tuple[int, ...]:
     try:
         if not path.is_absolute():
             raise ValueError
@@ -339,7 +297,7 @@ def _inspect_executable(path: Path) -> ExecutableIdentity:
             "the provider executable is not trusted",
             code="provider_executable_invalid",
         ) from None
-    return _identity_from_stat(info)
+    return file_signature(info)
 
 
 def _executable_file_acceptable(info: os.stat_result, current_uid: int) -> bool:
@@ -358,54 +316,44 @@ def _executable_file_acceptable(info: os.stat_result, current_uid: int) -> bool:
 
 
 def _check_ancestors(path: Path) -> None:
-    """Reject group- or world-writable ancestors of the executable.
+    """Reject untrusted ancestors of the executable.
 
-    A sticky root-owned directory such as /tmp is a trusted boundary: the
-    walk stops there, so a private tree below it stays usable.
+    Every ancestor must be a directory owned by root or the current uid and
+    free of group/world write permission. A sticky root-owned directory such
+    as /tmp is a trusted boundary: the walk stops there, so a private tree
+    below it stays usable.
     """
 
     for directory in (path.parent, *path.parent.parents):
         info = os.lstat(directory)
         if not stat.S_ISDIR(info.st_mode):
             raise ValueError
-        if info.st_uid == 0 and info.st_mode & stat.S_ISVTX:
+        if sticky_root_boundary(info):
             return
-        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        if not directory_is_trusted(info):
             raise ValueError
 
 
-def _identity_from_stat(info: os.stat_result) -> ExecutableIdentity:
-    return ExecutableIdentity(
-        device=info.st_dev,
-        inode=info.st_ino,
-        mode=stat.S_IMODE(info.st_mode),
-        size=info.st_size,
-        mtime_ns=info.st_mtime_ns,
-    )
-
-
-def _verify_executable_identity(path: Path, expected: ExecutableIdentity) -> None:
+def _verify_executable_signature(path: Path, expected: tuple[int, ...]) -> None:
     try:
         current = os.lstat(path)
-        if not stat.S_ISREG(current.st_mode):
-            raise ValueError
-        observed = _identity_from_stat(current)
-    except (OSError, ValueError):
+    except OSError:
         raise ProviderError(
             "the provider executable changed", code="provider_executable_changed"
         ) from None
-    if observed != expected:
+    if not stat.S_ISREG(current.st_mode) or file_signature(current) != expected:
         raise ProviderError(
             "the provider executable changed", code="provider_executable_changed"
         )
 
 
-def _runtime_directory(profile: str | None, environ: Mapping[str, str]) -> Path:
-    name = "rbw" if profile is None else f"rbw-{profile}"
+def _runtime_directory(environ: Mapping[str, str]) -> Path:
     xdg = environ.get("XDG_RUNTIME_DIR", "")
     if xdg and os.path.isabs(xdg):
-        return Path(xdg) / name
-    return Path(environ.get("TMPDIR") or "/tmp") / f"{name}-{os.getuid()}"
+        return Path(xdg) / "rbw"
+    tmpdir = environ.get("TMPDIR", "")
+    base = tmpdir if tmpdir and os.path.isabs(tmpdir) else "/tmp"
+    return Path(base) / f"rbw-{os.getuid()}"
 
 
 def _agent_socket_acceptable(info: os.stat_result, current_uid: int) -> bool:
@@ -414,33 +362,40 @@ def _agent_socket_acceptable(info: os.stat_result, current_uid: int) -> bool:
     return stat.S_ISSOCK(info.st_mode) and info.st_uid == current_uid
 
 
-def _check_agent_socket(profile: str | None, environ: Mapping[str, str]) -> str | None:
-    socket_path = _runtime_directory(profile, environ) / "socket"
+def _runtime_directory_acceptable(info: os.stat_result, current_uid: int) -> bool:
+    """Whether one lstat result is a private directory owned by the uid."""
+
+    return (
+        stat.S_ISDIR(info.st_mode)
+        and info.st_uid == current_uid
+        and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    )
+
+
+def _check_agent_socket(environ: Mapping[str, str]) -> str | None:
+    runtime = _runtime_directory(environ)
     try:
-        info = os.lstat(socket_path)
+        directory_info = os.lstat(runtime)
+        socket_info = os.lstat(runtime / "socket")
     except OSError:
         return "provider_agent_unavailable"
-    if not _agent_socket_acceptable(info, os.getuid()):
+    if not _runtime_directory_acceptable(directory_info, os.getuid()):
+        return "provider_agent_unavailable"
+    if not _agent_socket_acceptable(socket_info, os.getuid()):
         return "provider_agent_unavailable"
     return None
 
 
-def _child_environ(profile: str | None, environ: Mapping[str, str]) -> dict[str, str]:
+def _child_environ(environ: Mapping[str, str]) -> dict[str, str]:
     child = {name: environ[name] for name in _PASSTHROUGH_ENVIRON if name in environ}
     child["PATH"] = os.defpath
-    if profile is not None:
-        child["RBW_PROFILE"] = profile
     child["RBW_AGENT"] = "/bin/false"
     return child
 
 
-def _run_command(
-    runner: ProviderRunner,
-    argv: Sequence[str],
-    env: Mapping[str, str],
-) -> ProviderProcessResult:
+def _run_command(argv: Sequence[str], env: Mapping[str, str]) -> ProviderProcessResult:
     try:
-        return runner.run(
+        return SubprocessRunner().run(
             argv,
             env=env,
             timeout=PROCESS_TIMEOUT_SECONDS,
@@ -448,21 +403,16 @@ def _run_command(
         )
     except ProviderError:
         raise
-    except Exception:  # noqa: BLE001 - an injected runner fails closed, by code
+    except Exception:  # noqa: BLE001 - a patched runner fails closed, by code
         raise ProviderError(
             "the provider command failed", code="provider_command_failed"
         ) from None
 
 
-def _check_unlocked(
-    runner: ProviderRunner,
-    executable: Path,
-    profile: str | None,
-    environ: Mapping[str, str],
-) -> str | None:
-    env = _child_environ(profile, environ)
+def _check_unlocked(executable: Path, environ: Mapping[str, str]) -> str | None:
+    env = _child_environ(environ)
     try:
-        result = _run_command(runner, [str(executable), "unlocked"], env)
+        result = _run_command([str(executable), "unlocked"], env)
     except ProviderError as error:
         return _failure_code(error)
     if result.returncode == 0:
@@ -473,16 +423,12 @@ def _check_unlocked(
 
 
 def _fetch_value(
-    runner: ProviderRunner,
     executable: Path,
-    profile: str | None,
     environ: Mapping[str, str],
     ref: ProviderReference,
 ) -> ProviderValue:
-    env = _child_environ(profile, environ)
-    result = _run_command(
-        runner, [str(executable), "get", "--raw", "--", ref.item], env
-    )
+    env = _child_environ(environ)
+    result = _run_command([str(executable), "get", "--raw", "--", ref.item], env)
     if result.returncode != 0:
         raise ProviderError("the provider command failed")
     document, parse_error = parse_strict_json(result.stdout)
@@ -590,33 +536,21 @@ def _read_process_output(
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> bool:
-    terminated = True
+    """SIGKILL the process group and report whether nothing of it remains."""
+
     try:
         os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
     except OSError:
-        terminated = False
-        try:
-            process.kill()
-        except OSError:
-            pass
+        # The group may already be gone; the bounded wait below decides.
+        pass
     try:
         process.wait(timeout=1.0)
     except subprocess.TimeoutExpired:
-        terminated = False
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            terminated = False
+        return False
     try:
         os.killpg(process.pid, 0)
     except ProcessLookupError:
-        return terminated and process.poll() is not None
+        return True
     except OSError:
         return False
     return False

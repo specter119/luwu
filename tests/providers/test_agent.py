@@ -1,17 +1,25 @@
-"""Agent socket precheck, unlocked probe, and per-profile grouping."""
+"""Agent socket precheck, runtime directory checks, and unlocked probe."""
 
 from __future__ import annotations
 
+import os
+import stat
+from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import patch
+
+from luwu import providers
 from luwu.providers import (
     ProviderAuthority,
     ProviderReference,
     resolve_providers,
 )
-from tests.support.fake_rbw import (
-    CANARY_ALPHA,
-    CANARY_BETA,
-    FakeRbwCase,
-)
+from tests.support.fake_rbw import CANARY_ALPHA, FakeRbwCase
+
+
+def _stat_like(*, mode: int, uid: int) -> os.stat_result:
+    return cast(os.stat_result, SimpleNamespace(st_mode=mode, st_uid=uid))
 
 
 class AgentSocketTests(FakeRbwCase):
@@ -49,17 +57,9 @@ class AgentSocketTests(FakeRbwCase):
         self.assertEqual([argv[0] for argv, _ in calls], ["unlocked", "get"])
 
     def test_fallback_runtime_dir_uses_tmpdir_and_uid(self) -> None:
-        import os
-
         executable = self.install_rbw()
         fallback = self.root / "tmpfallback"
-        runtime = fallback / f"rbw-{os.getuid()}"
-        runtime.mkdir(parents=True, mode=0o700)
-        import socket as socket_module
-
-        agent = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
-        self.addCleanup(agent.close)
-        agent.bind(str(runtime / "socket"))
+        self.bind_socket(fallback / f"rbw-{os.getuid()}")
 
         resolution = resolve_providers(
             [ProviderReference(name="one", item="item-one")],
@@ -69,6 +69,54 @@ class AgentSocketTests(FakeRbwCase):
 
         self.assertEqual(resolution.failures, {})
         self.assertIn("one", resolution.values)
+
+    def test_group_writable_runtime_dir_fails(self) -> None:
+        self.bind_socket()
+        (self.runtime_root / "rbw").chmod(0o770)
+
+        resolution = self._resolve(ProviderReference(name="one", item="item-one"))
+
+        self.assertEqual(resolution.failures, {"one": "provider_agent_unavailable"})
+        self.assertEqual(self.recorded_calls(), [])
+
+    def test_foreign_owned_runtime_dir_fails(self) -> None:
+        self.bind_socket()
+        foreign = _stat_like(mode=stat.S_IFDIR | 0o700, uid=os.getuid() + 1)
+        runtime = self.runtime_root / "rbw"
+        real_lstat = os.lstat
+
+        def stubbed_lstat(path, *args, **kwargs):
+            if Path(path) == runtime:
+                return foreign
+            return real_lstat(path, *args, **kwargs)
+
+        with patch.object(providers.os, "lstat", stubbed_lstat):
+            resolution = self._resolve(ProviderReference(name="one", item="item-one"))
+
+        self.assertEqual(resolution.failures, {"one": "provider_agent_unavailable"})
+        self.assertEqual(self.recorded_calls(), [])
+
+    def test_relative_tmpdir_falls_back_to_tmp(self) -> None:
+        if Path(f"/tmp/rbw-{os.getuid()}").exists():
+            self.skipTest("a real fallback runtime directory exists")
+        probed: list[str] = []
+        real_lstat = os.lstat
+
+        def recording_lstat(path, *args, **kwargs):
+            probed.append(str(path))
+            return real_lstat(path, *args, **kwargs)
+
+        with patch.object(providers.os, "lstat", recording_lstat):
+            resolution = resolve_providers(
+                [ProviderReference(name="one", item="item-one")],
+                ProviderAuthority(rbw_executable=self.install_rbw()),
+                environ={"HOME": str(self.root), "TMPDIR": "relative/dir"},
+            )
+
+        self.assertEqual(resolution.failures, {"one": "provider_agent_unavailable"})
+        self.assertIn(f"/tmp/rbw-{os.getuid()}", probed)
+        self.assertFalse(any(path.startswith("relative") for path in probed))
+        self.assertEqual(self.recorded_calls(), [])
 
     def test_relative_xdg_runtime_dir_falls_back(self) -> None:
         executable = self.install_rbw()
@@ -134,67 +182,3 @@ class UnlockedProbeTests(FakeRbwCase):
 
         self.assertNotIn("item-one", repr(resolution))
         self.assertNotIn("detail", repr(resolution))
-
-
-class ProfileGroupingTests(FakeRbwCase):
-    def test_profiles_are_checked_and_resolved_per_group(self) -> None:
-        executable = self.install_rbw()
-        self.bind_socket()
-        self.bind_socket("work")
-
-        refs = [
-            ProviderReference(name="plain", item="item-one"),
-            ProviderReference(name="work", item="item-two", profile="work"),
-        ]
-        resolution = resolve_providers(
-            refs,
-            ProviderAuthority(rbw_executable=executable),
-            environ=self.environ(),
-        )
-
-        self.assertEqual(resolution.failures, {})
-        self.assertEqual(set(resolution.values), {"plain", "work"})
-        calls = self.recorded_calls()
-        self.assertEqual(len(calls), 4)
-        unlocked_envs = [env for argv, env in calls if argv[0] == "unlocked"]
-        get_envs = {argv[3]: env for argv, env in calls if argv[0] == "get"}
-        self.assertEqual(len(unlocked_envs), 2)
-        self.assertNotIn("RBW_PROFILE", get_envs["item-one"])
-        self.assertEqual(get_envs["item-two"]["RBW_PROFILE"], "work")
-        self.assertEqual(
-            sorted("RBW_PROFILE" in env for env in unlocked_envs), [False, True]
-        )
-
-    def test_missing_profile_socket_fails_only_that_group(self) -> None:
-        executable = self.install_rbw()
-        self.bind_socket()
-
-        refs = [
-            ProviderReference(name="plain", item="item-one"),
-            ProviderReference(name="work", item="item-two", profile="work"),
-        ]
-        resolution = resolve_providers(
-            refs,
-            ProviderAuthority(rbw_executable=executable),
-            environ=self.environ(),
-        )
-
-        self.assertEqual(resolution.failures, {"work": "provider_agent_unavailable"})
-        self.assertEqual(resolution.values["plain"].reveal(), CANARY_ALPHA)
-
-    def test_profile_group_can_use_custom_fields(self) -> None:
-        executable = self.install_rbw()
-        self.bind_socket("work")
-
-        resolution = resolve_providers(
-            [
-                ProviderReference(
-                    name="work", item="item-two", field="token", profile="work"
-                )
-            ],
-            ProviderAuthority(rbw_executable=executable),
-            environ=self.environ(),
-        )
-
-        self.assertEqual(resolution.failures, {})
-        self.assertEqual(resolution.values["work"].reveal(), CANARY_BETA)

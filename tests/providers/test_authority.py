@@ -12,24 +12,20 @@ from luwu.providers import (
 from tests.support.fake_rbw import CANARY_ALPHA, FakeRbwCase
 
 
-class _ExplodingRunner:
-    def run(self, argv, *, env, timeout, max_output_bytes):
-        raise AssertionError("no provider process may start in this test")
-
-
 class AuthorityTests(FakeRbwCase):
     def test_empty_refs_spawn_nothing_and_touch_nothing(self) -> None:
+        executable = self.install_rbw()
+        self.bind_socket()
         for authority in (
             None,
-            ProviderAuthority(rbw_executable=Path("/nonexistent/rbw")),
+            ProviderAuthority(rbw_executable=executable),
         ):
             with self.subTest(authority=authority):
-                resolution = resolve_providers(
-                    [], authority, environ={}, runner=_ExplodingRunner()
-                )
+                resolution = resolve_providers([], authority, environ=self.environ())
 
                 self.assertEqual(resolution.values, {})
                 self.assertEqual(resolution.failures, {})
+        self.assertEqual(self.recorded_calls(), [])
 
     def test_missing_authority_fails_every_reference_before_any_spawn(self) -> None:
         executable = self.install_rbw()
@@ -39,9 +35,7 @@ class AuthorityTests(FakeRbwCase):
             ProviderReference(name="two", item="item-two"),
         ]
 
-        resolution = resolve_providers(
-            refs, None, environ=self.environ(), runner=_ExplodingRunner()
-        )
+        resolution = resolve_providers(refs, None, environ=self.environ())
 
         self.assertEqual(resolution.values, {})
         self.assertEqual(
@@ -61,7 +55,6 @@ class AuthorityTests(FakeRbwCase):
             refs,
             ProviderAuthority(rbw_executable=Path("/nonexistent/rbw")),
             environ=self.environ(),
-            runner=_ExplodingRunner(),
         )
 
         self.assertEqual(resolution.values, {})
@@ -92,7 +85,6 @@ class AuthorityTests(FakeRbwCase):
         refs = [
             ProviderReference(name="newline", item="item\nname"),
             ProviderReference(name="empty-field", item="item-one", field=""),
-            ProviderReference(name="dash-profile", item="item-one", profile="-p"),
         ]
 
         resolution = resolve_providers(
@@ -106,7 +98,6 @@ class AuthorityTests(FakeRbwCase):
             {
                 "newline": "provider_command_failed",
                 "empty-field": "provider_command_failed",
-                "dash-profile": "provider_command_failed",
             },
         )
         self.assertEqual(resolution.values, {})

@@ -88,8 +88,11 @@ class BatchCostTests(ProfileEngineCase):
         self._configure_directories(2, leaves=1)
         self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
         counts = []
-        for build in (engine_module.build_plan, engine_module.build_mutation_plan):
-            plan = build(self._load())
+        plans = (
+            engine_module.build_plan(self._load()),
+            engine_module.build_mutation_plan(self._load(), fetch_providers=True),
+        )
+        for plan in plans:
             with patch(
                 "luwu.engine._observe_all", wraps=engine_module._observe_all
             ) as seen:
@@ -106,7 +109,7 @@ class BatchCostTests(ProfileEngineCase):
         self._configure_directories(2, leaves=1)
         self.assertEqual(apply_plan(self._plan(), confirm=True).outcome, "committed")
         (self.source / "dir0" / "new.conf").write_text("new", encoding="utf-8")
-        return engine_module.build_mutation_plan(self._load())
+        return engine_module.build_mutation_plan(self._load(), fetch_providers=True)
 
     def _drift_unrelated_directory(self) -> None:
         (self.source / "dir1" / "extra.conf").write_text("new", encoding="utf-8")

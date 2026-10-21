@@ -10,7 +10,10 @@ from typing import Any
 from .errors import LuwuError
 from .semantic import _json_values_equal, parse_strict_json
 
-_OWNERS = frozenset({"source", "live", "merge", "ignore", "provider"})
+FIELD_OWNERS = frozenset({"source", "live", "merge", "ignore", "provider"})
+# Owners whose values are never persisted: an ignored value is unmanaged and a
+# provider value is fetched at runtime, so neither leaves a persistent trace.
+NON_PERSISTED_OWNERS = frozenset({"ignore", "provider"})
 _MISSING = object()
 _INVALID_INPUT = "ownership input is invalid"
 
@@ -224,7 +227,7 @@ def _parse_baseline(
     if not isinstance(owners, dict) or owners != dict(fields):
         raise _invalid()
     if not isinstance(values, dict) or set(values) - {
-        name for name, owner in fields.items() if owner not in {"ignore", "provider"}
+        name for name, owner in fields.items() if owner not in NON_PERSISTED_OWNERS
     }:
         raise _invalid()
     return value
@@ -239,7 +242,7 @@ def _validate_declaration(
         isinstance(name, str)
         and bool(name)
         and isinstance(owner, str)
-        and owner in _OWNERS
+        and owner in FIELD_OWNERS
         for name, owner in fields.items()
     ):
         raise _invalid()

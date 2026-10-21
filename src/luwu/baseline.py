@@ -15,6 +15,7 @@ from .errors import LuwuError, MutationError
 from .filesystem import DirectoryBoundary, FileObservation, observe_file, write_file
 from .formats import MISSING, semantic_equal
 from .manifest import InputBinding, InputLayer, Manifest, Resource
+from .ownership import NON_PERSISTED_OWNERS
 from .semantic import is_public_scalar, parse_strict_json
 
 
@@ -117,11 +118,6 @@ def load_baseline(
         observation=observation,
         data=observation.data,
     )
-
-
-# Owners whose values are never persisted: an ignored value is unmanaged and a
-# provider value is fetched at runtime, so neither leaves a persistent trace.
-NON_PERSISTED_OWNERS = frozenset({"ignore", "provider"})
 
 
 def baseline_field_names(resource: Resource) -> tuple[str, ...]:
@@ -230,12 +226,13 @@ def baseline_identity(manifest: Manifest, resource: Resource) -> dict[str, objec
         name: _binding_identity(manifest.inputs[name], manifest.roots.inputs.path)
         for name in input_names
     }
+    # The provider binding name is not part of the identity: renaming one
+    # provider declaration for the same item and field keeps the baseline.
     mapping = {
         name: {
             "path": list(binding.path),
             "owner": binding.owner,
             "input": binding.input,
-            **({"provider": binding.provider} if binding.provider is not None else {}),
         }
         for name, binding in sorted(bindings.items())
     }
