@@ -333,7 +333,9 @@ Luwu does this, in order:
 1. Check by `lstat` that the agent socket `$XDG_RUNTIME_DIR/rbw/socket` (or
    `$TMPDIR` or `/tmp`, then `rbw-UID/socket` when `XDG_RUNTIME_DIR` is unset or
    relative) is a socket owned by the current user. Otherwise the result is
-   `provider_agent_unavailable`. Luwu never connects to it.
+   `provider_agent_unavailable`. Luwu never connects to it. A socket file left
+   behind by a stopped agent passes this check, and the next step then fails as
+   `provider_command_failed`.
 1. Run `rbw unlocked`. A nonzero exit whose stderr contains `agent is locked`
    is `provider_locked`; any other nonzero exit is `provider_command_failed`.
 1. Run `rbw get --raw -- ITEM` once per provider and select the value from the

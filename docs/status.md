@@ -84,7 +84,8 @@ a run:
 - A locked agent makes `rbw unlocked` exit nonzero with `agent is locked` on
   standard error.
 - The agent socket is `<XDG_RUNTIME_DIR>/rbw/socket`, otherwise `$TMPDIR`
-  (default `/tmp`)`/rbw-<uid>/socket`.
+  (default `/tmp`)`/rbw-<uid>/socket`, and `rbw stop-agent` may leave the socket
+  file behind, in which case Luwu reports `provider_command_failed`.
 - `RBW_AGENT=/bin/false` stops rbw from starting an agent when the socket is
   stale.
 

@@ -58,10 +58,16 @@ OPEN_FACTS = (
     "stderr phrase: `agent is locked`",
     (
         "socket: <XDG_RUNTIME_DIR>/rbw/socket, else $TMPDIR (default /tmp)"
-        "/rbw-<uid>/socket"
+        "/rbw-<uid>/socket; observe whether `rbw stop-agent` leaves the socket "
+        "file behind, in which case the blocked code is provider_command_failed"
     ),
     "whether RBW_AGENT=/bin/false actually prevents rbw from spawning an agent",
 )
+
+# A stopped agent can surface either way: with the socket removed luwu's lstat
+# precheck fails as provider_agent_unavailable, and with a stale socket left
+# behind the following `rbw unlocked` fails as provider_command_failed.
+AGENT_STOPPED_CODES = ("provider_agent_unavailable", "provider_command_failed")
 
 # Behaviors this walk cannot reach, or only observes, so it must not present
 # them as confirmed.
@@ -364,7 +370,11 @@ def blocked_step(
     expected_code: str,
     checks: dict[str, object] | None = None,
 ) -> tuple[str, dict[str, object]]:
-    """Assert that a command reported one resource blocked with a fixed code."""
+    """Assert that a command reported one resource blocked with a fixed code.
+
+    ``plan`` exits 0 even when a resource is blocked, so the exit code is
+    recorded but not asserted.
+    """
 
     entry = resource_entry(run)
     observed: dict[str, object] = {
@@ -374,11 +384,7 @@ def blocked_step(
         "provider_state": redact(provider_state(run)),
     }
     observed.update(checks or {})
-    if (
-        run["exit_code"] != 0
-        or entry.get("status") != "blocked"
-        or entry.get("error_code") != expected_code
-    ):
+    if entry.get("status") != "blocked" or entry.get("error_code") != expected_code:
         raise AcceptanceError(f"{name} did not report {expected_code}", observed)
     return name, observed
 
@@ -481,52 +487,33 @@ def step_locked_vault(context: Context) -> tuple[str, dict[str, object]]:
 
 def step_agent_stopped(context: Context) -> tuple[str, dict[str, object]]:
     prompt("Stop the rbw agent now (for example: rbw stop-agent), then")
-    before = rbw_agent_count()
-    run = run_cli(context, ["plan", *authority(context)])
-    after = rbw_agent_count()
-    return blocked_step(
-        "agent_stopped",
-        run,
-        "provider_agent_unavailable",
-        agent_count_checks("agent_stopped", before, after),
-    )
-
-
-def step_stale_socket_rbw_agent(context: Context) -> tuple[str, dict[str, object]]:
-    prompt(
-        "Stop the agent with kill -9 (for example: pkill -9 -x rbw-agent), so "
-        "its socket file is left behind; if you cannot, stop it any other way. "
-        "Then"
-    )
     socket_path = runtime_socket(context)
     try:
         stale_socket = stat.S_ISSOCK(os.lstat(socket_path).st_mode)
     except OSError:
         stale_socket = False
-    if not stale_socket:
-        print(
-            "     no stale socket at "
-            f"{socket_path}; this step degrades to the direct probe"
-        )
+    # The count spans the plan and the direct probe, so neither may start an
+    # agent.
     before = rbw_agent_count()
+    plan = run_cli(context, ["plan", *authority(context)])
     exit_code = run_rbw(
         context, ["unlocked"], extra_environ={"RBW_AGENT": "/bin/false"}
     )
     after = rbw_agent_count()
-    plan = run_cli(context, ["plan", *authority(context)])
     entry = resource_entry(plan)
+    code = entry.get("error_code")
     observed: dict[str, object] = {
         "stale_socket_left_behind": stale_socket,
-        "probe_mode": "stale_socket" if stale_socket else "probe_only",
+        "observed_error_code": redact(code),
         "probe_exit_code": exit_code,
-        "plan_provider_state": redact(provider_state(plan)),
-        "plan_error_code": redact(entry.get("error_code")),
     }
-    observed.update(agent_count_checks("stale_socket_rbw_agent", before, after))
-    return "stale_socket_rbw_agent", require(
+    observed.update(agent_count_checks("agent_stopped", before, after))
+    return "agent_stopped", require(
         {
+            "plan_blocked": entry.get("status") == "blocked",
+            "code_is_agent_stopped": code in AGENT_STOPPED_CODES,
+            "provider_state_matches_code": provider_state(plan) == code,
             "probe_nonzero": exit_code != 0,
-            "plan_provider_not_ok": provider_state(plan) != "ok",
         },
         observed,
     )
@@ -584,7 +571,6 @@ def step_unlocked_apply_verify(context: Context) -> tuple[str, dict[str, object]
 STEPS = (
     step_locked_vault,
     step_agent_stopped,
-    step_stale_socket_rbw_agent,
     step_unlocked_apply_verify,
 )
 

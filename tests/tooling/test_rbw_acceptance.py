@@ -9,7 +9,9 @@ commands.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import shlex
 import stat
 import sys
 import tempfile
@@ -105,14 +107,13 @@ class RbwAcceptanceToolingTests(unittest.TestCase):
         self.assertEqual(reference.item, "acceptance-item")
         self.assertEqual(reference.field, "apiKey")
 
-    def test_steps_are_the_four_external_fact_steps(self) -> None:
+    def test_steps_are_the_three_external_fact_steps(self) -> None:
         names = {function.__name__ for function in self.module.STEPS}
         self.assertEqual(
             names,
             {
                 "step_locked_vault",
                 "step_agent_stopped",
-                "step_stale_socket_rbw_agent",
                 "step_unlocked_apply_verify",
             },
         )
@@ -151,45 +152,76 @@ class RbwAcceptanceToolingTests(unittest.TestCase):
                 context.secret = None
                 self.module.run_cli(context, ["plan"])
 
-    def test_stale_socket_step_degrades_without_a_socket(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="luwu-test-rbw-stale-") as directory:
+    def _agent_stopped_context(self, root: Path, *, error_code: str) -> ModuleType:
+        workdir = self.module.prepare_workdir(root / "workdir")
+        manifest = self.module.write_profile(workdir, item="item", field_name=None)
+        fake_rbw = root / "rbw"
+        fake_rbw.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+        fake_rbw.chmod(0o700)
+        payload = json.dumps(
+            {
+                "resources": [
+                    {
+                        "name": "app",
+                        "status": "blocked",
+                        "error_code": error_code,
+                        "providers": [{"state": error_code}],
+                    }
+                ]
+            }
+        )
+        fake_luwu = root / "luwu"
+        fake_luwu.write_text(
+            f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(payload)}\n", encoding="utf-8"
+        )
+        fake_luwu.chmod(0o700)
+        runtime = root / "runtime"
+        runtime.mkdir(mode=0o700)
+        return self.module.Context(
+            workdir=workdir,
+            manifest=manifest,
+            rbw=fake_rbw,
+            luwu=[str(fake_luwu)],
+            environ={"HOME": str(root / "home"), "XDG_RUNTIME_DIR": str(runtime)},
+        )
+
+    def test_agent_stopped_accepts_the_stopped_agent_codes(self) -> None:
+        self.assertEqual(
+            set(self.module.AGENT_STOPPED_CODES),
+            {"provider_agent_unavailable", "provider_command_failed"},
+        )
+        with tempfile.TemporaryDirectory(prefix="luwu-test-rbw-stopped-") as directory:
             root = Path(directory)
-            workdir = self.module.prepare_workdir(root / "workdir")
-            manifest = self.module.write_profile(workdir, item="item", field_name=None)
-            fake_rbw = root / "rbw"
-            fake_rbw.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
-            fake_rbw.chmod(0o700)
-            fake_luwu = root / "luwu"
-            fake_luwu.write_text(
-                "#!/bin/sh\n"
-                "printf '%s\\n' "
-                '\'{"resources":[{"name":"app","status":"blocked",'
-                '"error_code":"provider_agent_unavailable",'
-                '"providers":[{"state":"agent_unavailable"}]}]}\'\n',
-                encoding="utf-8",
-            )
-            fake_luwu.chmod(0o700)
-            runtime = root / "runtime"
-            runtime.mkdir(mode=0o700)
-            context = self.module.Context(
-                workdir=workdir,
-                manifest=manifest,
-                rbw=fake_rbw,
-                luwu=[str(fake_luwu)],
-                environ={"HOME": str(root / "home"), "XDG_RUNTIME_DIR": str(runtime)},
+            context = self._agent_stopped_context(
+                root, error_code="provider_command_failed"
             )
             with mock.patch.object(self.module, "prompt"):
-                name, checks = self.module.step_stale_socket_rbw_agent(context)
-        self.assertEqual(name, "stale_socket_rbw_agent")
-        self.assertFalse(checks["stale_socket_left_behind"])
-        self.assertEqual(checks["probe_mode"], "probe_only")
-        self.assertEqual(checks["probe_exit_code"], 3)
+                name, checks = self.module.step_agent_stopped(context)
+        self.assertEqual(name, "agent_stopped")
+        self.assertEqual(checks["observed_error_code"], "provider_command_failed")
+        self.assertTrue(checks["plan_blocked"])
+        self.assertTrue(checks["code_is_agent_stopped"])
+        self.assertTrue(checks["provider_state_matches_code"])
         self.assertTrue(checks["probe_nonzero"])
-        self.assertTrue(checks["plan_provider_not_ok"])
+        self.assertEqual(checks["probe_exit_code"], 3)
+        self.assertFalse(checks["stale_socket_left_behind"])
         if checks["agent_count_checked"]:
             self.assertTrue(checks["no_rbw_agent_started"])
         else:
             self.assertTrue(checks["agent_count_unavailable"])
+
+    def test_agent_stopped_rejects_another_blocked_code(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="luwu-test-rbw-stopped-") as directory:
+            root = Path(directory)
+            context = self._agent_stopped_context(root, error_code="provider_locked")
+            with (
+                mock.patch.object(self.module, "prompt"),
+                self.assertRaises(self.module.AcceptanceError) as raised,
+            ):
+                self.module.step_agent_stopped(context)
+        self.assertEqual(
+            raised.exception.checks["observed_error_code"], "provider_locked"
+        )
 
     def test_agent_count_checks_assert_only_when_countable(self) -> None:
         stable = self.module.agent_count_checks("step", 1, 1)

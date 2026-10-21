@@ -131,8 +131,8 @@ changes, permissions, output confidentiality, current-state recovery, and
 public local choices that survive a provider-backed redeploy. A separately
 authorized real-rbw run proves only what a fake cannot: that the installed rbw
 accepts the argument form, returns the JSON keys, reports a locked agent, and
-lays out its socket as the contract assumes, and that a dead agent is not
-restarted. The fake-rbw tests, confidentiality scans, and the manual script
+lays out its socket as the contract assumes, and that a stopped agent, with or
+without a socket file left behind, is not restarted. The fake-rbw tests, confidentiality scans, and the manual script
 `experiments/rbw_acceptance.py` exist; the real run is the open gate. If real
 integration is blocked, retain partial status; mock success cannot close this
 milestone. User-service reloads and other provisioning remain explicit external

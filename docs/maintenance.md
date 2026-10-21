@@ -231,24 +231,23 @@ uv run --no-sync --script experiments/rbw_acceptance.py \
 ```
 
 The script builds an isolated synthetic profile and asks the operator to lock
-the vault, stop the agent, and, where possible, leave a stale agent socket
-behind with `kill -9`; if no stale socket can be produced that step degrades to
-the direct probe. It checks only what a fake rbw cannot show: a locked vault
-reports `provider_locked`; a stopped agent reports `provider_agent_unavailable`
-and no agent process appears (recorded as unverified when `pgrep` is
-unavailable); a direct `RBW_AGENT=/bin/false rbw unlocked` exits nonzero
-without starting an agent and the following plan does not report the provider
-as available; and, after the operator unlocks, an accept, plan, and apply leave
-the target at the declared mode with the secret confined to that one file, and
-the later plan and inspect output is scanned for the value. Luwu's own behavior
-(authority, executable changes, permissions, recovery, local choices) is proven
-by the fake-rbw tests and is not repeated here. The script learns the secret
-only by reading the target file and records redacted metadata only (commands,
-exit codes, fixed codes, booleans) to a report in the working directory, plus
-the kernel's `core_pattern` and `suid_dumpable` values for information. Do not
-commit that report, and delete the working directory afterwards because its
-target file holds the real value. It prints the facts it asks the operator to
-confirm and, separately, the behaviors it does not confirm; the lists are in
+the vault and then stop the agent (`rbw stop-agent`). It checks only what a fake
+rbw cannot show: a locked vault reports `provider_locked`; a stopped agent
+reports `provider_agent_unavailable`, or `provider_command_failed` when
+`rbw stop-agent` left its socket file behind, a direct
+`RBW_AGENT=/bin/false rbw unlocked` exits nonzero, and no agent process appears
+(recorded as unverified when `pgrep` is unavailable); and, after the operator
+unlocks, an accept, plan, and apply leave the target at the declared mode with
+the secret confined to that one file, and the later plan and inspect output is
+scanned for the value. Luwu's own behavior (authority, executable changes,
+permissions, recovery, local choices) is proven by the fake-rbw tests and is not
+repeated here. The script learns the secret only by reading the target file and
+records redacted metadata only (commands, exit codes, fixed codes, booleans) to
+a report in the working directory, plus the kernel's `core_pattern` and
+`suid_dumpable` values for information. Do not commit that report, and delete
+the working directory afterwards because its target file holds the real value.
+It prints the facts it asks the operator to confirm and, separately, the
+behaviors it does not confirm; the lists are in
 [status](status.md#provider-fields-awaiting-real-rbw-acceptance).
 
 ## Boundary ablations
