@@ -5,7 +5,7 @@ contract, a status report, or a plan: the public behavior is in
 [reference](reference.md), what is implemented now is in [status](status.md),
 and what is open or planned is in [roadmap](roadmap.md).
 
-Delivery names (M1-M7) are labels for sequence, and the manifest versions named in
+Delivery names (M1-M8) are labels for sequence, and the manifest versions named in
 older entries were retired by the consolidation entry below. They do not allocate manifest
 versions and do not organize tests, fixtures, or documents. Per-delivery
 review notes, benchmark samples, and acceptance reports from before this
@@ -117,6 +117,23 @@ For example: `git show bb80335:docs/milestones/m3.md`.
 - M7a was closed on the maintainer's real-migration trial (see the
   [roadmap](roadmap.md#m7a-daily-loop-usability)).
 
+## M8: Provider fields (version 8)
+
+- A top-level `[providers.NAME]` table declares one rbw lookup, and a structured
+  template field with `owner = "provider"` takes its value from it.
+- `inspect`, `plan`, and `apply` accept `--provider-executable rbw=/abs/path`.
+  The runner checks the executable, the agent socket, and the lock state, reads
+  the item as bounded JSON, and reports a fixed code for each failure.
+- The value is written after rendering, kept out of baselines, plan output, and
+  errors, and written with a declared owner-only mode. A wide existing mode is
+  repaired by a mode-only write.
+- `accept`, `adopt`, and `reverse-sync` never contact a provider; a provider
+  field is refused as an accept or reverse-sync selection.
+- Plan projections list each consuming resource's provider, item, field, and
+  state.
+- `experiments/rbw_acceptance.py` is the manual real-rbw exercise. M8 is not
+  closed until it has been run (see the [roadmap](roadmap.md)).
+
 ## Consolidation: one manifest contract
 
 - Retired manifest versions 1 through 7. Version 8 is the only manifest the
@@ -161,17 +178,17 @@ For example: `git show bb80335:docs/milestones/m3.md`.
 Rows are capabilities and columns are deliveries. A cell says where the
 capability was introduced or widened, not whether it works now.
 
-| Capability                     | M1  | M2  | M3  | M4  | M5  | M6  | M7  | M7a/b |
-| ------------------------------ | --- | --- | --- | --- | --- | --- | --- | ----- |
-| Template and symbolic resource | new |     |     |     |     |     | ext | ext   |
-| Multi-resource observation     |     | new |     |     |     |     | ext |       |
-| Structured comparison          |     | new |     |     |     | ext | ext | ext   |
-| Ownership and baselines        |     |     | new |     |     | ext | ext | ext   |
-| Reverse sync and accept        |     |     | new |     |     | ext | ext | ext   |
-| Journal and recovery           |     |     | new | ext | ext |     |     |       |
-| Providers and secrets          |     |     |     | new |     |     |     |       |
-| Batch performance              |     |     |     |     | new |     | ext |       |
-| Roots and local inputs         |     |     |     |     |     | new | ext |       |
-| Profiles and directories       |     |     |     |     |     |     | new | ext   |
-| JSONC and nested TOML          |     |     |     |     |     | ext | new |       |
-| Text templates                 |     |     |     |     |     |     |     | new   |
+| Capability                     | M1  | M2  | M3  | M4  | M5  | M6  | M7  | M7a/b | M8  |
+| ------------------------------ | --- | --- | --- | --- | --- | --- | --- | ----- | --- |
+| Template and symbolic resource | new |     |     |     |     |     | ext | ext   |     |
+| Multi-resource observation     |     | new |     |     |     |     | ext |       |     |
+| Structured comparison          |     | new |     |     |     | ext | ext | ext   |     |
+| Ownership and baselines        |     |     | new |     |     | ext | ext | ext   | ext |
+| Reverse sync and accept        |     |     | new |     |     | ext | ext | ext   | ext |
+| Journal and recovery           |     |     | new | ext | ext |     |     |       |     |
+| Providers and secrets          |     |     |     | new |     |     |     |       | ext |
+| Batch performance              |     |     |     |     | new |     | ext |       |     |
+| Roots and local inputs         |     |     |     |     |     | new | ext |       |     |
+| Profiles and directories       |     |     |     |     |     |     | new | ext   |     |
+| JSONC and nested TOML          |     |     |     |     |     | ext | new |       |     |
+| Text templates                 |     |     |     |     |     |     |     | new   |     |

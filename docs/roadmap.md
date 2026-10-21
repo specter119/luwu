@@ -2,8 +2,9 @@
 
 Status: M1-M5 are delivered. M6 and M7 are closed as technical deliveries on
 the single version 8 contract; their evidence comes from synthetic fixtures
-only. M7a (daily-loop usability) and M7b are closed. M8 is in progress and M9
-is planned.
+only. M7a (daily-loop usability) and M7b are closed. M8 is implemented
+against a fake provider and waits for a real rbw acceptance, and M9 is
+planned.
 
 This document owns delivery sequence, open exit conditions, and boundaries for
 work that is not finished. It does not define detailed contracts or the current
@@ -24,7 +25,7 @@ to an active milestone's scope should be explicit.
 | M7        | Full dotfiles coverage                  | Closed: technical core delivered; Droid workspace trust is unsupported by decision.                               |
 | M7a       | Daily-loop usability                    | Closed: the routine loop ran on a real dotfiles repository; findings reopen the affected item.                    |
 | M7b       | Text templates and symlink resources    | Closed: whole-file text templates and symlink resources exist on the version 8 contract.                          |
-| M8        | Providers and mixed inputs on version 8 | In progress: public, local, and provider inputs work together without persistent secret intermediates.            |
+| M8        | Providers and mixed inputs on version 8 | Implemented, pending real rbw acceptance: provider fields work with public and local inputs, no secret files.     |
 | M9        | Real-project migration qualification    | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies. |
 
 The milestone identifiers do not allocate manifest versions. Before changing
@@ -120,12 +121,16 @@ deferred, so formats that are not structured, such as `.netrc` or a bare token
 file, cannot have a secret managed until a later scope decision adds a format
 parser or a separate secret-text resource. A persisted digest of secret bytes,
 a provider registry, and a provider cache are rejected; see the
-[design](design.md#rejected-alternatives) once that record is written.
+[design](design.md#rejected-alternatives). The contract is in
+[reference](reference.md#provider-owned-fields) and the current state in
+[status](status.md#provider-fields-awaiting-real-rbw-acceptance).
 
 Exit: isolated fake-provider fault tests and a separately authorized real-rbw
 acceptance exercise cover locked or unavailable vaults, executable and
 environment changes, permissions, output confidentiality, and current-state
-recovery. Public local choices survive a provider-backed redeploy. If real
+recovery. Public local choices survive a provider-backed redeploy. The fake-provider
+tests, confidentiality scans, and the manual script
+`experiments/rbw_acceptance.py` exist; the real run is the open gate. If real
 integration is blocked, retain partial status; mock success cannot close this
 milestone. User-service reloads and other provisioning remain explicit external
 stages, not hooks hidden inside observation or apply.

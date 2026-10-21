@@ -215,6 +215,31 @@ directories are writable. A read-only shared agent directory is an environment
 failure, not evidence that the source or tests passed. An isolated copy is
 acceptable when it is byte-checked against the working tree.
 
+## Real rbw acceptance
+
+The provider tests use a fake rbw; only a run against a real vault can close
+the provider milestone. `experiments/rbw_acceptance.py` is that exercise. It is
+manual, never runs in CI or the test suite, and the operator authorizes it
+separately. Use a dedicated vault item that holds a throwaway value, and an
+empty working directory outside the checkout:
+
+```text
+uv run --no-sync --script experiments/rbw_acceptance.py \
+  --rbw /abs/path/to/rbw --workdir /tmp/luwu-rbw-acceptance \
+  --item ITEM [--field NAME] [--profile NAME] [--luwu /abs/path/to/luwu]
+```
+
+The script builds an isolated synthetic profile, asks the operator to lock the
+vault and stop the agent where a step needs it, and walks the checks: no
+authority, locked vault, stopped agent (and that no agent was started),
+unlocked apply, target mode and secret confinement to the one declared target,
+a changed executable, rotation, and a public choice that survives reverse sync
+and a re-apply. It learns the secret only by reading the target file and
+records redacted metadata only (commands, exit codes, fixed codes, booleans) to
+a report in the working directory. Do not commit that report. It also prints
+the rbw behaviors that remain manual notes; the list is in
+[status](status.md#provider-fields-awaiting-real-rbw-acceptance).
+
 ## Boundary ablations
 
 Run the production-module ablation from the repository root. It writes to

@@ -16,7 +16,8 @@ owned by [status.md](status.md) and open constraints by the
 
 A manifest has `version = 8` and declares [roots] with source, inputs,
 and target paths; named [profiles.NAME]; named [packages.NAME]; named inputs;
-named resources; and an optional [defaults] table. Source and inputs are relative to the manifest directory;
+named resources; optional named [providers.NAME] tables; and an optional
+[defaults] table. Source and inputs are relative to the manifest directory;
 target may be relative to it or an explicit absolute path. All three roots must
 already exist as safe directories.
 Source and inputs roots must be distinct and non-overlapping. The target root
@@ -79,7 +80,9 @@ values, or paths overlap. It groups edits to each file into one patch, then
 verifies every consumer and preserved unselected content after writing.
 Source-owned fields may omit an input binding. Live- and merge-owned fields
 require one; ignored fields do not create a write destination. Version 8
-inputs are public scalar data and have no provider or secret-value path.
+inputs are public scalar data and have no provider or secret-value path; a
+provider value reaches a document only through a provider-owned field (see
+[Provider-owned fields](#provider-owned-fields)).
 Each binding parses the whole layer file, so a sensitive-looking key name
 anywhere in a shared file blocks every binding that does not list that name in
 its `public_names`. The consumers are blocked with the fixed error code
@@ -147,8 +150,8 @@ template is written, never deployed, so `deploy` is invalid on it. The target
 name of a directory leaf drops its `.j2` suffix.
 
 **Structured templates** declare `fields`, a non-empty map. Each field alias
-maps to a literal path, an owner (`source`, `live`, `merge`, or `ignore`), and,
-where required, a named input binding. A structured template takes its inputs
+maps to a literal path, an owner (`source`, `live`, `merge`, `ignore`, or
+`provider`), and, where required, a named input binding or provider. A structured template takes its inputs
 from its field bindings and does not declare `inputs`. Mapped paths may not
 overlap. Dots, slashes, and array positions have no special path syntax; a
 path is the exact ordered tuple of its declared string segments. There are no
@@ -258,6 +261,110 @@ When undeclared content changes for a resource, its plan projection has
 This message gives an action without disclosing undeclared keys or values.
 A resource with `undeclared = "preserve"` keeps `undeclared_changed = true`
 but is not blocked on that account.
+
+### Provider-owned fields
+
+A structured template field may take its value from a provider instead of the
+template or an input. Version 8 supports one provider type, `rbw` (the
+Bitwarden command-line client), and scalar string leaves of JSON, JSONC, and
+TOML documents. Whole-file text resources, copy resources, and directory leaves
+cannot declare one.
+
+**Declaration.** A top-level `[providers.NAME]` table has `type` (must be
+`rbw`), `item`, and optional `field` and `profile`. `item`, `field`, and
+`profile` are each one safe argument: non-empty, not starting with `-`, at most
+256 UTF-8 bytes, and without control characters. A field declares `owner = "provider"` and `provider = NAME` naming a declared provider, and no `input`.
+A resource with a provider field must declare `mode`, and the mode must grant
+nothing to group or others (`mode & 0o077 == 0`). A provider declared but not
+consumed by a selected resource is never contacted. The key at exactly a
+provider field's full path is exempt from the sensitive-name check, so the
+document may carry `apiKey` there; every other sensitive key still blocks, and
+`public_names` is not involved.
+
+**Value and comparison.** The value is written into the rendered document at
+the declared path after rendering, by the same selected-span patch as other
+writes, and never passes through the template engine. A provider field is
+forward-only and independent of any baseline: a live value equal to the
+provider value is `unchanged`; a different or missing live value is
+`source_changed` with a forward decision. It is never a reverse candidate,
+conflict, or `unbased`, and a resource whose only fields are provider fields
+needs no baseline. A baseline lists a provider field among its owners and never
+among its values; a baseline that holds a value for one is invalid. An
+existing target whose mode differs from the declared mode plans as `drifted`
+with a mode-only write even when the value is in sync, so a wide mode does not
+survive.
+
+**Operations.** `accept` and `reverse-sync --field` refuse a provider field
+(`provider_field_refused`), and `reverse-sync --undeclared PATH` refuses a path
+equal to or below a provider path (`undeclared_unsafe`). Reverse-sync consumer
+simulation ignores provider paths and never contacts a provider.
+
+**Authority and fetching.** Only `inspect`, `plan`, and `apply` contact a
+provider, and only when given `--provider-executable rbw=/absolute/path`. Any
+other key or a relative path is a usage error. Without the option, each
+resource that consumes a provider is `blocked` with
+`provider_authority_required` and the other resources are observed as usual.
+`accept`, `adopt`, and `reverse-sync` never contact a provider and do not accept
+the option; for them a provider field is treated as unchanged, so the public
+fields of the same resource stay usable. A plan built that way cannot be
+applied. Values are fetched once per command, while the plan is built, and are
+reused by every later check of that plan, so a value rotated after planning is
+not seen: build a new plan.
+
+The executable must be an absolute path to a regular file that is not a
+symlink, owned by root or the current user, and executable by its owner. Neither
+the file nor any ancestor directory may be writable by group or others; the walk
+stops at a root-owned sticky directory such as `/tmp`. Its identity (device,
+inode, mode, size, modification time) is checked before the first call and again
+after the last, and a change fails the batch with `provider_executable_changed`.
+
+For each `profile` value, Luwu does this, in order:
+
+1. Check by `lstat` that the agent socket
+   `$XDG_RUNTIME_DIR/rbw[-PROFILE]/socket` (or `$TMPDIR` or `/tmp`, then
+   `rbw[-PROFILE]-UID/socket` when `XDG_RUNTIME_DIR` is unset or relative)
+   is a socket owned by the current user. Otherwise the result is
+   `provider_agent_unavailable`. Luwu never connects to it.
+1. Run `rbw unlocked`. A nonzero exit whose stderr contains `agent is locked`
+   is `provider_locked`; any other nonzero exit is `provider_command_failed`.
+1. Run `rbw get --raw -- ITEM` once per provider and select the value from the
+   JSON: with no `field`, `data.password`; `password`, `username`, or `notes` for
+   those builtins; any other `field` must match exactly one `fields[].name`
+   exactly and case-sensitively. The value must be non-empty text without NUL.
+
+Luwu never runs `rbw unlock`, `login`, or `sync`, and never starts an agent. The
+child runs without a shell, with standard input closed, in `/`, in its own
+session, with a 5 second timeout and 1 MiB per output stream, and is killed as a
+process group on timeout or oversize output. Its environment holds only `HOME`,
+`XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
+`TMPDIR` when set, `PATH=/bin:/usr/bin`, `RBW_PROFILE` when declared, and
+`RBW_AGENT=/bin/false`. Before the first call Luwu sets `RLIMIT_CORE` to 0 and
+clears the process dumpable flag, and fails every provider if it cannot.
+The child's standard error is discarded.
+
+**Failures and output.** A provider failure blocks only the resources that
+consume it, with one fixed code: `provider_authority_required`,
+`provider_executable_invalid`, `provider_executable_changed`,
+`provider_agent_unavailable`, `provider_locked`, `provider_timeout`,
+`provider_output_invalid`, or `provider_command_failed`. A value that cannot be
+written at its path blocks the resource with `provider_inject_failed`. Apply
+skips a blocked resource like any other (`resource_skip`, outcome `partial`);
+when the skips come from a provider, the outcome's error code is that
+provider's code. A resource that consumes providers carries a `providers` list
+in its plan projection, sorted by provider name, with `provider`, `item`,
+`field` (or `null`), and `state`: `ok`, the fixed code of the failure, or
+`not_fetched`. It never carries a value, a hash, or rbw's output. Resources
+without provider fields keep an empty list.
+
+**Limits.** The target file holds the secret by design; Luwu does not protect
+it after the write beyond the declared mode. A SIGKILL between staging and
+replacement leaves a private `.luwu-tmp-*` file with the secret beside the
+target, and Luwu does not sweep it; delete it by hand. `rbw get --raw` reads the
+whole vault item into Luwu's memory. Luwu names a provider's item in plan
+output because the manifest already does. The rbw behaviors that the reference
+relies on (the `--` separator, the raw JSON keys, the `agent is locked` phrase,
+the socket path, and `RBW_AGENT`) are not verified against a real vault; see
+[status](status.md).
 
 ### Fixed-version application-shaped mapping targets
 
@@ -503,7 +610,7 @@ defined in this contract are covered by the tests; the verified state is in
 
 ## Commands
 
-Luwu has six commands: `inspect`, `plan`, `apply`, `accept`, `adopt`, and `reverse-sync`. Every command requires `--profile NAME` and accepts `--manifest PATH` (default `luwu.toml`) and `--json`. There is no provider, subprocess, journal, cache, or recovery command.
+Luwu has six commands: `inspect`, `plan`, `apply`, `accept`, `adopt`, and `reverse-sync`. Every command requires `--profile NAME` and accepts `--manifest PATH` (default `luwu.toml`) and `--json`. There is no provider, journal, cache, or recovery command. `inspect`, `plan`, and `apply` also accept `--provider-executable rbw=/absolute/path`, the only subprocess authority; see [Provider-owned fields](#provider-owned-fields).
 
 `inspect` reports the current state. `plan` reports the same observation together with the action an explicit apply could take. Neither writes the manifest, source, target, input, or baseline. Both return exit code `0` after successfully calculating a plan, including when a resource is reported as `blocked`.
 

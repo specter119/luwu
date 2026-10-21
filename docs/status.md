@@ -27,11 +27,11 @@ for those subjects.
 | Layered public inputs        | Implemented             | Public scalar values only                                                                          |
 | Observation                  | Implemented             | An unsafe live path blocks that resource; the other resources are still observed                   |
 | Ownership and baselines      | Implemented             | Undeclared content is never adopted implicitly                                                     |
-| Accept, adopt, reverse sync  | Implemented             | Accept and reverse sync take one resource, adopt a batch; a changed declaration needs re-accept   |
+| Accept, adopt, reverse sync  | Implemented             | Accept and reverse sync take one resource, adopt a batch; a changed declaration needs re-accept    |
 | Undeclared write-back        | Implemented             | Literal template subtrees only; every other case is refused                                        |
 | Profile-wide apply           | Implemented             | Review resources are skipped and the outcome is `partial`; batch-level blockers stop the batch     |
 | Batch performance            | Implemented             | Budgets are in [maintenance](maintenance.md#performance-acceptance); rerun them on the target host |
-| Providers and secrets        | Not implemented         | Retired with version 6; planned in the [roadmap](roadmap.md)                                       |
+| Provider-owned fields        | Implemented, unverified | rbw only, scalar fields of structured templates; fake-provider tests only, no real vault run yet   |
 | Droid workspace trust        | Unsupported by decision | No stable public file schema is known                                                              |
 
 The exact fields, states, error codes, output projections, compatibility
@@ -66,6 +66,33 @@ Known limits found by review and left open:
   longer compares the rendered desired bytes of later actions; the source,
   input, and target observations still catch changes.
 
+## Provider fields awaiting real rbw acceptance
+
+Provider-owned fields are implemented and covered by fake-rbw fault tests,
+confidentiality scans of every command output and of the whole temporary tree,
+and ablation probes. No real rbw or vault has been used, so the
+[roadmap](roadmap.md#m8-providers-and-mixed-inputs-on-version-8) keeps M8
+open. The manual exercise is `experiments/rbw_acceptance.py`
+([maintenance](maintenance.md#real-rbw-acceptance)). It must confirm these
+assumptions, which the implementation takes from the rbw source and not from
+a run:
+
+- `rbw get --raw -- ITEM` accepts `--`, and the raw JSON carries
+  `data.password`, `data.username`, `notes`, and `fields[].name/value`.
+- A locked agent makes `rbw unlocked` exit nonzero with `agent is locked` on
+  standard error.
+- The agent socket is `<runtime>/rbw[-profile]/socket`.
+- `RBW_AGENT=/bin/false` stops `rbw get` from starting an agent.
+- `RLIMIT_CORE=0` and a cleared dumpable flag keep a core dump from being
+  written when `core_pattern` is a pipe.
+
+Known limits: a SIGKILL between staging and replacement leaves a private
+`.luwu-tmp-*` file with the secret that nothing sweeps; the plan holds the
+provider value for its whole life, so a rotation after planning needs a new
+plan; `rbw get --raw` reads the whole item; and an executable under a
+group-writable ancestor such as `~/.local/bin` on a 002 umask is refused. The
+contract is in [reference](reference.md#provider-owned-fields).
+
 ## Verified scope and limits
 
 Verification is the test suite under `tests/` plus the ablations in
@@ -80,8 +107,8 @@ The implementation does not claim:
 - automatic replay, rollback, or recovery mutation;
 - exact reviewed-plan consent tokens;
 - strong consistency against writers that ignore Luwu's advisory locks;
-- providers, network access, or a broad platform matrix beyond the verified
-  contract;
+- a real vault, a network, or a broad platform matrix beyond the verified
+  contract (the provider path is verified against a fake rbw only);
 - that any application read a synthetic fixture, or that any real target may be
   handed off. The per-target procedure is in
   [maintenance](maintenance.md#isolated-rehearsal-and-dotter-handoff) and the
