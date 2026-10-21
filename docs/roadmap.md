@@ -2,9 +2,9 @@
 
 Status: M1-M5 are delivered. M6 and M7 are closed as technical deliveries on
 the single version 8 contract; their evidence comes from synthetic fixtures
-only. M7a (daily-loop usability) and M7b are closed. M8 is implemented
-against a fake provider and waits for a real rbw acceptance, and M9 is
-planned.
+only. M7a (daily-loop usability) and M7b are closed. M8 is closed on the maintainer's
+acceptance of a real rbw walk, with two assumptions it did not exercise
+recorded in status, and M9 is planned.
 
 This document owns delivery sequence, open exit conditions, and boundaries for
 work that is not finished. It does not define detailed contracts or the current
@@ -25,7 +25,7 @@ to an active milestone's scope should be explicit.
 | M7        | Full dotfiles coverage                  | Closed: technical core delivered; Droid workspace trust is unsupported by decision.                               |
 | M7a       | Daily-loop usability                    | Closed: the routine loop ran on a real dotfiles repository; findings reopen the affected item.                    |
 | M7b       | Text templates and symlink resources    | Closed: whole-file text templates and symlink resources exist on the version 8 contract.                          |
-| M8        | Providers and mixed inputs on version 8 | Implemented, pending real rbw acceptance: provider fields work with public and local inputs, no secret files.     |
+| M8        | Providers and mixed inputs on version 8 | Closed: provider fields work with public and local inputs, no secret files.                                       |
 | M9        | Real-project migration qualification    | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies. |
 
 The milestone identifiers do not allocate manifest versions. Before changing
@@ -123,7 +123,7 @@ parser or a separate secret-text resource. A persisted digest of secret bytes,
 a provider registry, and a provider cache are rejected; see the
 [design](design.md#rejected-alternatives). The contract is in
 [reference](reference.md#provider-owned-fields) and the current state in
-[status](status.md#provider-fields-awaiting-real-rbw-acceptance).
+[status](status.md#provider-fields-and-real-rbw-acceptance).
 
 Exit: two parts with separate evidence. Isolated fake-rbw tests prove Luwu's
 own behavior: locked or unavailable vaults, executable and environment
@@ -133,9 +133,11 @@ authorized real-rbw run proves only what a fake cannot: that the installed rbw
 accepts the argument form, returns the JSON keys, reports a locked agent, and
 lays out its socket as the contract assumes, and that a stopped agent, with or
 without a socket file left behind, is not restarted. The fake-rbw tests, confidentiality scans, and the manual script
-`experiments/rbw_acceptance.py` exist; the real run is the open gate. If real
-integration is blocked, retain partial status; mock success cannot close this
-milestone. User-service reloads and other provisioning remain explicit external
+`experiments/rbw_acceptance.py` exist. The maintainer ran the script against
+a real rbw and accepted the walk as passing, which closes the milestone.
+The walk did not reach a real item read, so two assumptions rest on the
+maintainer's acceptance and not on a recorded run; [status](status.md#provider-fields-and-real-rbw-acceptance)
+lists them. Mock success alone could not have closed this milestone. User-service reloads and other provisioning remain explicit external
 stages, not hooks hidden inside observation or apply.
 
 ## M9: Real-project migration qualification

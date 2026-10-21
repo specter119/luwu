@@ -378,7 +378,7 @@ it replaces the target, and a SIGKILL inside that window can leave a private
 hand. `rbw get --raw` reads the whole vault item into Luwu's memory. Luwu names
 a provider's item in plan output because the manifest already does. Which rbw
 behaviors the contract relies on without a recorded real run is a status fact;
-see [status](status.md#provider-fields-awaiting-real-rbw-acceptance).
+see [status](status.md#provider-fields-and-real-rbw-acceptance).
 
 ### Fixed-version application-shaped mapping targets
 

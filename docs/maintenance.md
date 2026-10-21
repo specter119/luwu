@@ -217,8 +217,8 @@ acceptable when it is byte-checked against the working tree.
 
 ## Real rbw acceptance
 
-The provider tests use a fake rbw; only a run against a real vault can close
-the provider milestone. `experiments/rbw_acceptance.py` is that exercise. It is
+The provider tests use a fake rbw; only a run against a real vault shows
+what a fake cannot. `experiments/rbw_acceptance.py` is that exercise. It is
 manual, never runs in CI or the test suite, and the operator authorizes it
 separately. Use a dedicated vault item that holds a throwaway value, and an
 empty working directory outside the checkout:
@@ -248,7 +248,7 @@ a report in the working directory, plus the kernel's `core_pattern` and
 the working directory afterwards because its target file holds the real value.
 It prints the facts it asks the operator to confirm and, separately, the
 behaviors it does not confirm; the lists are in
-[status](status.md#provider-fields-awaiting-real-rbw-acceptance).
+[status](status.md#provider-fields-and-real-rbw-acceptance).
 
 ## Boundary ablations
 

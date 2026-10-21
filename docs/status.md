@@ -31,7 +31,7 @@ for those subjects.
 | Undeclared write-back        | Implemented             | Literal template subtrees only; every other case is refused                                        |
 | Profile-wide apply           | Implemented             | Review resources are skipped and the outcome is `partial`; batch-level blockers stop the batch     |
 | Batch performance            | Implemented             | Budgets are in [maintenance](maintenance.md#performance-acceptance); rerun them on the target host |
-| Provider-owned fields        | Implemented, unverified | rbw only, scalar fields of structured templates; fake-provider tests only, no real vault run yet   |
+| Provider-owned fields        | Implemented             | rbw only, scalar fields of structured templates; real rbw walk accepted by the maintainer          |
 | Droid workspace trust        | Unsupported by decision | No stable public file schema is known                                                              |
 
 The exact fields, states, error codes, output projections, compatibility
@@ -66,30 +66,38 @@ Known limits found by review and left open:
   longer compares the rendered desired bytes of later actions; the source,
   input, and target observations still catch changes.
 
-## Provider fields awaiting real rbw acceptance
+## Provider fields and real rbw acceptance
 
 Provider-owned fields are implemented and covered by fake-rbw fault tests,
 confidentiality scans of every command output and of the whole temporary tree,
-and ablation probes. No real rbw or vault has been used, so the
-[roadmap](roadmap.md#m8-providers-and-mixed-inputs-on-version-8) keeps M8
-open. The manual exercise is `experiments/rbw_acceptance.py`
-([maintenance](maintenance.md#real-rbw-acceptance)). It must confirm these
-assumptions, which the implementation takes from the rbw source and not from
-a run:
+and ablation probes. The maintainer ran the manual exercise
+`experiments/rbw_acceptance.py` ([maintenance](maintenance.md#real-rbw-acceptance))
+against rbw 1.15.0 and accepted the walk as passing, which closed M8 in the
+[roadmap](roadmap.md#m8-providers-and-mixed-inputs-on-version-8). The facts
+fall into three groups.
+
+Observed in the real run:
+
+- A locked agent makes `rbw unlocked` exit nonzero with `agent is locked` on
+  standard error, and Luwu reports `provider_locked`.
+- The agent socket is `<XDG_RUNTIME_DIR>/rbw/socket`, otherwise `$TMPDIR`
+  (default `/tmp`)`/rbw-<uid>/socket`, and `rbw stop-agent` leaves the socket
+  file behind, in which case Luwu reports `provider_command_failed` and no
+  agent is started.
+- `RBW_AGENT=/bin/false rbw unlocked` exits nonzero, so rbw does not start an
+  agent when the socket is stale.
+
+Accepted by the maintainer without a real run: the vault item named in the
+walk did not exist, so the walk never read an item. These two assumptions come
+from the rbw source and not from a run:
 
 - `rbw get --raw -- ITEM` accepts `--`, and the raw JSON carries
-  `data.password`, `data.username`, `notes`, and `fields[].name/value`. The
-  script confirms the key it selects; the other keys stay a source-reading
-  assumption.
-- A locked agent makes `rbw unlocked` exit nonzero with `agent is locked` on
-  standard error.
-- The agent socket is `<XDG_RUNTIME_DIR>/rbw/socket`, otherwise `$TMPDIR`
-  (default `/tmp`)`/rbw-<uid>/socket`, and `rbw stop-agent` may leave the socket
-  file behind, in which case Luwu reports `provider_command_failed`.
-- `RBW_AGENT=/bin/false` stops rbw from starting an agent when the socket is
-  stale.
+  `data.password`, `data.username`, `notes`, and `fields[].name/value`.
+- A real provider value written by apply lands at the declared mode and stays
+  confined to that one file. The fake-rbw tests and scans prove this for
+  Luwu's own behavior.
 
-The walk does not confirm two further assumptions. Whether `rbw get` on a
+Not confirmed by the walk: whether `rbw get` on a
 locked agent starts an unlock or a pinentry by itself matters only if the agent
 locks between Luwu's `rbw unlocked` and `rbw get`, and the walk never reaches
 `get` while locked. The walk records the kernel's `core_pattern` and
@@ -121,7 +129,7 @@ The implementation does not claim:
 - exact reviewed-plan consent tokens;
 - strong consistency against writers that ignore Luwu's advisory locks;
 - a real vault, a network, or a broad platform matrix beyond the verified
-  contract (the provider path is verified against a fake rbw only);
+  contract (the provider path was walked against a real rbw only up to the locked and stopped-agent cases);
 - that any application read a synthetic fixture, or that any real target may be
   handed off. The per-target procedure is in
   [maintenance](maintenance.md#isolated-rehearsal-and-dotter-handoff) and the
