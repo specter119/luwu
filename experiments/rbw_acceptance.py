@@ -3,23 +3,30 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Manual acceptance walk for provider-owned fields against a real rbw.
+"""Manual acceptance walk for the rbw facts a fake cannot prove.
 
-Never run by CI or by the test suite, and it never starts a real rbw itself:
-the operator locks, unlocks, stops, and edits the real vault at the prompts
-while the script drives the installed ``luwu`` CLI. It builds one synthetic
-profile under ``--workdir`` (created 0700) and records only redacted metadata:
-every recorded string passes through :func:`redact`, which refuses text longer
-than 64 characters or carrying the provider value. The provider value is read
-only from the committed target file, is never printed, and the report is 0600.
+Never run by CI or by the test suite. The operator locks, unlocks, stops, and
+edits the real vault at the prompts while the script drives the ``luwu`` CLI
+and one direct ``rbw unlocked`` probe; the script never starts an rbw agent
+itself. Use a dedicated temporary vault item that holds a throwaway value. The
+script builds one synthetic profile under ``--workdir`` (created 0700) and
+records only redacted metadata: every recorded string passes through
+:func:`redact`, which refuses text longer than 64 characters or carrying the
+provider value. The provider value is read only from the committed target
+file, is never printed, and the report is 0600. The script prints the facts it
+asks the operator to confirm and, separately, the behaviors this walk does not
+confirm.
 
-    .venv/bin/python experiments/rbw_acceptance.py \
+    uv run --no-sync --script experiments/rbw_acceptance.py \
+        --python .venv/bin/python \
         --rbw /usr/bin/rbw --workdir /tmp/luwu-rbw-acceptance \
-        --item dotfiles-api-key [--field apiKey] [--profile work]
+        --item dotfiles-api-key [--field apiKey]
 
-The default ``--luwu`` is ``sys.executable -m luwu``; pass ``--luwu
-/path/to/venv/bin/luwu`` to use an installed entry point. A relative ``--rbw``
-path, a missing rbw, and a non-empty workdir are refused.
+The default ``--luwu`` is ``<python> -m luwu``; ``--python`` selects that
+interpreter and re-executes the script under it, so a ``uv run --script``
+wrapper can hand over to the checkout environment. Pass
+``--luwu /path/to/venv/bin/luwu`` to use an installed entry point instead.
+A relative ``--rbw`` path, a missing rbw, and a non-empty workdir are refused.
 """
 
 from __future__ import annotations
@@ -28,11 +35,9 @@ import argparse
 import json
 import os
 import shlex
-import shutil
 import stat
 import subprocess
 import sys
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -46,14 +51,49 @@ MAX_RECORDED_TEXT = 64
 COMMAND_TIMEOUT_SECONDS = 60.0
 REDACTION_MARKER = "<redaction-refused>"
 
-# Facts this walk assumes about a real rbw and cannot prove by itself.
+# Facts this walk assumes about a real rbw and asks the operator to confirm.
 OPEN_FACTS = (
     "rbw get --raw -- ITEM must accept the `--` end-of-options marker",
     "raw JSON keys: data.password, data.username, notes, fields[].name/value",
     "stderr phrase: `agent is locked`",
-    "socket: <XDG_RUNTIME_DIR>/rbw[-profile]/socket, else /tmp/rbw-<uid>/socket",
+    (
+        "socket: <XDG_RUNTIME_DIR>/rbw/socket, else $TMPDIR (default /tmp)"
+        "/rbw-<uid>/socket"
+    ),
     "whether RBW_AGENT=/bin/false actually prevents rbw from spawning an agent",
-    "whether RLIMIT_CORE=0 with PR_SET_DUMPABLE stops core dumps under a pipe core_pattern",
+)
+
+# Behaviors this walk cannot reach, or only observes, so it must not present
+# them as confirmed.
+NOT_CONFIRMED_FACTS = (
+    (
+        "whether `rbw get` on a locked agent unlocks or invokes pinentry by "
+        "itself; luwu always probes `rbw unlocked` first, so this walk never "
+        "runs `get` against a locked agent"
+    ),
+    (
+        "whether `RLIMIT_CORE=0` with a cleared dumpable flag keeps a core dump "
+        "from being written when `core_pattern` is a pipe; the walk only "
+        "records the kernel settings above"
+    ),
+)
+
+# The names luwu.providers passes to its rbw child: the vault location comes
+# from HOME and the XDG and TMPDIR variables, so nothing else is needed.
+_CHILD_ENVIRON_NAMES = (
+    "HOME",
+    "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "TMPDIR",
+)
+
+# Recorded as information only: a nonzero dumpable flag or a pipe core_pattern
+# decides where a crash writes, and neither is a pass condition of this walk.
+KERNEL_SETTINGS = (
+    "/proc/sys/kernel/core_pattern",
+    "/proc/sys/fs/suid_dumpable",
 )
 
 
@@ -65,13 +105,20 @@ class AcceptanceError(RuntimeError):
         self.checks = checks or {}
 
 
-def require(checks: dict[str, object]) -> dict[str, object]:
-    """Return the recorded checks when every one holds, and fail otherwise."""
+def require(
+    checks: dict[str, object], observed: dict[str, object] | None = None
+) -> dict[str, object]:
+    """Return the recorded checks when every one holds, and fail otherwise.
 
+    ``observed`` carries fields that are recorded but not asserted, so a
+    failure still reports the whole step record.
+    """
+
+    merged = {**(observed or {}), **checks}
     for name, value in checks.items():
         if not value:
-            raise AcceptanceError(f"check failed: {name}", checks)
-    return checks
+            raise AcceptanceError(f"check failed: {name}", merged)
+    return merged
 
 
 def redact(value: object, secret: str | None = None) -> str:
@@ -84,20 +131,45 @@ def redact(value: object, secret: str | None = None) -> str:
     return value
 
 
+def child_environ() -> dict[str, str]:
+    """The minimal environment shared by the luwu and rbw child processes."""
+
+    environ = {
+        name: os.environ[name] for name in _CHILD_ENVIRON_NAMES if name in os.environ
+    }
+    environ["PATH"] = os.defpath
+    return environ
+
+
+def kernel_setting(path: str) -> str:
+    """Read one /proc setting for the record; a missing file is not a failure."""
+
+    try:
+        text = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return "unavailable"
+    return redact(text) if text else "empty"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--python",
+        type=Path,
+        default=Path(sys.executable),
+        help="interpreter for the default luwu command",
+    )
     parser.add_argument("--rbw", required=True, type=Path, help="absolute rbw path")
     parser.add_argument("--workdir", required=True, type=Path, help="0700 workdir")
     parser.add_argument("--item", required=True, help="rbw item name to read")
     parser.add_argument("--field", default=None, help="rbw field inside the item")
-    parser.add_argument("--profile", default=None, help="rbw profile name")
     parser.add_argument("--luwu", default=None, help="luwu command to run")
     return parser
 
 
-def luwu_command(namespace: argparse.Namespace) -> list[str]:
+def luwu_command(namespace: argparse.Namespace, python: Path) -> list[str]:
     if namespace.luwu is None:
-        return [sys.executable, "-m", "luwu"]
+        return [str(python), "-m", "luwu"]
     words = shlex.split(namespace.luwu)
     if not words:
         raise AcceptanceError("--luwu must name a command")
@@ -127,9 +199,7 @@ def prepare_workdir(path: Path) -> Path:
     return resolved
 
 
-def write_profile(
-    workdir: Path, *, item: str, field_name: str | None, profile: str | None
-) -> Path:
+def write_profile(workdir: Path, *, item: str, field_name: str | None) -> Path:
     """Build the synthetic profile: one public field and one provider field."""
 
     source = workdir / "source" / "templates"
@@ -151,8 +221,6 @@ def write_profile(
     provider = ['type = "rbw"', f"item = {json.dumps(item)}"]
     if field_name is not None:
         provider.append(f"field = {json.dumps(field_name)}")
-    if profile is not None:
-        provider.append(f"profile = {json.dumps(profile)}")
     manifest = workdir / "luwu.toml"
     manifest.write_text(
         "version = 8\n"
@@ -187,20 +255,29 @@ class Context:
     rbw: Path
     luwu: list[str]
     secret: str | None = None
-    environ: dict[str, str] = field(default_factory=lambda: dict(os.environ))
+    environ: dict[str, str] = field(default_factory=child_environ)
 
 
-def run_cli(context: Context, arguments: list[str]) -> dict[str, Any]:
+def _scan_output(context: Context, output: str, command: str) -> None:
+    if context.secret is not None and context.secret in output:
+        raise AcceptanceError(f"{command} printed the provider value")
+
+
+def run_cli(
+    context: Context, arguments: list[str], *, json_output: bool = True
+) -> dict[str, Any]:
+    command = [
+        *context.luwu,
+        *arguments,
+        "--manifest",
+        str(context.manifest),
+        "--profile",
+        PROFILE,
+    ]
+    if json_output:
+        command.append("--json")
     completed = subprocess.run(
-        [
-            *context.luwu,
-            *arguments,
-            "--manifest",
-            str(context.manifest),
-            "--profile",
-            PROFILE,
-            "--json",
-        ],
+        command,
         cwd=context.workdir,
         env=context.environ,
         check=False,
@@ -208,11 +285,39 @@ def run_cli(context: Context, arguments: list[str]) -> dict[str, Any]:
         text=True,
         timeout=COMMAND_TIMEOUT_SECONDS,
     )
+    _scan_output(context, completed.stdout + completed.stderr, "a luwu command")
     try:
         payload: object = json.loads(completed.stdout)
     except json.JSONDecodeError:
         payload = None
-    return {"exit_code": completed.returncode, "payload": payload}
+    return {
+        "exit_code": completed.returncode,
+        "payload": payload,
+        "stderr": completed.stderr,
+    }
+
+
+def run_rbw(
+    context: Context,
+    arguments: list[str],
+    *,
+    extra_environ: dict[str, str] | None = None,
+) -> int:
+    """Run rbw directly with the child whitelist and the given overrides."""
+
+    environ = dict(context.environ)
+    environ.update(extra_environ or {})
+    completed = subprocess.run(
+        [str(context.rbw), *arguments],
+        cwd=context.workdir,
+        env=environ,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=COMMAND_TIMEOUT_SECONDS,
+    )
+    _scan_output(context, completed.stdout + completed.stderr, "the rbw probe")
+    return completed.returncode
 
 
 def payload_of(run: dict[str, Any]) -> dict[str, Any]:
@@ -332,11 +437,36 @@ def rbw_agent_count() -> int | None:
     return len([line for line in completed.stdout.splitlines() if line.strip()])
 
 
-def step_plan_without_authority(context: Context) -> tuple[str, dict[str, object]]:
-    return blocked_step(
-        "plan_without_authority",
-        run_cli(context, ["plan"]),
-        "provider_authority_required",
+def agent_count_checks(
+    name: str, before: int | None, after: int | None
+) -> dict[str, object]:
+    """Record the rbw-agent count around one call and fail on a new agent.
+
+    A missing pgrep is recorded as unverified: it is neither a pass nor a
+    failure, and only a countable increase fails the step.
+    """
+
+    countable = before is not None and after is not None
+    checks: dict[str, object] = {
+        "agent_processes_before": before,
+        "agent_processes_after": after,
+        "agent_count_checked": countable,
+        "agent_count_unavailable": not countable,
+        "no_rbw_agent_started": (after == before) if countable else None,
+    }
+    if countable and after != before:
+        raise AcceptanceError(f"{name} started an rbw agent", checks)
+    return checks
+
+
+def runtime_socket(context: Context) -> Path:
+    """The agent socket path luwu.providers checks without an rbw profile."""
+
+    runtime = context.environ.get("XDG_RUNTIME_DIR", "")
+    if runtime and os.path.isabs(runtime):
+        return Path(runtime) / "rbw" / "socket"
+    return (
+        Path(context.environ.get("TMPDIR") or "/tmp") / f"rbw-{os.getuid()}" / "socket"
     )
 
 
@@ -358,15 +488,51 @@ def step_agent_stopped(context: Context) -> tuple[str, dict[str, object]]:
         "agent_stopped",
         run,
         "provider_agent_unavailable",
-        {
-            "agent_processes_before": before,
-            "agent_processes_after": after,
-            "no_rbw_agent_started": before is not None and after == before,
-        },
+        agent_count_checks("agent_stopped", before, after),
     )
 
 
-def step_unlocked_apply(context: Context) -> tuple[str, dict[str, object]]:
+def step_stale_socket_rbw_agent(context: Context) -> tuple[str, dict[str, object]]:
+    prompt(
+        "Stop the agent with kill -9 (for example: pkill -9 -x rbw-agent), so "
+        "its socket file is left behind; if you cannot, stop it any other way. "
+        "Then"
+    )
+    socket_path = runtime_socket(context)
+    try:
+        stale_socket = stat.S_ISSOCK(os.lstat(socket_path).st_mode)
+    except OSError:
+        stale_socket = False
+    if not stale_socket:
+        print(
+            "     no stale socket at "
+            f"{socket_path}; this step degrades to the direct probe"
+        )
+    before = rbw_agent_count()
+    exit_code = run_rbw(
+        context, ["unlocked"], extra_environ={"RBW_AGENT": "/bin/false"}
+    )
+    after = rbw_agent_count()
+    plan = run_cli(context, ["plan", *authority(context)])
+    entry = resource_entry(plan)
+    observed: dict[str, object] = {
+        "stale_socket_left_behind": stale_socket,
+        "probe_mode": "stale_socket" if stale_socket else "probe_only",
+        "probe_exit_code": exit_code,
+        "plan_provider_state": redact(provider_state(plan)),
+        "plan_error_code": redact(entry.get("error_code")),
+    }
+    observed.update(agent_count_checks("stale_socket_rbw_agent", before, after))
+    return "stale_socket_rbw_agent", require(
+        {
+            "probe_nonzero": exit_code != 0,
+            "plan_provider_not_ok": provider_state(plan) != "ok",
+        },
+        observed,
+    )
+
+
+def step_unlocked_apply_verify(context: Context) -> tuple[str, dict[str, object]]:
     prompt("Unlock the vault now (for example: rbw unlock), then")
     accepted = run_cli(
         context,
@@ -383,21 +549,22 @@ def step_unlocked_apply(context: Context) -> tuple[str, dict[str, object]]:
     )
     plan = run_cli(context, ["plan", *authority(context)])
     applied = run_cli(context, ["apply", *authority(context), "--yes"])
-    checks = {
-        "accept_committed": payload_of(accepted).get("outcome") == "committed",
-        "plan_provider_ok": provider_state(plan) == "ok",
-        "apply_committed": payload_of(applied).get("outcome") == "committed",
-        "target_written": target_path(context).is_file(),
-    }
-    return "unlocked_apply", require(checks)
-
-
-def step_verify_target(context: Context) -> tuple[str, dict[str, object]]:
     target = target_path(context)
     secret = provider_value(target)
     if secret is not None:
         context.secret = secret
+    # The value is known from here on, so these calls exercise run_cli's scan
+    # of the later output; it raises instead of returning a verdict.
+    for later_arguments, as_json in (
+        (["plan", *authority(context)], True),
+        (["inspect"], True),
+        (["inspect"], False),
+    ):
+        run_cli(context, later_arguments, json_output=as_json)
     checks = {
+        "accept_committed": payload_of(accepted).get("outcome") == "committed",
+        "plan_provider_ok": provider_state(plan) == "ok",
+        "apply_committed": payload_of(applied).get("outcome") == "committed",
         "target_exists": target.is_file(),
         "owner_only_mode": target.is_file()
         and stat.S_IMODE(target.stat().st_mode) == 0o600,
@@ -409,84 +576,16 @@ def step_verify_target(context: Context) -> tuple[str, dict[str, object]]:
         "no_staging_entry": not any(
             ".luwu-tmp-" in path.name for path in context.workdir.rglob("*")
         ),
+        "later_output_without_the_value": secret is not None,
     }
-    return "verify_target", require(checks)
-
-
-def step_executable_replacement(context: Context) -> tuple[str, dict[str, object]]:
-    """A replaced executable must fail with a fixed provider code.
-
-    Deliberately not a race: the copy is replaced while no command runs, so the
-    next plan inspects different bytes at the same path. The in-flight identity
-    check is owned by tests/providers/test_executable.py.
-    """
-
-    private = context.workdir / "executable-copy"
-    private.mkdir(mode=0o700, exist_ok=True)
-    private.chmod(0o700)
-    copied = private / "rbw"
-    shutil.copy2(context.rbw, copied)
-    copied.chmod(0o700)
-    run_ok = run_cli(context, ["plan", *authority(context, copied)])
-    replacement = copied.with_name("rbw.next")
-    shutil.copy2(shutil.which("true") or "/usr/bin/true", replacement)
-    replacement.chmod(0o700)
-    os.replace(replacement, copied)
-    changed = run_cli(context, ["plan", *authority(context, copied)])
-    entry = resource_entry(changed)
-    code = entry.get("error_code")
-    checks = {
-        "private_copy_provider_ok": provider_state(run_ok) == "ok",
-        "changed_copy_status": redact(entry.get("status")),
-        "changed_copy_error_code": redact(code),
-        "changed_copy_never_fetched": provider_state(changed) != "ok",
-        "changed_copy_blocked": entry.get("status") == "blocked",
-        "changed_copy_fixed_code": isinstance(code, str)
-        and code.startswith("provider_"),
-    }
-    return "executable_replacement", require(checks)
-
-
-def step_public_choice(context: Context) -> tuple[str, dict[str, object]]:
-    target = target_path(context)
-    choice = f"operator-choice-{uuid.uuid4().hex[:8]}"
-    document = json.loads(target.read_text(encoding="utf-8"))
-    document["service"][PUBLIC_FIELD] = choice
-    target.write_text(json.dumps(document) + "\n", encoding="utf-8")
-    reversed_ = run_cli(
-        context,
-        ["reverse-sync", "--resource", "app", "--field", PUBLIC_FIELD, "--yes"],
-    )
-    applied = run_cli(context, ["apply", *authority(context), "--yes"])
-    try:
-        written = json.loads(
-            (context.workdir / "inputs" / "local" / "user.json").read_text(
-                encoding="utf-8"
-            )
-        )[PUBLIC_FIELD]
-        live = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError, KeyError, TypeError):
-        written, live = None, {}
-    checks = {
-        "reverse_committed": payload_of(reversed_).get("outcome") == "committed",
-        "reverse_wrote_the_choice": written == choice,
-        "apply_ok": applied["exit_code"] == 0,
-        "public_choice_retained": live.get("service", {}).get(PUBLIC_FIELD) == choice,
-        "provider_value_current": live.get("service", {}).get(PROVIDER_FIELD)
-        == context.secret,
-        "target_exists": target.is_file(),
-    }
-    return "public_choice", require(checks)
+    return "unlocked_apply_verify", require(checks)
 
 
 STEPS = (
-    step_plan_without_authority,
     step_locked_vault,
     step_agent_stopped,
-    step_unlocked_apply,
-    step_verify_target,
-    step_executable_replacement,
-    step_public_choice,
+    step_stale_socket_rbw_agent,
+    step_unlocked_apply_verify,
 )
 
 
@@ -507,33 +606,45 @@ def rbw_version(rbw: Path, environ: dict[str, str]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    namespace = build_parser().parse_args(argv)
+    parser = build_parser()
+    namespace = parser.parse_args(argv)
+    python = namespace.python.expanduser().absolute()
+    if not python.is_file() or not os.access(python, os.X_OK):
+        parser.error("--python must name an executable file")
+    script_args = sys.argv[1:] if argv is None else argv
+    if python != Path(sys.executable).absolute():
+        os.execv(
+            str(python),
+            [str(python), str(Path(__file__).resolve()), *script_args],
+        )
+    if python != Path(sys.executable).absolute():
+        parser.error("execution did not enter the requested Python interpreter")
     try:
         rbw = validate_rbw(namespace.rbw.expanduser())
         workdir = prepare_workdir(namespace.workdir)
-        luwu = luwu_command(namespace)
+        luwu = luwu_command(namespace, python)
     except AcceptanceError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    manifest = write_profile(
-        workdir,
-        item=namespace.item,
-        field_name=namespace.field,
-        profile=namespace.profile,
-    )
+    manifest = write_profile(workdir, item=namespace.item, field_name=namespace.field)
     context = Context(workdir=workdir, manifest=manifest, rbw=rbw, luwu=luwu)
     version = rbw_version(rbw, context.environ)
-    print(
-        "Luwu rbw acceptance walk; never run in CI and never against a vault you own."
-    )
+    kernel = {path: kernel_setting(path) for path in KERNEL_SETTINGS}
+    print("Luwu rbw acceptance walk; use a dedicated temporary vault item.")
     print(f"workdir: {workdir}\nrbw version: {version}")
-    print("Open facts to confirm by hand:")
+    for path, value in kernel.items():
+        print(f"{path}: {value} (informational only)")
+    print("Facts this walk asks the operator to confirm:")
     for fact in OPEN_FACTS:
+        print(f"  - {fact}")
+    print("Not confirmed by this walk:")
+    for fact in NOT_CONFIRMED_FACTS:
         print(f"  - {fact}")
 
     steps: list[dict[str, object]] = []
     blocked = False
     for function in STEPS:
+        step: dict[str, object]
         if blocked:
             step = record(function, "SKIPPED", "an earlier step failed")
         else:
@@ -565,6 +676,9 @@ def main(argv: list[str] | None = None) -> int:
         "never_run_in_ci": True,
         "rbw_version": version,
         "workdir_created_0700": True,
+        "kernel_settings": kernel,
+        "open_facts": list(OPEN_FACTS),
+        "not_confirmed_by_this_walk": list(NOT_CONFIRMED_FACTS),
         "steps": steps,
         "final_secret_confined_to_target": confined,
         "status": status,
@@ -575,6 +689,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     report_path.chmod(0o600)
     print(f"final_secret_confined_to_target: {confined}\nreport: {report_path}")
+    print(
+        f"delete the workdir when done: {workdir} (its target file holds the real value)"
+    )
     return 0 if status == "pass" else 1
 
 
