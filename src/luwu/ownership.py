@@ -10,7 +10,7 @@ from typing import Any
 from .errors import LuwuError
 from .semantic import _json_values_equal, parse_strict_json
 
-_OWNERS = frozenset({"source", "live", "merge", "ignore"})
+_OWNERS = frozenset({"source", "live", "merge", "ignore", "provider"})
 _MISSING = object()
 _INVALID_INPUT = "ownership input is invalid"
 
@@ -112,6 +112,21 @@ def _classify_field(
 ) -> OwnershipField:
     if owner == "ignore":
         return OwnershipField(name, owner, "ignored", "none", "field is ignored")
+    if owner == "provider":
+        # A provider field has no baseline side: the desired value is the value
+        # fetched from the provider in memory, and only its agreement with the
+        # live document decides the direction.
+        if _values_equal(desired.get(name, _MISSING), live.get(name, _MISSING)):
+            return OwnershipField(
+                name, owner, "unchanged", "none", "live matches provider value"
+            )
+        return OwnershipField(
+            name,
+            owner,
+            "source_changed",
+            "forward_candidate",
+            "provider value differs from live",
+        )
     if not based:
         return OwnershipField(name, owner, "unbased", "none", "baseline is absent")
     if baseline is None:
@@ -209,7 +224,7 @@ def _parse_baseline(
     if not isinstance(owners, dict) or owners != dict(fields):
         raise _invalid()
     if not isinstance(values, dict) or set(values) - {
-        name for name, owner in fields.items() if owner != "ignore"
+        name for name, owner in fields.items() if owner not in {"ignore", "provider"}
     }:
         raise _invalid()
     return value

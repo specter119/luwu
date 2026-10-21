@@ -34,12 +34,14 @@ from .filesystem import (
     read_stable_file,
     verify_directory_binding,
 )
+from .providers import ProviderReference, valid_argv_text
 from .sensitivity import is_sensitive_name
 
 _VERSION = 8
 _FORMATS = frozenset({"json", "jsonc", "toml"})
 _MAX_PATH_SEGMENTS = 256
-_FIELD_OWNERS = frozenset({"source", "live", "merge", "ignore"})
+_FIELD_OWNERS = frozenset({"source", "live", "merge", "ignore", "provider"})
+_PROVIDER_TYPES = frozenset({"rbw"})
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
 
@@ -84,11 +86,12 @@ class InputBinding:
 
 @dataclass(frozen=True, slots=True)
 class FieldBinding:
-    """A field alias, its owner, and optional public input binding."""
+    """A field alias, its owner, and optional public input or provider binding."""
 
     path: tuple[str, ...] = dataclass_field(repr=False)
     owner: str
     input: str | None = None
+    provider: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +128,24 @@ class Resource:
             raise ManifestError("resource has no baseline", code="resource_baseline")
         return self.baseline
 
+    @property
+    def provider_fields(self) -> tuple[str, ...]:
+        """Return the sorted aliases of this resource's provider-owned fields."""
+
+        return tuple(
+            sorted(
+                alias
+                for alias, binding in self.fields.items()
+                if binding.owner == "provider"
+            )
+        )
+
+    @property
+    def provider_paths(self) -> tuple[tuple[str, ...], ...]:
+        """Return the literal document paths of the provider-owned fields."""
+
+        return tuple(self.fields[alias].path for alias in self.provider_fields)
+
 
 @dataclass(frozen=True, slots=True)
 class _DirectorySource:
@@ -147,6 +168,7 @@ class Manifest:
     roots: Roots = dataclass_field(repr=False)
     resources: tuple[Resource, ...]
     inputs: Mapping[str, InputBinding] = dataclass_field(repr=False)
+    providers: Mapping[str, ProviderReference] = dataclass_field(repr=False)
     packages: tuple[str, ...]
     excluded: tuple[str, ...]
     content_digest: str = dataclass_field(repr=False)
@@ -202,6 +224,7 @@ def _manifest_storage_identity(manifest: Manifest) -> tuple[object, ...]:
         resource_storage,
         id(manifest.inputs),
         input_storage,
+        id(manifest.providers),
         root_storage,
         id(manifest.packages),
         id(manifest.excluded),
@@ -301,6 +324,7 @@ def load_manifest(path: Path, *, profile: str) -> Manifest:
             "profiles",
             "packages",
             "inputs",
+            "providers",
             "resources",
             "defaults",
         },
@@ -311,7 +335,8 @@ def load_manifest(path: Path, *, profile: str) -> Manifest:
     profiles = _parse_profiles(document["profiles"])
     packages = _parse_packages(document["packages"])
     defaults = _parse_defaults(document.get("defaults", {}))
-    declarations = _parse_resources(document["resources"], defaults)
+    providers = _parse_providers(document.get("providers", {}))
+    declarations = _parse_resources(document["resources"], defaults, providers)
     inputs = _parse_inputs(document.get("inputs", {}), roots=roots)
     _validate_package_references(packages, declarations, inputs)
 
@@ -471,6 +496,7 @@ def load_manifest(path: Path, *, profile: str) -> Manifest:
         roots=roots,
         resources=resource_tuple,
         inputs=selected_inputs,
+        providers=providers,
         packages=ordered_packages,
         excluded=excluded_packages,
         content_digest=content_digest,
@@ -488,6 +514,7 @@ def load_manifest(path: Path, *, profile: str) -> Manifest:
         roots=manifest_without_signature.roots,
         resources=manifest_without_signature.resources,
         inputs=manifest_without_signature.inputs,
+        providers=manifest_without_signature.providers,
         packages=manifest_without_signature.packages,
         excluded=manifest_without_signature.excluded,
         content_digest=manifest_without_signature.content_digest,
@@ -909,8 +936,46 @@ def _infer_format(source_name: str) -> str | None:
     return _FORMAT_SUFFIXES.get(PurePosixPath(name).suffix.lower())
 
 
+def _parse_providers(raw: object) -> Mapping[str, ProviderReference]:
+    table = _require_named_table(raw, "providers", code="providers")
+    providers: dict[str, ProviderReference] = {}
+    for name, value in table.items():
+        provider_table = _require_table(value, "provider", code="providers")
+        _require_exact_keys(
+            provider_table,
+            required={"type", "item"},
+            allowed={"type", "item", "field", "profile"},
+            code="providers",
+        )
+        if provider_table["type"] not in _PROVIDER_TYPES:
+            raise ManifestError("provider type must be rbw", code="provider_type")
+        item = provider_table["item"]
+        field_name = provider_table.get("field")
+        profile_name = provider_table.get("profile")
+        if not isinstance(item, str) or not valid_argv_text(item):
+            raise ManifestError(
+                "provider item, field, and profile must be safe argument text",
+                code="provider_value",
+            )
+        for argument in (field_name, profile_name):
+            if argument is not None and (
+                not isinstance(argument, str) or not valid_argv_text(argument)
+            ):
+                raise ManifestError(
+                    "provider item, field, and profile must be safe argument text",
+                    code="provider_value",
+                )
+        providers[name] = ProviderReference(
+            name=name,
+            item=item,
+            field=field_name if isinstance(field_name, str) else None,
+            profile=profile_name if isinstance(profile_name, str) else None,
+        )
+    return MappingProxyType(providers)
+
+
 def _parse_resources(
-    raw: object, defaults: _Defaults
+    raw: object, defaults: _Defaults, providers: Mapping[str, ProviderReference]
 ) -> Mapping[str, _ResourceDeclaration]:
     table = _require_named_table(raw, "resources", code="resources")
     declarations: dict[str, _ResourceDeclaration] = {}
@@ -960,7 +1025,7 @@ def _parse_resources(
                 raise ManifestError(
                     "templates are written, not deployed", code="resource_deploy"
                 )
-            fields = _parse_field_bindings(resource["fields"], public_names)
+            fields = _parse_field_bindings(resource["fields"], public_names, providers)
         undeclared = resource.get("undeclared", "block")
         if not isinstance(undeclared, str) or undeclared not in {"block", "preserve"}:
             raise ManifestError(
@@ -986,6 +1051,18 @@ def _parse_resources(
             raise ManifestError(
                 "directory recursive must be a boolean", code="directory_schema"
             )
+        mode = (
+            _parse_mode(resource["mode"], code="resource_mode")
+            if "mode" in resource
+            else None
+        )
+        if any(binding.owner == "provider" for binding in fields.values()) and (
+            mode is None or mode & 0o077
+        ):
+            raise ManifestError(
+                "a resource with a provider field requires a private file mode",
+                code="resource_mode",
+            )
         declarations[name] = _ResourceDeclaration(
             name=name,
             kind="structured" if structured else "entry",
@@ -1000,11 +1077,7 @@ def _parse_resources(
             parent_mode=_parse_mode(
                 resource.get("parent_mode", defaults.parent_mode), code="resource_mode"
             ),
-            mode=(
-                _parse_mode(resource["mode"], code="resource_mode")
-                if "mode" in resource
-                else None
-            ),
+            mode=mode,
             kind_hint=kind_hint,
             deploy=deploy,
             format=format_name,
@@ -1020,7 +1093,7 @@ def _parse_resources(
 
 
 def _parse_field_bindings(
-    raw: object, public: frozenset[str]
+    raw: object, public: frozenset[str], providers: Mapping[str, ProviderReference]
 ) -> Mapping[str, FieldBinding]:
     table = _require_named_table(raw, "fields", code="fields")
     if not table:
@@ -1031,13 +1104,18 @@ def _parse_field_bindings(
         _require_exact_keys(
             field_table,
             required={"path", "owner"},
-            allowed={"path", "owner", "input"},
+            allowed={"path", "owner", "input", "provider"},
             code="fields",
         )
         owner = field_table["owner"]
         if not isinstance(owner, str) or owner not in _FIELD_OWNERS:
             raise ManifestError("field owner is unsupported", code="field_owner")
-        path = _leaf_path(field_table["path"], code="field_path", public=public)
+        path = _leaf_path(
+            field_table["path"],
+            code="field_path",
+            public=public,
+            allow_sensitive=owner == "provider",
+        )
         input_name = field_table.get("input")
         if input_name is not None and (
             not isinstance(input_name, str) or not _valid_name(input_name)
@@ -1049,11 +1127,35 @@ def _parse_field_bindings(
             raise ManifestError(
                 "live and merge fields require an input binding", code="field_input"
             )
-        if owner == "ignore" and input_name is not None:
+        if owner in {"ignore", "provider"} and input_name is not None:
             raise ManifestError(
-                "ignored fields cannot use input bindings", code="field_input"
+                "ignored and provider fields cannot use input bindings",
+                code="field_input",
             )
-        fields[alias] = FieldBinding(path=path, owner=owner, input=input_name)
+        provider_name = field_table.get("provider")
+        if provider_name is not None and (
+            not isinstance(provider_name, str) or not _valid_name(provider_name)
+        ):
+            raise ManifestError(
+                "field provider binding name is invalid", code="field_provider"
+            )
+        if owner == "provider":
+            if provider_name is None:
+                raise ManifestError(
+                    "provider fields require a provider binding",
+                    code="field_provider",
+                )
+            if provider_name not in providers:
+                raise ManifestError(
+                    "field provider binding is not declared", code="field_provider"
+                )
+        elif provider_name is not None:
+            raise ManifestError(
+                "only provider-owned fields name a provider", code="field_provider"
+            )
+        fields[alias] = FieldBinding(
+            path=path, owner=owner, input=input_name, provider=provider_name
+        )
     field_values = tuple(fields.values())
     for index, current in enumerate(field_values):
         if any(
@@ -1668,7 +1770,11 @@ def _format(value: object) -> str:
 
 
 def _leaf_path(
-    value: object, *, code: str, public: frozenset[str] = frozenset()
+    value: object,
+    *,
+    code: str,
+    public: frozenset[str] = frozenset(),
+    allow_sensitive: bool = False,
 ) -> tuple[str, ...]:
     if not isinstance(value, list) or not value or len(value) > _MAX_PATH_SEGMENTS:
         raise ManifestError(
@@ -1680,7 +1786,7 @@ def _leaf_path(
             not isinstance(part, str)
             or not part
             or _has_control_chars(part)
-            or is_sensitive_name(part, public=public)
+            or (not allow_sensitive and is_sensitive_name(part, public=public))
         ):
             raise ManifestError(
                 "field paths must contain only non-empty public keys", code=code
@@ -1939,7 +2045,7 @@ def _manifest_signature(manifest: Manifest) -> str:
             str(resource.target),
             resource.format,
             tuple(
-                (alias, binding.path, binding.owner, binding.input)
+                (alias, binding.path, binding.owner, binding.input, binding.provider)
                 for alias, binding in sorted(resource.fields.items())
             ),
             str(resource.baseline),
@@ -1978,12 +2084,17 @@ def _manifest_signature(manifest: Manifest) -> str:
         (source.name, source.relative.as_posix(), source.exclude, source.recursive)
         for source in manifest._directory_sources
     )
+    providers = tuple(
+        (name, provider.item, provider.field, provider.profile)
+        for name, provider in sorted(manifest.providers.items())
+    )
     payload = (
         str(manifest.path),
         manifest.profile,
         roots,
         resources,
         inputs,
+        providers,
         directory_sources,
         manifest.packages,
         manifest.excluded,

@@ -15,6 +15,7 @@ from unittest.mock import patch
 from luwu.baseline import (
     BaselineError,
     _parse_schema2_json,
+    baseline_field_names,
     load_baseline,
     make_copy_baseline,
     make_field_baseline,
@@ -401,3 +402,192 @@ parent_mode = "0700"
     @staticmethod
     def _json_bytes(value: object) -> bytes:
         return (json.dumps(value, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+class ProviderFieldBaselineTests(unittest.TestCase):
+    """Provider-owned fields never persist values but stay in the identity."""
+
+    SENTINEL = "PROVIDER-SENTINEL-7f3a9c"
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="luwu-test-provider-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.source = self.root / "source"
+        self.inputs = self.root / "inputs"
+        self.home = self.root / "home"
+        for path in (
+            self.source / "templates",
+            self.inputs / "global",
+            self.inputs / "baselines",
+            self.home,
+        ):
+            path.mkdir(parents=True, exist_ok=True)
+        (self.source / "templates" / "settings.json.j2").write_text(
+            "{}\n", encoding="utf-8"
+        )
+        self.manifest_path = self.root / "luwu.toml"
+
+    @property
+    def baseline_path(self) -> Path:
+        return self.inputs / "baselines" / "settings.json"
+
+    def _manifest_text(self, key_binding: str, *, providers: str = "") -> str:
+        return (
+            """
+version = 8
+
+[roots]
+source = "source"
+inputs = "inputs"
+target = "home"
+
+[profiles.work]
+packages = ["editor"]
+exclude = []
+
+[packages.editor]
+dependencies = []
+resources = ["settings"]
+
+[inputs.brand]
+layers = [
+  { file = "global/settings.json", path = ["brand"], format = "json" },
+]
+
+"""
+            + providers
+            + """
+[resources.settings]
+source = "templates/settings.json.j2"
+target = ".config/app/settings.json"
+format = "json"
+baseline = "baselines/settings.json"
+parents = "create"
+parent_mode = "0700"
+mode = 0o600
+
+[resources.settings.fields.brand]
+path = ["settings", "brand"]
+owner = "source"
+input = "brand"
+
+[resources.settings.fields.key]
+path = ["settings", "key"]
+"""
+            + key_binding
+        )
+
+    def _provider_manifest(self):
+        self.manifest_path.write_text(
+            self._manifest_text(
+                'owner = "provider"\nprovider = "openai"\n',
+                providers='[providers.openai]\ntype = "rbw"\nitem = "openai"\n',
+            ),
+            encoding="utf-8",
+        )
+        return load_manifest(self.manifest_path, profile="work")
+
+    def test_field_baseline_excludes_provider_values(self) -> None:
+        manifest = self._provider_manifest()
+        resource = manifest.resources[0]
+        self.assertEqual(resource.provider_fields, ("key",))
+        self.assertEqual(baseline_field_names(resource), ("brand",))
+
+        data = make_field_baseline(
+            manifest,
+            resource,
+            current={"brand": "brand-value", "key": self.SENTINEL},
+            selected_fields=("brand",),
+            existing=None,
+        )
+        self.assertNotIn(self.SENTINEL.encode(), data)
+        envelope = json.loads(data)
+        self.assertEqual(envelope["values"], {"brand": "brand-value"})
+        mapping = envelope["identity"]["mapping"]
+        self.assertEqual(
+            mapping["key"],
+            {
+                "path": ["settings", "key"],
+                "owner": "provider",
+                "input": None,
+                "provider": "openai",
+            },
+        )
+        self.assertNotIn("provider", mapping["brand"])
+
+        self.baseline_path.write_bytes(data)
+        _, baseline = load_baseline(manifest, resource)
+        self.assertIsNotNone(baseline)
+        assert baseline is not None
+        self.assertEqual(dict(baseline.values), {"brand": "brand-value"})
+
+    def test_provider_field_is_not_selectable_for_a_baseline(self) -> None:
+        manifest = self._provider_manifest()
+        resource = manifest.resources[0]
+        with self.assertRaises(BaselineError) as raised:
+            make_field_baseline(
+                manifest,
+                resource,
+                current={"key": self.SENTINEL},
+                selected_fields=("key",),
+                existing=None,
+            )
+        self.assertEqual(raised.exception.code, "field_invalid")
+        self.assertNotIn(self.SENTINEL, str(raised.exception))
+
+    def test_stored_provider_value_fails_closed(self) -> None:
+        manifest = self._provider_manifest()
+        resource = manifest.resources[0]
+        valid = make_field_baseline(
+            manifest,
+            resource,
+            current={"brand": "brand-value"},
+            selected_fields=("brand",),
+            existing=None,
+        )
+        envelope = json.loads(valid)
+        envelope["values"]["key"] = self.SENTINEL
+        self.baseline_path.write_bytes(
+            (json.dumps(envelope, separators=(",", ":")) + "\n").encode("utf-8")
+        )
+        with self.assertRaises(BaselineError) as raised:
+            load_baseline(manifest, resource)
+        error = raised.exception
+        self.assertEqual(error.code, "baseline_invalid")
+        rendered = "".join(traceback.format_exception(error))
+        self.assertNotIn(self.SENTINEL, str(error))
+        self.assertNotIn(self.SENTINEL, repr(error))
+        self.assertNotIn(self.SENTINEL, rendered)
+
+    def test_identity_binds_owner_and_provider_name(self) -> None:
+        self.manifest_path.write_text(
+            self._manifest_text('owner = "source"\ninput = "brand"\n'),
+            encoding="utf-8",
+        )
+        source_manifest = load_manifest(self.manifest_path, profile="work")
+        data = make_field_baseline(
+            source_manifest,
+            source_manifest.resources[0],
+            current={"brand": "brand-value", "key": "plain-value"},
+            selected_fields=("brand", "key"),
+            existing=None,
+        )
+        self.baseline_path.write_bytes(data)
+
+        provider_manifest = self._provider_manifest()
+        with self.assertRaises(BaselineError) as raised:
+            load_baseline(provider_manifest, provider_manifest.resources[0])
+        self.assertEqual(raised.exception.code, "baseline_stale")
+
+        self.manifest_path.write_text(
+            self._manifest_text(
+                'owner = "provider"\nprovider = "other"\n',
+                providers='[providers.other]\ntype = "rbw"\nitem = "openai"\n',
+            ),
+            encoding="utf-8",
+        )
+        renamed = load_manifest(self.manifest_path, profile="work")
+        with self.assertRaises(BaselineError) as raised:
+            load_baseline(renamed, renamed.resources[0])
+        self.assertEqual(raised.exception.code, "baseline_stale")

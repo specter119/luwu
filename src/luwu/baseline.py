@@ -119,6 +119,23 @@ def load_baseline(
     )
 
 
+# Owners whose values are never persisted: an ignored value is unmanaged and a
+# provider value is fetched at runtime, so neither leaves a persistent trace.
+NON_PERSISTED_OWNERS = frozenset({"ignore", "provider"})
+
+
+def baseline_field_names(resource: Resource) -> tuple[str, ...]:
+    """Return the declared fields whose values a baseline may persist."""
+
+    return tuple(
+        sorted(
+            name
+            for name, binding in resource.fields.items()
+            if binding.owner not in NON_PERSISTED_OWNERS
+        )
+    )
+
+
 def make_field_baseline(
     manifest: Manifest,
     resource: Resource,
@@ -129,13 +146,12 @@ def make_field_baseline(
 ) -> bytes:
     """Accept selected declared fields while preserving other accepted values."""
 
-    fields = resource.fields
     if not selected_fields or len(set(selected_fields)) != len(selected_fields):
         raise BaselineError("baseline field selection is invalid", code="field_invalid")
+    selectable = frozenset(baseline_field_names(resource))
     values = {} if existing is None else dict(existing.values)
     for name in selected_fields:
-        binding = fields.get(name)
-        if binding is None or binding.owner == "ignore":
+        if name not in selectable:
             raise BaselineError(
                 "baseline field is not selectable", code="field_invalid"
             )
@@ -219,6 +235,7 @@ def baseline_identity(manifest: Manifest, resource: Resource) -> dict[str, objec
             "path": list(binding.path),
             "owner": binding.owner,
             "input": binding.input,
+            **({"provider": binding.provider} if binding.provider is not None else {}),
         }
         for name, binding in sorted(bindings.items())
     }
@@ -310,9 +327,7 @@ def _validate_baseline_data(
             raise BaselineError("baseline values are invalid", code="baseline_invalid")
         return {}, digest, whole_file_mode
 
-    allowed = {
-        name for name, binding in resource.fields.items() if binding.owner != "ignore"
-    }
+    allowed = set(baseline_field_names(resource))
     if set(values) - allowed or any(
         not is_public_scalar(value) for value in values.values()
     ):

@@ -314,8 +314,8 @@ state = {"mutated": False}
 original_build_plan = engine.build_mutation_plan
 engine._ENTRY_WINDOW_SECONDS = -1.0
 
-def build_plan_then_change_noop(manifest):
-    plan = original_build_plan(manifest)
+def build_plan_then_change_noop(manifest, **kwargs):
+    plan = original_build_plan(manifest, **kwargs)
     if not state["mutated"]:
         noop_target.write_bytes(replacement)
         state["mutated"] = True
