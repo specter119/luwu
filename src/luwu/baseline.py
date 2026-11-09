@@ -15,6 +15,7 @@ from .errors import LuwuError, MutationError
 from .filesystem import DirectoryBoundary, FileObservation, observe_file, write_file
 from .formats import MISSING, semantic_equal
 from .manifest import InputBinding, InputLayer, Manifest, Resource
+from .ownership import NON_PERSISTED_OWNERS
 from .semantic import is_public_scalar, parse_strict_json
 
 
@@ -119,6 +120,18 @@ def load_baseline(
     )
 
 
+def baseline_field_names(resource: Resource) -> tuple[str, ...]:
+    """Return the declared fields whose values a baseline may persist."""
+
+    return tuple(
+        sorted(
+            name
+            for name, binding in resource.fields.items()
+            if binding.owner not in NON_PERSISTED_OWNERS
+        )
+    )
+
+
 def make_field_baseline(
     manifest: Manifest,
     resource: Resource,
@@ -129,13 +142,12 @@ def make_field_baseline(
 ) -> bytes:
     """Accept selected declared fields while preserving other accepted values."""
 
-    fields = resource.fields
     if not selected_fields or len(set(selected_fields)) != len(selected_fields):
         raise BaselineError("baseline field selection is invalid", code="field_invalid")
+    selectable = frozenset(baseline_field_names(resource))
     values = {} if existing is None else dict(existing.values)
     for name in selected_fields:
-        binding = fields.get(name)
-        if binding is None or binding.owner == "ignore":
+        if name not in selectable:
             raise BaselineError(
                 "baseline field is not selectable", code="field_invalid"
             )
@@ -214,6 +226,8 @@ def baseline_identity(manifest: Manifest, resource: Resource) -> dict[str, objec
         name: _binding_identity(manifest.inputs[name], manifest.roots.inputs.path)
         for name in input_names
     }
+    # The provider binding name is not part of the identity: renaming one
+    # provider declaration for the same item and field keeps the baseline.
     mapping = {
         name: {
             "path": list(binding.path),
@@ -310,9 +324,7 @@ def _validate_baseline_data(
             raise BaselineError("baseline values are invalid", code="baseline_invalid")
         return {}, digest, whole_file_mode
 
-    allowed = {
-        name for name, binding in resource.fields.items() if binding.owner != "ignore"
-    }
+    allowed = set(baseline_field_names(resource))
     if set(values) - allowed or any(
         not is_public_scalar(value) for value in values.values()
     ):

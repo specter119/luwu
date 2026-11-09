@@ -47,6 +47,10 @@ token with `json.loads`, and the manifest loader parses its own TOML with
   name looks secret-bearing. The manifest, input layers, and document formats
   all call it. An exact-name `public_names` set flows from the resource or
   input declaration into the predicate, so the default stays fail-closed.
+- `luwu/providers.py` is the only place that starts a subprocess, and the
+  only place besides `filesystem.py` that reads a descriptor (its bounded pipe
+  read). `tests/tooling/test_primitive_ownership.py` guards `subprocess.Popen`
+  and `subprocess.run` the same way as the filesystem calls.
 - `luwu/semantic.py` holds strict JSON parsing (`parse_strict_json`), the
   public scalar boundary (`is_public_scalar`), and value equality. Baselines,
   input layers, and ownership use them.
@@ -186,6 +190,30 @@ modules carry the mechanism:
   actions. Current acceptance evidence and remaining scope limits are tracked in
   [status](status.md).
 
+**Provider values.** `luwu/providers.py` resolves the references of the selected
+resources into a `ProviderResolution`: one sealed value or one fixed failure
+code per provider, and no exception for a provider failure. The engine calls it
+once while a plan is built (`_resolve_provider_state`) and keeps the result in
+the in-process plan record, so the freshness check, the entry-plan reuse, and
+the final observation reuse it and never contact the provider again. A
+non-fetching build leaves the record's provider state `None`; a plan in that
+state observes provider fields as unchanged and `apply_plan` refuses it, so
+the commands that must not contact a provider (accept, adopt, reverse-sync)
+cannot write a target. Observation then renders the template without the
+secret, patches each provider value into the rendered document at its declared
+path with `patch_document`, and classifies the field with `provider` ownership.
+Because the patched document is the desired document, a first creation, a
+rotation, and a mode-only repair all use the ordinary write path, with one
+difference: a resource with a provider field stages through an unnamed
+`O_TMPFILE` file and publishes it with `linkat` through `/proc/self/fd` and an
+immediate rename, so a
+kill while the bytes are written leaves no entry, and a filesystem without
+`O_TMPFILE` refuses the write instead of falling back to a named file. The plan
+evidence binds the provider-bearing bytes in memory like any other resource's;
+it is never serialized, and the sealed value and the resolution keep it out of
+`repr`. `luwu/baseline.py` names the owners whose values are never persisted
+once (`NON_PERSISTED_OWNERS`) and derives the baseline field list from it.
+
 Smaller modules keep their responsibilities narrow: `luwu/rendering.py` renders
 only declared sources with a sandboxed Jinja environment, strict undefined
 variables, no loader, and no external capability; `luwu/ownership.py` and
@@ -252,6 +280,32 @@ owner decision and evidence, not a convenience argument.
   the write is declared at invocation. A baseline digest of the undeclared
   projection would remove the direction ambiguity and stays an option if
   trials show the claim is too easy to get wrong.
+- Whole-file secret text through a template namespace (the earlier version 6
+  `secrets` namespace). Without a persisted digest, Luwu cannot tell a rotated
+  secret from a manual edit, so every rotation would need an adopt or the
+  apply would overwrite; a digest or keyed hash of secret bytes would be
+  guessable offline or need a persisted key. Provider fields keep the secret out
+  of the template engine and give it one legitimate value, so forwarding it is
+  not a force rule. A format that is not structured, such as `.netrc`, waits
+  for a format parser or a separate secret-text resource.
+- Writing a value back to a provider. Provider fields are read-only inputs;
+  a value that changes often and is not secret belongs in a local input and
+  reaches the source through ordinary reverse sync.
+- A multi-vault `profile` option for rbw. Nothing in the accepted behavior
+  needs a second vault, and it multiplied the socket path, the environment,
+  and the call grouping. Reopening it needs a real two-vault user.
+- A named staging file in a cache or runtime directory to keep a SIGKILL
+  residue out of the target tree. A rename across filesystems is not atomic,
+  so the staging file has to sit beside the target; an unnamed file gives the
+  same absence of residue without that cost.
+- A provider cache, a provider registry, and a provider-diagnostic command. The
+  earlier cache never took part in a decision and carried a second copy of the
+  atomic write.
+- Masking provider-bearing bytes out of the plan evidence. The evidence lives
+  only in memory with every other value that holds the secret, and masking
+  would stop it from binding the bytes that apply writes.
+- `rbw get --field`. Its custom-field match is a substring match that takes the
+  first hit, so Luwu reads the item as JSON and matches the name exactly.
 - Keeping retired manifest versions alive beside the current one. Three
   engines with separate copies of the filesystem, baseline, and format
   primitives let the copies drift; the older versions were retired instead.
@@ -262,7 +316,7 @@ The counterexample probe for the current boundaries is
 ## Deliberate limits
 
 The current implementation does not provide automatic replay, rollback,
-providers or secret handling, exact reviewed-plan tokens, or strong
+secrets outside provider-owned structured fields, exact reviewed-plan tokens, or strong
 consistency against writers that ignore Luwu's advisory locks. These limits
 are current status and contract facts, not invitations to silently broaden
 this design. Future changes need a new owner decision, evidence, and updated

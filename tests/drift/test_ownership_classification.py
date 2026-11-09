@@ -156,6 +156,125 @@ class OwnershipTests(unittest.TestCase):
             self.assertNotIn("unknown", str(raised.exception))
             self.assertNotIn("other", str(raised.exception))
 
+    def test_provider_field_compares_desired_with_live_without_a_baseline_side(
+        self,
+    ) -> None:
+        owners = {"key": "provider", "theme": "source"}
+        for desired, live, status, decision, reason in (
+            (
+                b'{"key":"vault-value","theme":1}',
+                b'{"key":"vault-value","theme":1}',
+                "unchanged",
+                "none",
+                "live matches provider value",
+            ),
+            (
+                b'{"key":"vault-value","theme":1}',
+                b'{"key":"stale","theme":1}',
+                "source_changed",
+                "forward_candidate",
+                "provider value differs from live",
+            ),
+            (
+                b'{"key":"vault-value","theme":1}',
+                b'{"theme":1}',
+                "source_changed",
+                "forward_candidate",
+                "provider value differs from live",
+            ),
+        ):
+            with self.subTest(live=live):
+                result = classify_fields(
+                    desired,
+                    live,
+                    fields=owners,
+                    baseline=_baseline({"theme": 1}, owners),
+                    resource_name="resource",
+                    source_name="source",
+                    target_name="target",
+                )
+                by_name = {field.name: field for field in result.fields}
+                field = by_name["key"]
+                self.assertEqual(
+                    (field.status, field.decision, field.reason),
+                    (status, decision, reason),
+                )
+                self.assertEqual(by_name["theme"].status, "unchanged")
+
+    def test_provider_field_is_never_reverse_candidate_or_conflict(self) -> None:
+        owners = {"key": "provider"}
+        for desired, live in (
+            (b'{"key":"vault-value"}', b'{"key":"other"}'),
+            (b'{"key":"vault-value"}', b"{}"),
+            (b"{}", b'{"key":"other"}'),
+        ):
+            with self.subTest(desired=desired, live=live):
+                for baseline in (None, _baseline({}, owners)):
+                    result = classify_fields(
+                        desired,
+                        live,
+                        fields=owners,
+                        baseline=baseline,
+                        resource_name="resource",
+                        source_name="source",
+                        target_name="target",
+                    )
+                    field = result.fields[0]
+                    self.assertNotEqual(field.status, "unbased")
+                    self.assertNotIn(field.decision, {"reverse_candidate", "review"})
+                    self.assertNotEqual(field.status, "conflict")
+
+    def test_provider_field_without_baseline_is_not_unbased(self) -> None:
+        result = classify_fields(
+            b'{"key":"vault-value","theme":1}',
+            b'{"key":"vault-value","theme":1}',
+            fields={"key": "provider", "theme": "source"},
+            baseline=None,
+            resource_name="resource",
+            source_name="source",
+            target_name="target",
+        )
+        by_name = {field.name: field for field in result.fields}
+        self.assertEqual(by_name["key"].status, "unchanged")
+        self.assertEqual(by_name["theme"].status, "unbased")
+
+    def test_provider_baseline_keeps_owners_but_rejects_provider_values(self) -> None:
+        owners = {"key": "provider", "theme": "source"}
+        result = classify_fields(
+            b'{"key":"vault-value","theme":1}',
+            b'{"key":"vault-value","theme":1}',
+            fields=owners,
+            baseline=_baseline({"theme": 1}, owners),
+            resource_name="resource",
+            source_name="source",
+            target_name="target",
+        )
+        self.assertEqual(result.baseline_status, "provided")
+
+        with self.assertRaises(LuwuError) as raised:
+            classify_fields(
+                b'{"key":"vault-value","theme":1}',
+                b'{"key":"vault-value","theme":1}',
+                fields=owners,
+                baseline=_baseline({"theme": 1, "key": "vault-value"}, owners),
+                resource_name="resource",
+                source_name="source",
+                target_name="target",
+            )
+        self.assertEqual(raised.exception.code, "ownership_invalid_input")
+        self.assertNotIn("vault-value", str(raised.exception))
+
+        with self.assertRaises(LuwuError):
+            classify_fields(
+                b'{"key":"vault-value","theme":1}',
+                b'{"key":"vault-value","theme":1}',
+                fields=owners,
+                baseline=_baseline({"theme": 1}, {"theme": "source"}),
+                resource_name="resource",
+                source_name="source",
+                target_name="target",
+            )
+
     def test_rejects_non_object_or_non_strict_json_without_echoing_content(
         self,
     ) -> None:

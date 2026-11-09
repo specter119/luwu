@@ -3,9 +3,10 @@
 Status: the single manifest contract (version 8) is implemented and technically
 verified in isolated, synthetic environments. Manifest versions 1 through 7
 were retired and are no longer loadable. Droid workspace trust is not
-supported by decision. Real-application and real-target use is unverified. The
-daily-loop fixes and the text-template and symlink resources are implemented
-but have not yet had a real trial (below).
+supported by decision. Real-application and real-target use is verified only
+by the maintainer's accepted migration trial (see the
+[roadmap](roadmap.md#m7a-daily-loop-usability)); the application runtime has
+not loaded any synthetic fixture.
 
 This document owns the current implementation snapshot. It does not define
 product direction, public command or manifest behavior, internal mechanisms,
@@ -26,24 +27,23 @@ for those subjects.
 | Layered public inputs        | Implemented             | Public scalar values only                                                                          |
 | Observation                  | Implemented             | An unsafe live path blocks that resource; the other resources are still observed                   |
 | Ownership and baselines      | Implemented             | Undeclared content is never adopted implicitly                                                     |
-| Accept, adopt, reverse sync  | Implemented             | One resource per command; a changed declaration needs an explicit re-accept                        |
+| Accept, adopt, reverse sync  | Implemented             | Accept and reverse sync take one resource, adopt a batch; a changed declaration needs re-accept    |
 | Undeclared write-back        | Implemented             | Literal template subtrees only; every other case is refused                                        |
 | Profile-wide apply           | Implemented             | Review resources are skipped and the outcome is `partial`; batch-level blockers stop the batch     |
 | Batch performance            | Implemented             | Budgets are in [maintenance](maintenance.md#performance-acceptance); rerun them on the target host |
-| Providers and secrets        | Not implemented         | Retired with version 6; planned in the [roadmap](roadmap.md)                                       |
+| Provider-owned fields        | Implemented             | rbw only, scalar fields of structured templates; real rbw walk accepted by the maintainer          |
 | Droid workspace trust        | Unsupported by decision | No stable public file schema is known                                                              |
 
 The exact fields, states, error codes, output projections, compatibility
 behavior, and unsupported cases are owned only by [reference](reference.md).
 The rows above are status claims, not a second contract.
 
-## Daily-loop changes awaiting a real trial
+## Daily-loop changes
 
 These changes closed the gaps that adversarial review found against the
 synthetic fixtures. They are implemented and covered by the tests and
-ablations, but the [roadmap](roadmap.md#m7a-daily-loop-usability) keeps M7a
-open until a trial on real public application files. Treat them as unproven on
-a real profile.
+ablations, and the [roadmap](roadmap.md#m7a-daily-loop-usability) records the
+trial that closed M7a. A later finding reopens the affected item.
 
 - A confirmed apply advances the baseline of the resources it wrote.
 - Apply skips a resource that needs review and writes the others.
@@ -66,6 +66,54 @@ Known limits found by review and left open:
   longer compares the rendered desired bytes of later actions; the source,
   input, and target observations still catch changes.
 
+## Provider fields and real rbw acceptance
+
+Provider-owned fields are implemented and covered by fake-rbw fault tests,
+confidentiality scans of every command output and of the whole temporary tree,
+and ablation probes. The maintainer ran the manual exercise
+`experiments/rbw_acceptance.py` ([maintenance](maintenance.md#real-rbw-acceptance))
+against rbw 1.15.0 and accepted the walk as passing, which closed M8 in the
+[roadmap](roadmap.md#m8-providers-and-mixed-inputs-on-version-8). The facts
+fall into three groups.
+
+Observed in the real run:
+
+- A locked agent makes `rbw unlocked` exit nonzero with `agent is locked` on
+  standard error, and Luwu reports `provider_locked`.
+- The agent socket is `<XDG_RUNTIME_DIR>/rbw/socket`, otherwise `$TMPDIR`
+  (default `/tmp`)`/rbw-<uid>/socket`, and `rbw stop-agent` leaves the socket
+  file behind, in which case Luwu reports `provider_command_failed` and no
+  agent is started.
+- `RBW_AGENT=/bin/false rbw unlocked` exits nonzero, so rbw does not start an
+  agent when the socket is stale.
+
+Accepted by the maintainer without a real run: the vault item named in the
+walk did not exist, so the walk never read an item. These two assumptions come
+from the rbw source and not from a run:
+
+- `rbw get --raw -- ITEM` accepts `--`, and the raw JSON carries
+  `data.password`, `data.username`, `notes`, and `fields[].name/value`.
+- A real provider value written by apply lands at the declared mode and stays
+  confined to that one file. The fake-rbw tests and scans prove this for
+  Luwu's own behavior.
+
+Not confirmed by the walk: whether `rbw get` on a
+locked agent starts an unlock or a pinentry by itself matters only if the agent
+locks between Luwu's `rbw unlocked` and `rbw get`, and the walk never reaches
+`get` while locked. The walk records the kernel's `core_pattern` and
+`suid_dumpable` but does not show that the core-dump hardening holds under a
+pipe `core_pattern`; that rests on the in-process hardening test.
+
+Known limits: a SIGKILL in the instant between naming the unnamed staging file
+and replacing the target leaves a private `.luwu-tmp-*` file with the secret
+that nothing sweeps; the mode-only repair of a wide existing mode runs only
+when the declared fields are otherwise unchanged, so a secret file keeps a wide
+mode while the resource is a reverse candidate, a conflict, unbased, awaiting
+adoption, or blocked by a provider failure, and the plan's effective mode shows
+it; `rbw get --raw` reads the whole item; and an executable under a
+group-writable ancestor such as `~/.local/bin` on a 002 umask is refused. The contract is in
+[reference](reference.md#provider-owned-fields).
+
 ## Verified scope and limits
 
 Verification is the test suite under `tests/` plus the ablations in
@@ -80,8 +128,8 @@ The implementation does not claim:
 - automatic replay, rollback, or recovery mutation;
 - exact reviewed-plan consent tokens;
 - strong consistency against writers that ignore Luwu's advisory locks;
-- providers, network access, or a broad platform matrix beyond the verified
-  contract;
+- a real vault, a network, or a broad platform matrix beyond the verified
+  contract (the provider path was walked against a real rbw only up to the locked and stopped-agent cases);
 - that any application read a synthetic fixture, or that any real target may be
   handed off. The per-target procedure is in
   [maintenance](maintenance.md#isolated-rehearsal-and-dotter-handoff) and the

@@ -2,8 +2,9 @@
 
 Status: M1-M5 are delivered. M6 and M7 are closed as technical deliveries on
 the single version 8 contract; their evidence comes from synthetic fixtures
-only. M7b is closed. M7a (daily-loop usability) is implemented and waits for a
-real trial, which gates real use. M8 and M9 are planned.
+only. M7a (daily-loop usability) and M7b are closed. M8 is closed on the maintainer's
+acceptance of a real rbw walk, with two assumptions it did not exercise
+recorded in status, and M9 is planned.
 
 This document owns delivery sequence, open exit conditions, and boundaries for
 work that is not finished. It does not define detailed contracts or the current
@@ -22,9 +23,9 @@ to an active milestone's scope should be explicit.
 | M1-M5     | Preview through batch performance       | Delivered; see the [changelog](changelog.md).                                                                     |
 | M6        | First bidirectional pilot               | Closed: the pilot contract was retired and its loop lives in version 8; the user trial moves to M7a.              |
 | M7        | Full dotfiles coverage                  | Closed: technical core delivered; Droid workspace trust is unsupported by decision.                               |
-| M7a       | Daily-loop usability                    | Implemented, pending real trial: the routine loop must work on a real profile without manual file surgery.        |
+| M7a       | Daily-loop usability                    | Closed: the routine loop ran on a real dotfiles repository; findings reopen the affected item.                    |
 | M7b       | Text templates and symlink resources    | Closed: whole-file text templates and symlink resources exist on the version 8 contract.                          |
-| M8        | Providers and mixed inputs on version 8 | Planned: public, local, and provider inputs work together without persistent secret intermediates.                |
+| M8        | Providers and mixed inputs on version 8 | Closed: provider fields work with public and local inputs, no secret files.                                       |
 | M9        | Real-project migration qualification    | Planned: a selected dotfiles profile has measured coverage, a tested handoff, and explicit residual dependencies. |
 
 The milestone identifiers do not allocate manifest versions. Before changing
@@ -70,24 +71,24 @@ fixtures, and adversarial review showed the daily loop breaks outside them.
 M7 is therefore a technical delivery, not a claim that a real profile works.
 M7a owns that gap.
 
-## M7a: Daily-loop usability (implemented, pending real trial)
+## M7a: Daily-loop usability (closed)
 
 Make the routine loop (edit the source or the application, review, apply)
 work on a real profile without deleting baselines or editing files by hand.
 The five gaps found by adversarial review each have an implementation (see
-[status](status.md#daily-loop-changes-awaiting-a-real-trial) and the
+[status](status.md#daily-loop-changes) and the
 [contract](reference.md#resources-and-declared-scope)): baseline advancement
 after apply, per-resource apply, preserving undeclared keys, an exact-name
 sensitive-name allowance, and an adopt preview that shows replaced live bytes.
 
-M7a stays open. It closes only on this exit: a trial on the user's real,
-public application files in an isolated profile, run on the installed
-artifact, covering a fresh deployment, a routine source change, a routine
-application change with reverse sync, and a conflict. Feedback is supplied as
-redacted metadata (setup friction, latency, clarity of ownership and conflict
-explanations, preservation of application changes, recovery, and missing
-high-value fields). Trial findings reopen the affected item. The setup
-commands are in the
+The maintainer accepted the migration of a real dotfiles repository onto
+version 8 (the daily-loop pull request and its sandbox rehearsal, with
+public values only) as the trial and closed M7a. The evidence is that pull
+request's description, not a committed report. It did not cover every scenario
+of the original exit (fresh deployment, routine source change, routine
+application change with reverse sync, and a conflict, each on the installed
+artifact), so a later finding on any of them reopens the affected item. The
+setup commands are in the
 [isolated profile fixture guide](../tests/fixtures/dotfiles_profile/README.md)
 and [maintenance](maintenance.md#isolated-rehearsal-and-dotter-handoff).
 
@@ -103,8 +104,6 @@ reflink deployment are rejected; see the
 
 ## M8: Providers and mixed inputs on version 8
 
-Provisional scope; implementation starts after M7a feedback.
-
 The earlier provider implementation (manifest version 6) was retired with its
 manifest version and is available only in git history. Rebuild the capability
 on version 8 instead of reviving a second manifest version. Connect public and
@@ -114,12 +113,31 @@ socket discovery, executable authority, and explicit failure behavior. Keep
 provider-owned fields out of baselines and reverse-sync destinations, and
 generate no secret-bearing public intermediate files.
 
-Exit: isolated fake-provider fault tests and a separately authorized real-rbw
-acceptance exercise cover locked or unavailable vaults, executable and
-environment changes, permissions, output confidentiality, and current-state
-recovery. Public local choices survive a provider-backed redeploy. If real
-integration is blocked, retain partial status; mock success cannot close this
-milestone. User-service reloads and other provisioning remain explicit external
+Scope decision: M8 supports provider-owned scalar fields of a structured
+template (JSON, JSONC, TOML) and one provider type, rbw. A provider value is
+written into the document after rendering and never passes through the
+template engine. Whole-file secret text (a rendered `.j2` carrying a secret) is
+deferred, so formats that are not structured, such as `.netrc` or a bare token
+file, cannot have a secret managed until a later scope decision adds a format
+parser or a separate secret-text resource. A persisted digest of secret bytes,
+a provider registry, and a provider cache are rejected; see the
+[design](design.md#rejected-alternatives). The contract is in
+[reference](reference.md#provider-owned-fields) and the current state in
+[status](status.md#provider-fields-and-real-rbw-acceptance).
+
+Exit: two parts with separate evidence. Isolated fake-rbw tests prove Luwu's
+own behavior: locked or unavailable vaults, executable and environment
+changes, permissions, output confidentiality, current-state recovery, and
+public local choices that survive a provider-backed redeploy. A separately
+authorized real-rbw run proves only what a fake cannot: that the installed rbw
+accepts the argument form, returns the JSON keys, reports a locked agent, and
+lays out its socket as the contract assumes, and that a stopped agent, with or
+without a socket file left behind, is not restarted. The fake-rbw tests, confidentiality scans, and the manual script
+`experiments/rbw_acceptance.py` exist. The maintainer ran the script against
+a real rbw and accepted the walk as passing, which closes the milestone.
+The walk did not reach a real item read, so two assumptions rest on the
+maintainer's acceptance and not on a recorded run; [status](status.md#provider-fields-and-real-rbw-acceptance)
+lists them. Mock success alone could not have closed this milestone. User-service reloads and other provisioning remain explicit external
 stages, not hooks hidden inside observation or apply.
 
 ## M9: Real-project migration qualification

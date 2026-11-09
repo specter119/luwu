@@ -281,17 +281,25 @@ class ProfileCliV8Tests(unittest.TestCase):
             "profile",
         )
 
-    def test_v8_rejects_provider_manifest_fields_and_hides_parse_details(self) -> None:
+    def test_v8_accepts_an_empty_providers_table_and_hides_parse_details(self) -> None:
         case = self._v8_case()
         case.manifest.write_text(
             V8_MANIFEST.replace("version = 8", "version = 8\nproviders = {}"),
             encoding="utf-8",
         )
+        accepted = case.cli("inspect", expected_code=0)
+        self.assertEqual(accepted["schema_version"], 8)
+
+        case.manifest.write_text(
+            V8_MANIFEST.replace("version = 8", 'version = 8\nproviders = "nope"'),
+            encoding="utf-8",
+        )
         provider_error = case.cli("inspect", expected_code=2)
         self.assertEqual(
             cast(dict[str, object], provider_error["error"])["code"],
-            "manifest_schema",
+            "providers",
         )
+        self.assertNotIn("nope", json.dumps(provider_error))
 
         parser_marker = "fixture-parser-detail-must-not-escape"
         case.manifest.write_text(

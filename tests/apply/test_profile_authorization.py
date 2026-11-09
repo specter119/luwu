@@ -351,6 +351,7 @@ parent_mode = "0700"
             expected: FileObservation,
             mode: int | None = None,
             check_inputs: _CheckInputs = None,
+            anonymous: bool = False,
         ) -> tuple[int, int]:
             identity = original_write(
                 root,
@@ -359,6 +360,7 @@ parent_mode = "0700"
                 expected=expected,
                 mode=mode,
                 check_inputs=check_inputs,
+                anonymous=anonymous,
             )
             if path == self.home / "a.txt":
                 target_b.write_text("external-b-v3\n", encoding="utf-8")
@@ -409,6 +411,7 @@ parent_mode = "0700"
             expected: FileObservation,
             mode: int | None = None,
             check_inputs: _CheckInputs = None,
+            anonymous: bool = False,
         ) -> tuple[int, int]:
             identity = original_write(
                 root,
@@ -417,6 +420,7 @@ parent_mode = "0700"
                 expected=expected,
                 mode=mode,
                 check_inputs=check_inputs,
+                anonymous=anonymous,
             )
             if path == self.home / "a.txt":
                 target_c.write_text("external-c-v3\n", encoding="utf-8")
@@ -466,6 +470,7 @@ parent_mode = "0700"
             expected: FileObservation,
             mode: int | None = None,
             check_inputs: _CheckInputs = None,
+            anonymous: bool = False,
         ) -> tuple[int, int]:
             identity = original_write(
                 root,
@@ -474,6 +479,7 @@ parent_mode = "0700"
                 expected=expected,
                 mode=mode,
                 check_inputs=check_inputs,
+                anonymous=anonymous,
             )
             noop_target.write_text("external-noop-v3\n", encoding="utf-8")
             return identity
@@ -544,6 +550,7 @@ parent_mode = "0700"
             expected: FileObservation,
             mode: int | None = None,
             check_inputs: _CheckInputs = None,
+            anonymous: bool = False,
         ) -> tuple[int, int]:
             nonlocal changed_future_plan
             identity = original_write(
@@ -553,6 +560,7 @@ parent_mode = "0700"
                 expected=expected,
                 mode=mode,
                 check_inputs=check_inputs,
+                anonymous=anonymous,
             )
             if path == first.path:
                 object.__setattr__(future_item, "write_data", b"FORGED_FUTURE_WRITE")
