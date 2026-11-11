@@ -110,6 +110,44 @@ match a later implementation; record the later fact in the current owner.
 If `docs/status.md` does not exist, do not infer that planned capabilities are
 implemented. Establish the status document when implementation starts.
 
+## Adversarial stance review
+
+Luwu's design tradeoffs are held as opposed **stances**: each is a
+first-principles objective that would, if fully pursued, harm another one. They
+are not checklists and cannot all be satisfied at once. The stance that owns a
+question, the oppositions that must be reviewed together, the decisions already
+taken, and the stakes nothing represents are all in
+[the stance registry](.agents/skills/luwu-stance-registry/SKILL.md). Read the
+registry before reviewing, and read the one stance you are assigned.
+
+Run a stance review when a change moves a documented tradeoff — a contract, a
+lookup or write boundary, a cost budget, an exposure surface, or a recovery
+path — and when the change was argued for rather than merely implemented. A
+routine fix that moves no tradeoff does not need one.
+
+The shape is three steps:
+
+1. Assign **one stance per reviewer**. Reviewers work independently and do not
+   read each other's output; a reviewer that has read its opponent anchors on it
+   and the disagreement collapses.
+2. Reconcile the findings. Agreement merges, independent findings stand, and a
+   finding that harms another stance is a **conflict**.
+3. Adjudicate in the orchestrator: look for a design that serves both stances
+   before accepting either. If no such design exists and the choice changes a
+   contract irreversibly, stop and put the tradeoff to the user rather than
+   picking a winner.
+
+Record the outcome in the registry: a buffer that both stances accept, a
+decision that sacrificed one stance, or an open conflict awaiting a decision. A
+losing stance is never deleted, and a conflict is never resolved by splitting
+the difference. When a review finds a design or contract that deviates from the
+intent an owner document states, add the pattern to the counterexample library
+so the next reviewer recognizes it.
+
+The working procedure belongs to the installed `hydra-*` skills. This section is
+only the entry point: it says that the practice exists, where the ledger lives,
+and what a reviewer must not do.
+
 ## Shared vocabulary
 
 Use the product vocabulary consistently: global and local inputs, provider,
