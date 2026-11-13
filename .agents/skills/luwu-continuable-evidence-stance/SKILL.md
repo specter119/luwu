@@ -11,7 +11,7 @@ description: >-
   of its own; those questions belong to the exposure and footprint stances.
 disable-model-invocation: true
 metadata:
-  stance-axis: exposure-vs-continuity+footprint-vs-recovery
+  stance-axis: exposure-vs-continuity, footprint-vs-recovery
   opposes: luwu-minimal-exposure-stance, luwu-minimal-footprint-stance
 ---
 
@@ -53,30 +53,30 @@ counts serves this stance; any other answer violates it.
 
 ## Accepts this harm
 
-- `luwu-minimal-exposure-stance` loses the undeclared-value barrier: this
+- **`luwu-minimal-exposure-stance` pays**: the undeclared-value barrier: this
   stance demands the plan record which undeclared keys differ and in which
   direction — the undeclared-projection baseline digest that
   docs/design.md#rejected-alternatives itself names — so a derivative of
   undeclared document content would persist where
   docs/reference.md#baselines-adoption-and-explicit-mutation forbids it
   ("stores only declared accepted public scalar values").
-- `luwu-minimal-exposure-stance` loses secret-material containment: a
+- **`luwu-minimal-exposure-stance` pays**: secret-material containment: a
   rotation-versus-edit discriminator for provider fields is a digest of
   secret bytes, rejected in docs/design.md#rejected-alternatives as
   "guessable offline or need[ing] a persisted key"; this stance still wants
   the question answered and will spend exposure surface to answer it.
-- `luwu-minimal-exposure-stance` loses error minimalism: carrying provider
+- **`luwu-minimal-exposure-stance` pays**: error minimalism: carrying provider
   failure detail (rbw's standard error, or a stale-socket discriminator)
   into results opens an output surface the fixed-code contract keeps closed
   (docs/reference.md#provider-owned-fields, "The child's standard error is
   discarded").
-- `luwu-minimal-footprint-stance` loses the no-durable-state rule: a
+- **`luwu-minimal-footprint-stance` pays**: the no-durable-state rule: a
   persisted reviewed-plan token and an execution journal are durable Luwu
   state beside the manifest, sources, inputs, and baselines, rejected in
   docs/design.md#rejected-alternatives ("a transaction engine, second
   ledger, durable execution journal, or automatic replay and rollback") and
   unclaimed in docs/status.md#verified-scope-and-limits.
-- `luwu-minimal-footprint-stance` loses kill-and-forget recovery: sweeping
+- **`luwu-minimal-footprint-stance` pays**: kill-and-forget recovery: sweeping
   `.luwu-tmp-*` residue means handling secret-bearing paths that no
   declared write currently binds, contradicting "a fresh plan is the
   recovery step" (docs/design.md#rejected-alternatives); the residue window
@@ -85,16 +85,16 @@ counts serves this stance; any other answer violates it.
 
 ## Attacks
 
-- Undeclared direction is operator folklore. The only source-root write,
-  `reverse-sync --undeclared PATH`, runs on a plan that keeps no record
+- Undeclared direction is operator folklore. The only source-root write, the
+  named undeclared reverse-sync mode, runs on a plan that keeps no record
   of undeclared values, so nothing in the preview or result says whether
   the live side or the source side changed; a later actor auditing the run
-  sees a `source_write` action and must trust the invocation's claim
+  sees a source-write action and must trust the invocation's claim
   (docs/reference.md#writing-undeclared-changes-back-to-a-template-source,
   "The plan cannot tell whether the application or the source changed an
   undeclared value"; docs/status.md#daily-loop-changes).
 - Rotation and hand edit produce the same result. A provider field that
-  differs from the provider value is `source_changed` whether the provider
+  differs from the provider value is classified as a source change whether the provider
   rotated (forward is safe) or a person edited the live file (forward may
   destroy work); the safe continuing action differs and the result does not
   (docs/reference.md#provider-owned-fields, "a hand edit of the live file
@@ -115,14 +115,14 @@ counts serves this stance; any other answer violates it.
   (docs/reference.md#provider-owned-fields, Limits;
   docs/status.md#provider-fields-and-real-rbw-acceptance;
   tests/interruption/test_provider_write_residue.py).
-- The reviewed plan is not the applied plan. The `apply` subparser accepts
+- The reviewed plan is not the applied plan. The mutation command accepts
   no plan artifact and re-plans on invocation (src/luwu/cli.py), the preview
   "is not a persisted plan token" (docs/reference.md#commands), and the
   plan evidence lives only in memory (src/luwu/plan_evidence.py), so across
   processes the operator's review is matched to nothing; a later actor
   cannot prove which reviewed bytes were written
   (docs/status.md#verified-scope-and-limits, consent tokens unclaimed).
-- One code covers every provider failure cause. `provider_command_failed`
+- One code covers every provider failure cause. The generic provider-failure code
   is emitted for a stale socket, a broken agent, and any other nonzero
   `rbw unlocked` exit, and the child's standard error is discarded
   (docs/reference.md#provider-owned-fields); the maintainer needed a manual
@@ -136,13 +136,18 @@ counts serves this stance; any other answer violates it.
   known-pending, so a later actor sees an unexplained wide mode on a secret
   file (docs/reference.md#provider-owned-fields;
   docs/status.md#provider-fields-and-real-rbw-acceptance).
-- Exit code 2 flattens three worlds. A preview that wrote nothing
-  (`confirmation_required`), a refused batch (`not_attempted`), and a
-  half-written profile (`partial`) all exit 2
+- Exit code 2 flattens three worlds. A preview that wrote nothing, a refused
+  batch, and a half-written profile all exit 2
   (`return 0 if result.outcome in {"committed", "no_changes"} else 2` in
   src/luwu/cli.py; docs/reference.md#commands), so an actor keying on the
   exit status cannot tell "review this" from "your profile is half-applied"
   without parsing the result body.
+- A mutation result omits provenance its preview already carries. The failure
+  is a later actor who can see which provider was planned but cannot tell which
+  provider-bearing action produced the result.
+- A batch deadline collapses in-flight work and never-attempted work into one
+  code. The failure is a later actor who cannot tell whether a provider was
+  contacted, timed out, or never reached.
 
 ## Evidence to demand
 

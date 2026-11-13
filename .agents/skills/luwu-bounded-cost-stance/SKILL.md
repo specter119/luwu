@@ -26,17 +26,17 @@ repeated work in the delivered command, not merely in a timed fragment.
 
 ## Accepts this harm
 
-- `luwu-proof-at-write-stance` loses detection of an unrelated directory
+- **`luwu-proof-at-write-stance` pays**: detection of an unrelated directory
   change before the current write. Prefer `verify_manifest(resources=...)`
   in `src/luwu/manifest.py`; accept discovering that change at its own action
   or the final observation, after earlier writes committed.
   `tests/apply/test_batch_cost.py` explicitly tests this delayed detection.
-- `luwu-proof-at-write-stance` loses a second whole-profile observation at
+- **`luwu-proof-at-write-stance` pays**: a second whole-profile observation at
   mutation entry for a newly built, immediately consumed mutation plan.
   Defend `build_mutation_plan` reuse in `src/luwu/cli.py` and the saved
   observation tested by
   `test_a_plan_built_for_the_mutation_is_not_observed_a_second_time`.
-- `luwu-proof-at-write-stance` loses an independent rendered-desired-byte
+- **`luwu-proof-at-write-stance` pays**: an independent rendered-desired-byte
   comparison for later actions under the recorded post-parent-creation
   concession in [daily-loop limits](../../../docs/status.md#daily-loop-changes).
   Claim that concession for cost, not as an apology. It is recorded evidence,
@@ -46,29 +46,31 @@ repeated work in the delivered command, not merely in a timed fragment.
 
 ## Attacks
 
-1. An action callback drops the `resources` filter from `verify_manifest`
-   and expands unrelated source trees at every publication. Evidence:
-   `src/luwu/manifest.py::verify_manifest` and the directory-growth test in
-   `tests/apply/test_batch_cost.py`.
-2. Each binding or freshness pass reparses the same complete shared layer,
-   multiplying parse cost by consumers and checks. Evidence:
-   `src/luwu/inputs.py::_parse_layer` and its exact-content memo.
-3. CLI apply builds an observation and immediately pays for another complete
-   observation of the same entry state. Evidence:
-   `src/luwu/cli.py::_run_command` and the mutation-plan reuse test above.
-4. A new proof pass revisits every previously created parent for every later
-   action. The `expected_directories` loop in
-   `src/luwu/engine.py::_assert_fresh` is a concrete cost surface: demand
-   counts on nested fresh deployment, not a flat no-op timing.
-5. An apparent speedup times target replacement alone, leaving parent syncs,
+1. An action callback drops its resource filter and expands unrelated source
+   trees at every publication. Demand evidence from the directory-growth test
+   in `tests/apply/test_batch_cost.py`.
+1. Each binding or freshness pass reparses the same complete shared layer,
+   multiplying parse cost by consumers and checks. Demand a count that shows
+   the exact-content memo still covers every consumer.
+1. CLI apply builds an observation and immediately pays for another complete
+   observation of the same entry state. Demand the mutation-plan reuse test
+   above rather than an assumed saving.
+1. A new proof pass revisits every previously created parent for every later
+   action. Demand counts on nested fresh deployment, not a flat no-op timing.
+1. An apparent speedup times target replacement alone, leaving parent syncs,
    baseline writes, or final observation outside the clock. Evidence:
    [performance acceptance](../../../docs/maintenance.md#performance-acceptance)
    and [the execution flow](../../../docs/design.md#end-to-end-flow).
-6. Flat public fixtures pass while directory-heavy and shared-layer profiles
+1. Flat public fixtures pass while directory-heavy and shared-layer profiles
    accumulate repeated work, or failed and blocked runs disappear from the
-   samples. Evidence: `experiments/profile_realistic.py`,
-   `experiments/profile_benchmark.py`, and
+   samples. Demand measurements from the realistic profile, the benchmark, and
    [performance acceptance](../../../docs/maintenance.md#performance-acceptance).
+1. A per-call timeout is presented as a command budget. The failure is a
+   command whose worst-case delay grows with the number of external calls even
+   though every individual call is bounded.
+1. A resource-scoped check hides a full-profile computation. The failure is a
+   check described as paying only for the current action while it still hashes,
+   parses, or walks every unrelated declaration.
 
 ## Evidence to demand
 

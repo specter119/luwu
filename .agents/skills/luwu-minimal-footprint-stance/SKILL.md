@@ -55,44 +55,44 @@ when "so the next run can continue" is the reason a byte is written.
 
 This stance is bought with recovery. Each cost below is accepted knowingly:
 
-- `luwu-continuable-evidence-stance` loses resume entirely. An interrupted
+- **`luwu-continuable-evidence-stance` pays**: resume entirely. An interrupted
   apply cannot be continued; the operator rebuilds a plan from current state.
   `docs/reference.md#finite-batch-freshness-and-verification`: "The batch also
   has no replay, durable plan, or execution journal. A fresh plan is required
   after an interruption or uncertain result."
-- `luwu-continuable-evidence-stance` loses rollback. Committed target writes
+- **`luwu-continuable-evidence-stance` pays**: rollback. Committed target writes
   stay committed when a later resource or a baseline write fails; the outcome
   is `partial` or `committed_but_baseline_not_advanced` and the old baseline is
   left in place. Rolling back would mean keeping a copy of live bytes Luwu does
   not own. Evidence:
   `tests/apply/test_daily_loop.py::test_a_failed_baseline_write_is_reported_without_undoing_the_target`,
   `tests/interruption/test_profile_partial_apply.py::test_partial_parent_creation_and_partial_target_write_are_reported`.
-- `luwu-continuable-evidence-stance` loses the exact reviewed-plan token. A
+- **`luwu-continuable-evidence-stance` pays**: the exact reviewed-plan token. A
   preview a person reviewed cannot be matched byte for byte against what
   `--yes` writes, because nothing persists it: "The preview is not a persisted
   plan token; `--yes` recalculates the current inputs"
   (`docs/reference.md#commands`), and exact reviewed-plan consent tokens are
   listed as not claimed (`docs/status.md#verified-scope-and-limits`).
-- `luwu-continuable-evidence-stance` loses the residue sweep. A SIGKILL in the
+- **`luwu-continuable-evidence-stance` pays**: the residue sweep. A SIGKILL in the
   window between naming the staged inode and renaming it over the target leaves
   one private `.luwu-tmp-*` entry, and nothing cleans it
   (`docs/status.md#provider-fields-and-real-rbw-acceptance`;
   `tests/interruption/test_provider_write_residue.py::test_sigkill_at_publication_leaves_one_private_staging_entry`).
   A sweeper is refused rather than built: it would delete entries whose
   provenance no live process can establish.
-- `luwu-continuable-evidence-stance` loses a record of what Luwu created. A
+- **`luwu-continuable-evidence-stance` pays**: a record of what Luwu created. A
   committed parent creation returns an observed identity that "does not prove
   exclusive creation provenance"
   (`docs/reference.md#resources-and-declared-scope`), and no list of created
   directories survives the run, so a half-finished batch cannot be reconstructed
   from Luwu's own state.
-- `luwu-continuable-evidence-stance` loses baseline history. A schema-2
+- **`luwu-continuable-evidence-stance` pays**: baseline history. A schema-2
   baseline holds only the accepted values, or the accepted digest and mode, for
   the current declaration; a changed binding identity is reported `unbased` with
   `baseline_stale` and "the old values are never reused"
   (`docs/reference.md#baselines-adoption-and-explicit-mutation`). There is no
   previous generation to return to.
-- `luwu-continuable-evidence-stance` loses the run itself on filesystems
+- **`luwu-continuable-evidence-stance` pays**: the run itself on filesystems
   without the footprint-free primitive. A provider-bearing write refuses with
   `anonymous_staging_unsupported` instead of falling back to a named staging
   file (`src/luwu/filesystem.py`,
@@ -110,18 +110,17 @@ Concrete shapes in this repository that this stance attacks on sight:
   engine, second ledger, durable execution journal, and provider cache in
   `docs/design.md#rejected-alternatives`; the cache "never took part in a
   decision and carried a second copy of the atomic write".
-- **A named fallback for unnamed staging.** `_create_anonymous_stage` and
-  `_publish_anonymous_stage` in `src/luwu/filesystem.py` refuse closed when
-  `O_TMPFILE` or `/proc/self/fd` is unavailable. A change that falls through to
-  `_create_temporary_file`, or stages in a cache or runtime directory and
+- **A named fallback for unnamed staging.** The anonymous staging path refuses
+  closed when its footprint-free primitive is unavailable. A change that falls
+  through to a named temporary file, or stages in a cache or runtime directory and
   renames across filesystems, trades a refusal for durable residue and a
   non-atomic publication (`docs/design.md#rejected-alternatives`, the named
   staging file entry).
-- **Cleanup by name.** A sweep of `.luwu-tmp-*` at startup, at batch end, or on
-  signal, in place of `_cleanup_stage_entry`, which stats no-follow, compares
+- **Cleanup by name.** A sweep of staging entries at startup, at batch end, or on
+  signal, in place of identity-gated cleanup, which stats no-follow, compares
   `(st_dev, st_ino)`, checks the type and link count, and returns
-  `foreign_entry_retained` instead of unlinking. Observable shape: a glob, a
-  `list_directory` walk, or an mtime threshold deciding a deletion.
+  a retained-foreign-entry result instead of unlinking. Observable shape: a
+  glob, a directory walk, or an mtime threshold deciding a deletion.
 - **Rollback by backup.** A failure path that restores the target's prior
   bytes, which requires copying them somewhere first: a new baseline payload
   field holding previous content, a sidecar `.bak`, or a tmpfile kept after
@@ -129,22 +128,22 @@ Concrete shapes in this repository that this stance attacks on sight:
   (`docs/reference.md#baselines-adoption-and-explicit-mutation`) and
   `luwu/baseline.py` keeps closed payload variants precisely so this cannot
   grow in quietly (`docs/design.md#module-responsibilities`).
-- **Undo that mutates the system.** `os.rmdir` of a parent Luwu created, a
-  `fchmod` back to a previously observed mode, or deleting a baseline to
+- **Undo that mutates the system.** Removing a parent Luwu created, changing a
+  mode back to a previously observed value, or deleting a baseline to
   "reset" a resource. Existing directory modes are never changed, a created
   parent "remains committed and its result is uncertain"
   (`docs/reference.md#resources-and-declared-scope`), and a failed repair
   leaves the old baseline (`docs/status.md#daily-loop-changes`). An undo here
   destroys state whose other users are unknown.
-- **The plan projection learns to persist.** `_plan_projection` in
-  `src/luwu/engine.py` exists only in memory, and `luwu/plan_evidence.py` keeps
+- **The plan projection learns to persist.** The plan projection exists only in
+  memory, and plan evidence keeps
   "no mutable plan references or persistent identity cache"
   (`docs/design.md#module-responsibilities`). Serializing it, hashing it to a
   file, or accepting a plan identifier on the command line turns authorization
   into stored state that can be replayed against a system that has moved.
 - **Observation that writes.** Planning creating a missing baseline, touching a
   marker so the next run knows where it stopped, or taking a lock through a
-  lock file. Today `lock_directory` flocks an already-open directory
+  lock file. Today the directory lock uses an already-open directory
   descriptor, so no lock path exists to leak or go stale; a lock file would be
   a persistent entry whose path relationship to a declared target has to be
   proven first (`AGENTS.md`, keep observation and mutation separate).
@@ -154,6 +153,11 @@ Concrete shapes in this repository that this stance attacks on sight:
   followed or replaced (`docs/reference.md#commands`), and hardlink and reflink
   deployment were rejected because an application write would silently change
   the source (`docs/design.md#rejected-alternatives`).
+- **Cleanup that covers only SIGKILL.** A named staging entry is treated as
+  residue-free because the documented failure is process death, while a
+  catchable interruption after publication can leave the same secret-bearing
+  entry. The failure is a cleanup guarantee narrower than the set of exits that
+  can reach the window.
 
 ## Evidence to demand
 

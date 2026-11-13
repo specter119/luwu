@@ -29,10 +29,10 @@ caches, logs and machine-readable output, and fail closed when uncertain.
 By refusing to expand exposure, this stance explicitly accepts these costs to
 `luwu-continuable-evidence-stance`:
 
-- `luwu-continuable-evidence-stance` loses the ability to distinguish a provider rotation from a hand edit, because a secret digest or keyed hash is refused (`docs/design.md#rejected-alternatives`).
-- `luwu-continuable-evidence-stance` loses a persistent execution journal or exact reviewed-plan token that an interrupted run could resume from, because persisting secrets or their hashes is forbidden (`docs/reference.md#finite-batch-freshness-and-verification`).
-- `luwu-continuable-evidence-stance` loses knowing which undeclared keys differ and in which direction, and must instead trust the operator's claim for `--undeclared PATH`, because storing the prior undeclared values would persist them (`docs/status.md#daily-loop-changes`, `docs/reference.md#writing-undeclared-changes-back-to-a-template-source`).
-- `luwu-continuable-evidence-stance` loses provider-diagnostic commands and raw stdout/stderr in error messages, because provider output must fail closed and never enter logs or CLI projections (`docs/design.md#rejected-alternatives`).
+- **`luwu-continuable-evidence-stance` pays**: the ability to distinguish a provider rotation from a hand edit, because a secret digest or keyed hash is refused (`docs/design.md#rejected-alternatives`).
+- **`luwu-continuable-evidence-stance` pays**: a persistent execution journal or exact reviewed-plan token that an interrupted run could resume from, because persisting secrets or their hashes is forbidden (`docs/reference.md#finite-batch-freshness-and-verification`).
+- **`luwu-continuable-evidence-stance` pays**: knowing which undeclared keys differ and in which direction, and must instead trust the operator's claim for `--undeclared PATH`, because storing the prior undeclared values would persist them (`docs/status.md#daily-loop-changes`, `docs/reference.md#writing-undeclared-changes-back-to-a-template-source`).
+- **`luwu-continuable-evidence-stance` pays**: provider-diagnostic commands and raw stdout/stderr in error messages, because provider output must fail closed and never enter logs or CLI projections (`docs/design.md#rejected-alternatives`).
 
 ## Attacks
 
@@ -40,10 +40,11 @@ This stance attacks any change that broadens exposure, including:
 
 - Adding a provider cache or a provider registry that keeps secret values in memory or on disk longer than necessary (`docs/design.md#rejected-alternatives`).
 - Persisting an execution journal or staging plan that records rendered provider values or exact text diffs (`docs/reference.md#finite-batch-freshness-and-verification`).
-- Introducing a diagnostic command or verbose error output that prints `rbw` stdout/stderr or parsed secrets (`docs/design.md#rejected-alternatives`).
+- Introducing a diagnostic command or verbose error output that prints provider stdout/stderr or parsed secrets (`docs/design.md#rejected-alternatives`).
 - Storing a digest or hash of secret bytes to distinguish rotations, which could be guessable offline (`docs/design.md#rejected-alternatives`).
-- Falling back, silently skipping, or guessing when `rbw` is stopped or unauthorized, instead of immediately failing closed (`docs/status.md#provider-fields-and-real-rbw-acceptance`).
+- Falling back, silently skipping, or guessing when the provider is stopped or unauthorized, instead of immediately failing closed (`docs/status.md#provider-fields-and-real-rbw-acceptance`).
 - Emitting provider-bearing bytes in the CLI JSON plan output, bypassing the requirement to emit metadata only (`docs/changelog.md`).
+- Caching a parsed document or derived value under a key made from the secret content, which duplicates the secret in the cache index even when the value itself is sealed.
 
 ## Evidence to demand
 

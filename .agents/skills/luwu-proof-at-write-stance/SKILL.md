@@ -58,7 +58,7 @@ its ceiling.
 Every item below is latency or throughput that `luwu-bounded-cost-stance`
 cannot get back. This stance takes it knowingly.
 
-- `luwu-bounded-cost-stance` loses the saved whole-profile observation it
+- **`luwu-bounded-cost-stance` pays**: the saved whole-profile observation it
   currently banks at mutation entry. Deleting `_ENTRY_WINDOW_SECONDS` in
   `src/luwu/engine.py` adds one `_observe_all` plus two `verify_manifest` passes
   to every `--yes` run, and invalidates its own saving test,
@@ -67,7 +67,7 @@ cannot get back. This stance takes it knowingly.
   budget of at most 2 seconds for 200 resources
   (`docs/maintenance.md#performance-acceptance`) absorbs that cost or the budget
   moves, not the check.
-- `luwu-bounded-cost-stance` loses linear directory cost. Re-expanding every
+- **`luwu-bounded-cost-stance` pays**: linear directory cost. Re-expanding every
   declared directory at every action boundary, instead of only the directories
   behind the current action (`verify_manifest(..., resources=...)` in
   `_assert_fresh`), makes batch cost
@@ -75,32 +75,32 @@ cannot get back. This stance takes it knowingly.
   `tests/apply/test_batch_cost.py::test_directory_expansion_grows_linearly_with_the_directory_count`
   and the "doubling 100 to 200 resources must take no more than 3x" rule in
   `docs/maintenance.md#performance-acceptance`.
-- `luwu-bounded-cost-stance` loses the rendered-bytes shortcut. Restoring the
+- **`luwu-bounded-cost-stance` pays**: the rendered-bytes shortcut. Restoring the
   `desired_data` comparison that `_assert_fresh` currently waives for any
   resource with inputs once `_refresh_expected_ancestry` has seeded
   `expected_inputs` (`docs/status.md#daily-loop-changes`, third known limit)
   means a render, parse, and patch per remaining action per boundary. That
   lands on the one-change apply budget of at most 3 seconds, measurable as the
   `onechange` scenario medians of `experiments/profile_benchmark.py`.
-- `luwu-bounded-cost-stance` loses any apply latency bound it can state for
+- **`luwu-bounded-cost-stance` pays**: any apply latency bound it can state for
   provider resources. Re-fetching a provider at each action boundary, rather
   than once per command
   (`_resolve_provider_state` in `src/luwu/engine.py`,
   `docs/reference.md#provider-owned-fields`), adds an `rbw get` subprocess with
   a 5 second timeout per action, and that latency belongs to the vault and the
   agent, not to Luwu's measurements.
-- `luwu-bounded-cost-stance` loses the right to stop observing resources the
+- **`luwu-bounded-cost-stance` pays**: the right to stop observing resources the
   batch will not write. Re-adjudicating every resource at every boundary,
   instead of carrying `skipped=skipped_names` through `_assert_forward_fresh`,
   makes a profile full of review resources pay a full observation per action
   for zero writes.
-- `luwu-bounded-cost-stance` loses the shared-layer memo as a tuning knob.
+- **`luwu-bounded-cost-stance` pays**: the shared-layer memo as a tuning knob.
   `_LAYER_DOCUMENTS` in `src/luwu/inputs.py` survives only because its key is
   the exact bytes, format and public names and its lifetime is the manifest's.
   Rekeying it on a path, size, timestamp, or inode identity, or letting it
   outlive the manifest, is refused even where it measurably cuts the parse
   count.
-- `luwu-bounded-cost-stance` loses durability as a source of headroom.
+- **`luwu-bounded-cost-stance` pays**: durability as a source of headroom.
   `docs/maintenance.md#performance-acceptance` counts "process startup,
   preflight, target durability, and verification" inside the budget; a `fsync`
   of child and parent before publication is not a cost this stance will trade,
@@ -108,76 +108,46 @@ cannot get back. This stance takes it knowingly.
 
 ## Attacks
 
-1. **A clock authorizes the entry re-observation.** `_ENTRY_WINDOW_SECONDS`
-   (currently 0.25 s) in `src/luwu/engine.py` lets `_require_plan` return the
-   plan-time record unchanged, skipping the fresh verify-observe-verify cycle
-   that `docs/reference.md#baselines-adoption-and-explicit-mutation` describes.
-   The CLI path always lands inside that window, which is why the contract has
-   to say a `--yes` command "observes the profile once". Observable shape: a
-   mutation entry whose re-observation is conditional on elapsed time rather
-   than on evidence; the project's own test
-   `test_a_change_inside_the_entry_window_is_caught_by_the_final_check` settles
-   for detection after the first write, with no rollback behind it.
-1. **A directory creation disables the last rendered-bytes check.**
-   `_assert_fresh` raises `stale_plan` on a `desired_data` mismatch only when no
-   input of that resource appears in `expected_inputs` and its source is not in
-   `expected_sources`. `_refresh_expected_ancestry` writes an entry for every
-   input file of every resource in the record after any parent creation, so from
-   the first `mkdir` onward the one check that binds rendered bytes rather than
-   their ingredients is off for every resource with inputs, including resources
-   whose inputs Luwu never touched. `docs/status.md#daily-loop-changes` records
-   this as a limit; `.evidence/stance-discovery.md` names it the one sacrifice
-   whose winner is argued nowhere. What is left unbound is any desired-bytes
-   change that is not a change of source or input bytes: the post-render
-   provider patch, and any render that is not a pure function of those bytes.
-1. **Provider bytes are published on a pre-confirmation read.**
-   `_resolve_provider_state` runs once while the plan is built and the sealed
-   value is reused by the freshness check, the entry reuse, and the final
-   observation (`docs/design.md#module-responsibilities`,
-   `docs/reference.md#provider-owned-fields`). The secret bytes that reach the
-   target through `O_TMPFILE` and `linkat` are therefore authorized by a memory
-   copy taken before the operator confirmed, and a rotation during the apply is
-   written as the older value with status `unchanged` for the field. Observable
-   shape: a write path whose authorizing value has no re-read at the boundary at
-   all, only a re-use.
-1. **Per-action re-expansion is narrower than the batch it authorizes.**
-   `_assert_fresh` passes `resources=resource_names` to `verify_manifest`, and
-   `tests/apply/test_batch_cost.py::test_a_resource_name_only_selects_the_directory_that_produced_it`
-   asserts that an added leaf in another declared directory is deliberately not
-   seen. Targets for unrelated resources commit while the profile's declared
-   scope is already stale; the discovery is deferred to that directory's own
-   action or the final observation, and `docs/reference.md#finite-batch-freshness-and-verification`
-   confirms "earlier writes remain committed".
-1. **A plan-time verdict outlives the boundary.** `apply_plan` computes
-   `skipped_names` once and passes `skipped=` to every later
-   `_assert_forward_fresh` and publication recheck, so `_skip_reason` is never
-   re-adjudicated for those resources. A resource whose block reason changed, or
-   whose review condition disappeared, keeps its plan-time classification for
-   the rest of the batch, and `docs/reference.md#finite-batch-freshness-and-verification`
-   states the exclusion as contract, so nothing re-examines that verdict before
-   the last write lands.
-1. **A prediction stands in for a read.** `expected_targets`,
-   `expected_baselines`, `expected_inputs`, and `expected_directories` are
-   computed state. The safe form is narrow: `_expected_write_observation` and
-   `_matches_own_write` advance a snapshot only from the inode a successful
-   writer returned, and `src/luwu/engine.py` then overwrites the prediction with
-   `observe_file`/`observe_link` output. Observable shape of the failure: a new
-   `expected_*` entry produced by a `replace(...)` or a computed guess for a
-   path no Luwu action returned an identity for, which `docs/design.md`
-   forbids when it says "expected filesystem facts advance only from identities
-   returned by successful Luwu actions".
-1. **Work creeps into the publication window.** In `src/luwu/filesystem.py`,
-   `write_file`, `create_link`, and `create_parent` hold the parent lock, run
-   `_run_check_inputs`, re-verify root, ancestry and the named entry, and only
-   then publish. Any rendering, parsing, subprocess, allocation of a new
-   descriptor, or blocking call inserted between the callback and the
-   publication widens a window in which only a cooperating writer is excluded;
-   `docs/reference.md#commands` limits the advisory lock to cooperating Luwu
-   writers, and `docs/status.md#verified-scope-and-limits` disclaims strong
-   consistency against the rest. Observable shape: the callback and the
-   `os.replace`/`linkat`/`os.symlink` call separated by anything that can block,
-   or a callback handed a `resource_names` set narrower than the dependencies
-   the staged bytes came from.
+1. **A clock authorizes the entry re-observation.** A mutation entry returns a
+   plan-time record unchanged because it is young enough, instead of because
+   the dependencies were re-read. The failure is a freshness decision whose
+   input is elapsed time rather than evidence; detection by a later check does
+   not restore the first write.
+1. **A directory creation disables the last rendered-bytes check.** Creating a
+   parent seeds predicted ancestry so broadly that later resources stop
+   comparing the bytes they are about to publish. The failure is a check that
+   silently becomes conditional on earlier batch history, including for
+   resources Luwu never touched, while the plan still presents one proof rule.
+1. **Provider bytes are published on a pre-confirmation read.** A provider value
+   is fetched while the plan is built and then reused by freshness checks and
+   publication. The failure is a write whose authorizing value has no read at
+   its own boundary; a provider rotation during apply can publish the older
+   value while the result describes the field as unchanged.
+1. **Per-action re-expansion is narrower than the batch it authorizes.** A
+   freshness check expands only the directories behind the current action, so
+   an added leaf in another declared directory is deliberately invisible until
+   that directory's action or the final observation. The failure is a write
+   authorized by a scope smaller than the profile whose declared state it
+   changes, with earlier writes left committed.
+1. **A plan-time verdict outlives the boundary.** A resource is classified once
+   as skipped or review-required and that verdict is carried through later
+   publication checks. The failure is a stale classification that decides
+   eligibility after the condition behind it has changed, without the operator
+   seeing a new decision point.
+1. **A prediction stands in for a read.** Expected filesystem state is advanced
+   from a computed guess instead of from an identity returned by a successful
+   Luwu action. The failure is a later boundary treating remembered state as
+   observed state, especially after replacement, creation, or a path whose
+   writer never returned an identity.
+1. **Work creeps into the publication window.** Rendering, parsing, a
+   subprocess, descriptor allocation, or another blocking call sits between the
+   final dependency check and the atomic publication. The failure is an
+   authorization window that only excludes cooperating writers while the
+   staged bytes no longer provably correspond to the checked inputs.
+1. **A boundary check reuses plan-time provider bytes.** The check re-reads
+   files and identities but treats a provider value captured while planning as
+   if it had been read at the publication boundary. The failure is a mixed
+   proof whose strongest component is mistaken for the whole.
 
 ## Evidence to demand
 
